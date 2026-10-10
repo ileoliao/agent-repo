@@ -1,0 +1,5 @@
+bgm.mp3 = "guzheng solo" by neolein, Freesound sound #472707, looped with a 6 s crossfade, trimmed to 134 s, 2 s fade-in and 6 s fade-out.
+Source: https://freesound.org/people/neolein/sounds/472707/  (HQ preview mp3, https://cdn.freesound.org/previews/472/472707_4596312-hq.mp3)
+License: Creative Commons 0 (CC0 1.0 Public Domain Dedication), checked on the Freesound page 2026-10-10. No attribution required (credit is optional).
+Alternates in music_candidates/ (both CC0, neolein): "blossom valley in paradise" #521367 (63 s) and "A ride through chinese valley" #573972 (37 s; license not re-checked on its page, Openverse lists it as CC0).
+Not used: Wikimedia Commons guqin recordings by CharlieHuang (醉渔唱晚, 阳关三叠), because they are CC BY-SA 3.0 (attribution + share-alike).
