@@ -1,0 +1,134 @@
+[
+ {
+  "title": "序·锦城",
+  "year": "三千年",
+  "cam": "Ink-reveal: ink blooms outward from the center to reveal the landscape, then a slow push-in toward the city walls.",
+  "narr": "一支毛笔，一卷宣纸，我们慢慢讲讲三千年的成都。",
+  "prompt": "Traditional Chinese ink-wash landscape painting (shuimo) of the Chengdu Plain at dawn: misty layered mountains in the far west, winding rivers glinting through a vast fertile plain, a small ancient walled city half-hidden in drifting clouds, a brush and an unrolled scroll implied in the foreground margin; expressive ink brush strokes, soft gradients of grey ink, light washes of indigo and pale ochre, aged rice paper texture with visible fibers, generous empty space (liubai), a small red seal stamp in the lower right corner, no text, no calligraphy characters, 16:9 composition.",
+  "tts": "一支毛笔，一卷宣纸，我们慢慢讲讲三千年的成都。",
+  "start": 0,
+  "end": 7.36,
+  "dur": 7.36
+ },
+ {
+  "title": "古蜀文明",
+  "year": "约3000多年前",
+  "cam": "Slow zoom in on the bronze mask's protruding eyes, then a slow pan right to the golden sun-bird disc.",
+  "narr": "三千多年前，古蜀人在这片平原上，留下了三星堆的青铜纵目面具，和金沙的太阳神鸟，神秘而灿烂。",
+  "prompt": "Chinese ink-wash painting of ancient Shu civilization: a monumental Sanxingdui bronze mask with protruding cylindrical eyes and large ears rendered in bold dark ink strokes and verdigris-green wash, beside it the Jinsha golden Sun and Immortal Birds disc (circular gold foil with twelve swirling sun rays and four flying birds) glowing in a pale gold wash, ancient bronze trees and jade cong faintly sketched in mist behind, ritual atmosphere; loose expressive brushwork, light color washes, rice paper texture, red seal stamp in a corner, no text, no modern objects, no people's faces.",
+  "tts": "三千多年前，古蜀人在这片平原上，留下了三星堆的青铜纵目面具，和金沙的太阳神鸟，神秘而灿烂。",
+  "start": 7.36,
+  "end": 17.56,
+  "dur": 10.2
+ },
+ {
+  "title": "开明迁都·城名由来",
+  "year": "约公元前4世纪（传说）",
+  "cam": "Ink-reveal from left to right across the scroll as huts grow into a village and then a city; slow pull-back at the end.",
+  "narr": "相传，古蜀开明王朝把都城迁到了这里。“一年成聚，二年成邑，三年成都”，是城名最流行的传统解释。",
+  "prompt": "Chinese handscroll-style ink-wash painting showing a settlement growing over time from left to right: at left a few thatched huts by a river (a gathering), in the middle a busier village with fields and wooden houses (a town), at right a larger ancient capital with wooden palaces and low earthen walls, tiny figures of ancient Shu people in simple robes carrying baskets, willow trees and rivers linking the scenes; continuous narrative composition, delicate fine-line brushwork with light ochre and green washes, rice paper texture, misty empty spaces, red seal stamp, no text.",
+  "tts": "相传，古蜀开明王朝把都城迁到了这里。“一年成聚，二年成邑，三年成都”，是城名最流行的传统解释。",
+  "start": 17.56,
+  "end": 29.15,
+  "dur": 11.59
+ },
+ {
+  "title": "秦灭巴蜀·张仪筑城",
+  "year": "公元前316年 / 前311年",
+  "cam": "Slow pan along the rising rammed-earth walls, ending on the city gate tower; subtle dust drifting.",
+  "narr": "公元前316年，秦国灭蜀，随后张仪、张若仿照咸阳修筑成都城。此后两千多年，城址未迁，城名未改。",
+  "prompt": "Chinese ink-wash painting of the Warring States period construction of Chengdu city walls: hundreds of tiny laborers ramming earth between wooden frames, tall rammed-earth walls with a wooden gate tower and watchtowers rising, Qin army banners (plain black flags without writing) fluttering, an overseeing official in Qin-era robes and tall hat seen from behind on a platform, distant misty mountains; dynamic brushwork, grey and burnt-umber washes, rice paper texture, red seal stamp, no text, no legible characters on banners.",
+  "tts": "公元前三百一十六年，秦国灭蜀，随后张仪、张若仿照咸阳修筑成都城。此后两千多年，城址未迁，城名未改。",
+  "start": 29.15,
+  "end": 41.85,
+  "dur": 12.7
+ },
+ {
+  "title": "李冰与都江堰",
+  "year": "约公元前256年",
+  "cam": "Top-down slow drift following the river as it splits at the fish-mouth levee, then pull back to reveal irrigated fields.",
+  "narr": "约公元前256年，蜀郡守李冰主持修建都江堰，分水灌田。成都平原从此水旱从人，成了天府之国。",
+  "prompt": "Chinese ink-wash bird's-eye painting of the ancient Dujiangyan irrigation system: the Min River rushing out of misty mountains and splitting at a fish-mouth shaped levee into inner and outer channels, bamboo cages filled with river stones (zhulong) along the banks, the narrow Bottle-Neck channel cut through rock, then canals spreading into a patchwork of lush rice paddies across the plain; flowing water rendered with rhythmic brush lines, blue-green and jade washes, rice paper texture, wide empty sky, red seal stamp, no text.",
+  "tts": "约公元前二百五十六年，蜀郡守李冰主持修建都江堰，分水灌田。成都平原从此水旱从人，成了天府之国。",
+  "start": 41.85,
+  "end": 53.78,
+  "dur": 11.93
+ },
+ {
+  "title": "蜀锦·锦官城",
+  "year": "汉代",
+  "cam": "Slow zoom from a weaver's loom out to brocade drying on the riverbank, with a gentle horizontal pan along the river.",
+  "narr": "汉代，蜀锦名扬天下，朝廷在这里设锦官管理织锦，成都便有了“锦官城”的美称。",
+  "prompt": "Chinese gongbi-meets-ink-wash painting of Han dynasty Chengdu brocade workshops: women weavers in Han-style robes working at large wooden jacquard looms, long bolts of colorful Shu brocade with cloud and auspicious animal patterns hanging to dry on bamboo poles along a clear river where the cloth is rinsed, willow trees and tiled rooftops behind; fine brush outlines with rich but soft crimson, gold and indigo washes on the fabrics, rest in monochrome ink, rice paper texture, red seal stamp, no text, faces small and stylized.",
+  "tts": "汉代，蜀锦名扬天下，朝廷在这里设锦官管理织锦，成都便有了“锦官城”的美称。",
+  "start": 53.78,
+  "end": 62.08,
+  "dur": 8.3
+ },
+ {
+  "title": "三国蜀汉·武侯祠",
+  "year": "公元221年",
+  "cam": "Slow push-in through the red gate and cypress trees toward the shrine; ink mist parts as the camera moves.",
+  "narr": "公元221年，刘备在成都称帝，建立蜀汉。诸葛亮鞠躬尽瘁，后人修建武侯祠纪念他，香火至今不断。",
+  "prompt": "Chinese ink-wash painting of the Three Kingdoms era: in the foreground the Wuhou Shrine with red walls, curved grey-tiled roofs and ancient towering cypress trees, incense smoke rising; in the misty upper half a ghostly, stylized silhouette of a Three Kingdoms strategist in Daoist robes holding a feather fan, seen from behind gazing over a campaign map of mountains, war banners faintly sketched; solemn mood, deep ink tones with vermilion accents on the walls, rice paper texture, red seal stamp, no text, no identifiable face.",
+  "tts": "公元二二一年，刘备在成都称帝，建立蜀汉。诸葛亮鞠躬尽瘁，后人修建武侯祠纪念他，香火至今不断。",
+  "start": 62.08,
+  "end": 73.07,
+  "dur": 10.99
+ },
+ {
+  "title": "扬一益二·杜甫草堂",
+  "year": "唐代 · 公元759年起",
+  "cam": "Slow pan from the bustling market street to the quiet thatched cottage by the stream; spring rain drifts down.",
+  "narr": "唐代成都商贾云集，号称“扬一益二”。杜甫避乱入蜀，在浣花溪畔建起草堂，写下“好雨知时节，当春乃发生”。",
+  "prompt": "Chinese ink-wash painting in two connected parts: on the left a prosperous Tang dynasty Chengdu market street with lanterns, silk shops, merchants and camels in tiny detail; on the right a quiet thatched cottage among bamboo and blossoming trees beside the Huanhua Stream, a lone poet in Tang robes seen from behind under the eaves watching fine spring night rain falling over the water; poetic atmosphere, soft wet-on-wet ink, pale green and peach-blossom pink washes, rice paper texture, red seal stamp, no text, no calligraphy.",
+  "tts": "唐代成都商贾云集，号称“扬一益二”。杜甫避乱入蜀，在浣花溪畔建起草堂，写下“好雨知时节，当春乃发生”。",
+  "start": 73.07,
+  "end": 84.93,
+  "dur": 11.86
+ },
+ {
+  "title": "交子·世界最早的纸币",
+  "year": "北宋天圣元年 · 公元1023年",
+  "cam": "Ink-reveal of the paper note in the center, then slow pull-back showing the counting house and piles of heavy iron coins.",
+  "narr": "北宋时，四川通行笨重的铁钱。公元1023年，官府在成都设立益州交子务，发行交子，它被公认为世界上最早的纸币。",
+  "prompt": "Chinese ink-wash painting of a Northern Song dynasty counting house in Chengdu: a large printed paper banknote (jiaozi) shown as a vertical rectangle with abstract decorative borders of houses, trees and figures but no legible writing, held up in the center; around it Song-era officials and merchants in robes at wooden tables, heavy strings of iron coins piled in baskets, a woodblock printing press and stacks of paper; fine brushwork, warm ochre and muted red washes, rice paper texture, red seal stamp, no readable text or characters.",
+  "tts": "北宋时，四川通行笨重的铁钱。公元一零二三年，官府在成都设立益州交子务，发行交子，它被公认为世界上最早的纸币。",
+  "start": 84.93,
+  "end": 98.01,
+  "dur": 13.08
+ },
+ {
+  "title": "湖广填四川",
+  "year": "明末清初",
+  "cam": "Slow lateral pan following the long line of migrants along a mountain road into the plain; slight zoom out at the end.",
+  "narr": "明末清初，四川历经战乱，人口锐减。大批湖广移民迁入，史称“湖广填四川”，也让巴蜀文化更加多元。",
+  "prompt": "Chinese ink-wash painting of the great Qing dynasty migration into Sichuan: a long winding procession of families in early Qing clothing walking along a mountain path and wooden plank roads clinging to cliffs, carrying shoulder poles, baskets, children, and leading oxen, river boats moving upstream through gorges, the fertile Chengdu plain opening ahead in soft light; sweeping horizontal composition, misty peaks, light ochre and grey-green washes, rice paper texture, red seal stamp, no text, figures small and anonymous.",
+  "tts": "明末清初，四川历经战乱，人口锐减。大批湖广移民迁入，史称“湖广填四川”，也让巴蜀文化更加多元。",
+  "start": 98.01,
+  "end": 109.41,
+  "dur": 11.4
+ },
+ {
+  "title": "今日成都",
+  "year": "近现代 — 今天",
+  "cam": "Slow zoom out from a panda in bamboo to a teahouse, then to a misty skyline; ink lines morph into modern towers.",
+  "narr": "近代以来，成都几经风雨。如今，大熊猫在竹林里打滚，老茶馆里盖碗茶飘香，天府新区高楼林立。",
+  "prompt": "Chinese ink-wash painting blending tradition and modern Chengdu: in the foreground giant pandas playfully rolling and munching in a lush bamboo grove, in the middle ground an old open-air teahouse under ginkgo trees with bamboo chairs and covered lidded teacups (gaiwan) on tables, anonymous patrons chatting, in the background a modern city skyline of elegant skyscrapers rendered in the same loose ink style rising through mist; harmonious composition, black-white ink with soft jade green and warm gold washes, rice paper texture, red seal stamp, no text, no logos, no identifiable people.",
+  "tts": "近代以来，成都几经风雨。如今，大熊猫在竹林里打滚，老茶馆里盖碗茶飘香，天府新区高楼林立。",
+  "start": 109.41,
+  "end": 120.3,
+  "dur": 10.9
+ },
+ {
+  "title": "尾声",
+  "year": "成都",
+  "cam": "Very slow pull-back to the full scroll; ink fades into blank rice paper, leaving only the red seal.",
+  "narr": "三千年过去，烟火依旧。这座来了就不想走的城市，还在继续书写自己的故事。",
+  "prompt": "Chinese ink-wash panoramic handscroll painting summarizing Chengdu's history, viewed as one continuous landscape from ancient to modern: misty mountains and the Min River on the left, ancient walls and temples in the middle, a lively riverside with lanterns at dusk, and soft modern towers fading into clouds on the right, all unified by flowing water and drifting mist; serene, nostalgic mood, delicate brushwork, very light washes of ink, indigo and warm ochre, large empty space, aged rice paper texture, a prominent red seal stamp, no text, no calligraphy.",
+  "tts": "三千年过去，烟火依旧。这座来了就不想走的城市，还在继续书写自己的故事。",
+  "start": 120.3,
+  "end": 130.06,
+  "dur": 9.75
+ }
+]

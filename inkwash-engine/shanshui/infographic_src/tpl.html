@@ -1,0 +1,141 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:2400px;height:4620px;overflow:hidden;background:url(a/bg.jpg);font-family:"Noto Sans CJK SC",sans-serif;color:#2a2420;position:relative;}
+.serif{font-family:"Noto Serif CJK SC",serif}
+h2{font-family:"Noto Serif CJK SC",serif;font-weight:900;font-size:46px;color:#1d1814;display:flex;align-items:center;gap:16px;margin-bottom:18px}
+h2 .no{display:inline-flex;width:56px;height:56px;background:#b3261e;color:#fbf3e4;border-radius:6px;align-items:center;justify-content:center;font-size:34px}
+code,.fn{font-family:"DejaVu Sans Mono",monospace}
+code{background:rgba(179,38,30,.08);color:#8e1d16;padding:1px 8px;border-radius:5px;font-size:.88em}
+.panel{background:rgba(255,252,244,.55);border:2px solid rgba(60,45,35,.25);border-radius:14px;padding:30px 34px}
+p{font-size:28px;line-height:1.6}
+.wrap{margin:0 80px;padding:70px 0 60px;width:2240px}
+/* header */
+.top{display:flex;gap:56px}
+.thumb{position:relative;width:690px;flex:none}
+.thumb img{width:690px;display:block;border:10px solid #3b2f27;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+.thumb .tag{position:absolute;background:#b3261e;color:#fff8ec;font:700 26px "Noto Serif CJK SC";padding:4px 12px;border-radius:5px}
+.thumb .cap{font-size:24px;color:#5b4f45;margin-top:14px;text-align:center}
+.head{flex:1}
+.title{font-family:"Noto Serif CJK SC";font-weight:900;font-size:104px;letter-spacing:6px;color:#14100d;line-height:1.15}
+.title small{display:block;font-size:52px;letter-spacing:3px;font-weight:700;color:#3a302a;margin-top:8px}
+.title b{color:#b3261e}
+.lead{font-size:31px;line-height:1.65;margin:26px 0 30px;color:#3a302a}
+.seal{position:absolute;right:0;top:0;width:150px;height:150px;background:#b3261e;border-radius:10px;color:#fbefdc;font:900 56px/1 "Noto Serif CJK SC";display:grid;grid-template-columns:1fr 1fr;place-items:center;padding:12px;box-shadow:inset 0 0 0 5px #b3261e,inset 0 0 0 9px #fbefdc}
+.flow{display:flex;align-items:stretch;gap:0;margin-top:6px}
+.st{flex:1;background:rgba(255,252,244,.7);border:2px solid #3b2f27;border-radius:12px;padding:18px 10px;text-align:center}
+.st .n{font:900 36px "Noto Serif CJK SC";color:#1d1814}
+.st .f{font:19px "DejaVu Sans Mono";color:#8e1d16;margin:8px 0;word-break:break-all}
+.st .d{font-size:22px;line-height:1.45;color:#4a3f37}
+.ar{width:44px;flex:none;display:flex;align-items:center;justify-content:center;color:#b3261e;font-size:44px;font-weight:900}
+.sy{display:grid;grid-template-columns:1fr 1fr 1fr;gap:22px;margin-top:30px}
+.sy div{background:rgba(255,252,244,.6);border-left:8px solid #b3261e;padding:16px 20px;border-radius:6px}
+.sy b{font:900 34px "Noto Serif CJK SC";display:block;margin-bottom:6px}
+.sy span{font-size:24px;line-height:1.5;display:block}
+.occl{font-size:27px;line-height:1.6;margin-top:24px}
+/* row 2 */
+.row2{display:grid;grid-template-columns:1.12fr .78fr 1.1fr;gap:34px;margin-top:46px}
+.formula{font:700 50px "Noto Serif CJK SC";text-align:center;margin:12px 0 14px;color:#1d1814}
+.formula sup{font-size:34px}
+.wus{display:flex;gap:10px;margin-top:14px}
+.wu{flex:1;text-align:center}
+.wu img{width:100%;border-radius:6px;border:2px solid rgba(60,45,35,.3)}
+.wu span{display:block;font:900 32px "Noto Serif CJK SC";color:#b3261e}
+.wu code{font-size:19px}
+.demo{width:100%;border-radius:8px;border:2px solid rgba(60,45,35,.25);display:block}
+.lbls{display:grid;grid-template-columns:1fr;gap:4px;font-size:23px;line-height:1.45;margin-top:12px}
+.lbls i{font-style:normal;color:#b3261e;font-weight:700}
+.sm{font-size:24px;line-height:1.55;color:#3a302a;margin-top:12px}
+/* grid */
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:22px}
+.tc{background:rgba(255,252,244,.65);border:2px solid rgba(60,45,35,.25);border-radius:12px;padding:14px;}
+.tc img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;display:block}
+.tn{font:900 38px "Noto Serif CJK SC";color:#14100d;margin-top:10px}
+.tc .fn{font-size:20px;line-height:1.35;color:#8e1d16;margin:4px 0 6px}
+.td{font-size:22px;line-height:1.5;color:#3a302a}
+/* rounds */
+.rounds{display:grid;grid-template-columns:repeat(6,1fr);gap:22px}
+.rc img{width:100%;display:block;border:4px solid #3b2f27;border-radius:4px}
+.rn{font:900 32px "Noto Serif CJK SC";color:#b3261e;margin-top:8px}
+.rd{font-size:22px;line-height:1.45}
+.foot{display:flex;justify-content:space-between;align-items:center;margin-top:40px;border-top:3px solid #3b2f27;padding-top:24px;font-size:27px}
+.foot b{font-family:"Noto Serif CJK SC";font-weight:900}
+.pill{display:inline-block;border:2px solid #3b2f27;border-radius:30px;padding:4px 18px;margin:0 6px;font-size:24px;background:rgba(255,252,244,.6)}
+.sec{margin-top:46px}
+</style></head><body><div class="wrap">
+
+<div class="top">
+ <div class="thumb"><img src="a/thumb.jpg">
+  <div class="tag" style="left:330px;top:40px">高远</div>
+  <div class="tag" style="left:40px;top:560px">深远</div>
+  <div class="tag" style="left:520px;top:520px">平远</div>
+  <div class="cap serif">《溪山亭渡图》 2400×3200 立轴 · 纯代码绘制，无一张素材图</div>
+ </div>
+ <div class="head" style="position:relative">
+  <div class="seal"><span>代</span><span>码</span><span>山</span><span>水</span></div>
+  <div class="title">用代码<b>画</b>一幅山水<small>水墨程序化绘画 · 编码技法一览</small></div>
+  <div class="lead">这幅画不是滤镜，也不是 AI 出图：每一笔皴、每一个墨点都由 Python 函数按参数“画”出来。核心思路是<b>模拟墨在宣纸上的物理行为</b>——吸光、渗化、干湿——再用国画的笔法规则去组织笔触。</div>
+  <h2><span class="no">1</span>绘制流水线</h2>
+  <div class="flow">
+   <div class="st"><div class="n">宣纸</div><div class="f">make_paper</div><div class="d">噪声云絮 + 细纤维 + 颗粒 + 泛黄</div></div><div class="ar">→</div>
+   <div class="st"><div class="n">分层</div><div class="f">Canvas.layer</div><div class="d">远山 far / 主峰 peak / 中景 mid / 近景 near</div></div><div class="ar">→</div>
+   <div class="st"><div class="n">落墨</div><div class="f">stroke/dot/wash</div><div class="d">每一笔把墨量累加进吸光图 A 与水分图 Wet</div></div><div class="ar">→</div>
+   <div class="st"><div class="n">晕开</div><div class="f">Layer.finalize</div><div class="d">水分沿纸纤维外渗，形成墨晕 halo</div></div><div class="ar">→</div>
+   <div class="st"><div class="n">合成</div><div class="f">paint.compose</div><div class="d">扣出云雾、瀑布留白，四层相加，钤印</div></div><div class="ar">→</div>
+   <div class="st" style="border-color:#b3261e"><div class="n" style="color:#b3261e">成画</div><div class="f">shanshui.png</div><div class="d">seed 1086 固定，可复现；约 45 秒</div></div>
+  </div>
+  <h2 style="margin-top:40px"><span class="no">2</span>构图：三远 · 遮挡 · 空气透视</h2>
+  <div class="sy">
+   <div><b>高远 · 仰望主峰</b><span>约 10 个山体 <code>Massif.lobe</code> 由前往后叠成范宽式巨峰，峰顶密布小树与焦墨点。</span></div>
+   <div><b>深远 · 层层入谷</b><span>左侧四排披麻小山逐排变淡（淡→清），一半溶进云雾。</span></div>
+   <div><b>平远 · 水天相接</b><span>右侧大片留白水面、低平沙岸 <code>flat_shore</code>、米点远山渐隐。</span></div>
+  </div>
+  <div class="occl"><b>遮挡：</b><code>Massif</code> 维护一张覆盖图 <code>cov</code>，<b>先画前面的山、后画后面的</b>，后画的只能落在 <code>free = 1 − cov</code> 的空处，前后自然叠压。<b>空气透视：</b>越远墨越淡（远山 ink≈0.1 → 中景 0.34 → 主峰 0.62 → 前景 0.95），再给每层套一张起伏的云雾蒙版 <code>mist_mask</code>，山脚就“化”进纸里。</div>
+ </div>
+</div>
+
+<div class="row2">
+ <div class="panel">
+  <h2><span class="no">3</span>核心墨模型：墨是“吸光”</h2>
+  <div class="formula">画面 = 纸色 × e<sup>−ΣA</sup></div>
+  <p style="font-size:25px">每层记录吸光度 <code style="font-family:Noto Sans CJK SC">A = 墨量 × 颜料向量</code>（松烟墨 <code>INK=[1.00, 0.97, 0.90]</code>，淡处偏冷灰）。按 Beer–Lambert 定律相乘而非覆盖：淡墨叠淡墨自然变深、仍然透明。</p>
+  <div style="display:flex;gap:18px;margin-top:14px;align-items:center"><img class="demo" src="a/stack.png" style="width:52%"><div class="sm" style="margin:0">↖ 用引擎本身画的三团淡墨 <code>wash(dens=0.45)</code>：重叠处两层、三层逐级加深，没有“盖死”。</div></div>
+  <div class="sm"><b class="serif" style="font-size:30px">墨分五色</b>：同一种墨，只改墨量系数 <code>ink / dens</code>：</div>
+  <img class="demo" src="a/tones.png" style="margin-top:12px"><div class="wus">{{WU}}</div><div class="sm" style="font-size:21px;text-align:center;margin-top:6px">上：引擎画的五级墨量　下：画中对应位置</div>
+ </div>
+ <div class="panel">
+  <h2><span class="no">4</span>宣纸纹理</h2>
+  <img class="demo" src="a/paper.png">
+  <div class="sm" style="margin:8px 0 10px;text-align:center">↑ <code>make_paper</code> 原样　↓ 对比度 ×9</div>
+  <img class="demo" src="a/paper_boost.png">
+  <div class="sm"><b>fbm 分形噪声</b>做大小两级云絮（260 / 34 px）；每 520 像素撒一根弯曲纤维（约 1/5 为深色）；再加细颗粒与大块泛黄。纤维图 <code>fiber</code> 还会调制每一笔的吸墨量和墨晕扩散。</div>
+ </div>
+ <div class="panel">
+  <h2><span class="no">5</span>毛笔笔触模型 <code style="font-size:28px">Layer.stroke</code></h2>
+  <img class="demo" src="a/strokes.png">
+  <div class="lbls">
+   <div><i>① 无压力：</i>等宽线，像普通电脑画线（对照组）</div>
+   <div><i>② 提按 taper：</i>起笔、收笔按正弦曲线收细，<code>start_w / end_w</code></div>
+   <div><i>③ 飞白 dry：</i>笔毛条纹纹理 + 越往后越干，露出纸白</div>
+   <div><i>④ 湿边 wet/pool：</i>水多时墨往边缘聚，干后留一圈深痕</div>
+  </div>
+  <div class="sm">路径用 Catmull-Rom 样条 <code>catmull</code> 平滑；每个像素用 KD 树（<code>cKDTree</code>）找到最近的路径点，算出“离中线多远、走到第几成”，据此定粗细、干湿；边缘再加噪声抖动 <code>rough</code>。</div>
+  <div style="display:flex;gap:18px;margin-top:16px;align-items:center"><img class="demo" src="a/stroke_crop.jpg" style="width:40%"><div class="sm" style="margin:0">↖ 画中实例：前景巨石上的斧劈笔触——钝头起笔、拖尖收笔、笔间露白，都是上面这几个参数的组合。</div></div>
+ </div>
+</div>
+
+<div class="sec">
+ <h2><span class="no">6</span>国画技法 → 代码：画中实拍局部</h2>
+ <div class="grid">{{CELLS}}</div>
+</div>
+
+<div class="sec">
+ <h2><span class="no">7</span>迭代：Claude Code 6 轮“渲染 → 看图 → 改代码”</h2>
+ <div class="rounds">{{ROUNDS}}</div>
+</div>
+
+<div class="foot">
+ <div><b>技术栈</b><span class="pill">Python 3</span><span class="pill">NumPy</span><span class="pill">OpenCV</span><span class="pill">SciPy</span><span class="pill">Pillow</span></div>
+ <div><b>编写</b> Claude Code（Opus） · 约 1,600 行 · 单机 CPU 渲染约 45 秒</div>
+ <div style="color:#5b4f45;font-size:23px">源码 inkwash/core.py + shanshui/</div>
+</div>
+</div></body></html>

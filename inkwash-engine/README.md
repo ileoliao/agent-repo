@@ -1,0 +1,163 @@
+# 锦城千年 · 程序化水墨动画
+
+## 本目录（inkwash-engine）
+
+墨存在图层里的是**吸光度**，成图是 `纸色 × exp(−ΣA)`。目录是单层展开，不要再套一层同名文件夹。
+
+| 路径 | 内容 |
+| --- | --- |
+| `inkwash/` | 引擎包：`core.py`（`make_paper`、`Layer.stroke` 经典笔触、`wash`、`finalize`）、`motifs.py`、`text.py`，以及可选笔毛模型 `brush2.py`（`Layer.stroke(..., model='bristle')`，默认仍是经典笔触） |
+| `shanshui/` | 静态山水：分模块作画 + `paint.py`，预览图与信息图 |
+| `brushlab/` | 笔触测试页 `sheet.py`（左旧右新）、`tests.py`、`bench.py`；`r4_preview.jpg` 是改进前的试笔 |
+| `skill/SKILL.md` | 可复用的 **inkwash-creation** 技能（评审清单）。可软链到 Claude 技能目录：`mkdir -p ~/.claude/skills && ln -sfn "$(pwd)/skill" ~/.claude/skills/inkwash-creation` |
+| `assets/` | 旁白、分镜、逐词时间、解说稿、配乐与授权说明 |
+| `INKWASH_NOTES.md` | 从纸到成片的编码笔记（含「笔毛模型」） |
+
+安装与试跑（在本目录下）：
+
+```bash
+pip install -r requirements.txt
+sudo apt install fonts-noto-cjk fonts-noto-cjk-extra fonts-arphic-ukai
+
+python shanshui/paint.py          # 立轴山水 → shanshui/shanshui.png 与 shanshui_preview.jpg
+python brushlab/sheet.py          # 经典 vs 笔毛 试笔页 → brushlab/sheet.png，并打印每笔耗时
+```
+
+`paint.py` 加 `--brush bristle` 时，皴、飞白、松针改走笔毛模型。短片成片流程见下文「快速开始」。
+
+一部约 2 分 10 秒的成都历史解说短片（1920×1080 / 30fps / H.264 yuv420p）。
+**画面中的每一个像素都由代码生成**：没有 AI 生图，没有图库素材，没有位图贴图。
+宣纸、墨韵、山石、人物、熊猫、字幕与印章，全部由 `numpy + opencv + Pillow` 逐笔"画"出来。
+
+旁白、配乐与分镜时间来自 `assets/`（见下文"素材与授权"）。
+
+## 快速开始
+
+```bash
+sudo apt install ffmpeg fonts-noto-cjk          # 需要 ffmpeg 与 Noto Serif CJK 字体
+pip install -r requirements.txt
+
+python3 -m inkwash.render video                  # 构建全部镜头 + 渲染 + 混音，输出 out/chengdu_ink.mp4
+python3 -m inkwash.contact out/chengdu_ink.mp4 out/contact_sheet.jpg   # 联系表
+```
+
+在 4 核虚拟机上：12 个镜头的"作画"构建约 25 秒（3 进程），全片 3903 帧渲染约 15–20 分钟（`WORKERS=4`）。
+
+常用的调试命令：
+
+```bash
+python3 -m inkwash.render build 5 6              # 只重建第 5、6 镜(强制)
+python3 -m inkwash.render still 45.0 58.5        # 渲染指定时刻的单帧到 out/stills/
+python3 -m inkwash.review out/r.png 11 16 43 47  # 多个时刻拼成审阅网格图
+```
+
+构建缓存默认写到 `/tmp/inkcache`（约 4–5 GB，可用环境变量 `INK_CACHE` 改路径）。
+
+## 目录结构
+
+| 文件 | 作用 |
+| --- | --- |
+| `inkwash/core.py` | 宣纸、噪声、画布/图层、笔触 `stroke`、点 `dot`、渲染 `wash` 等底层"笔墨引擎" |
+| `inkwash/motifs.py` | 题材库：山（勾/皴/染/点）、河、柳、竹、松柏、茅屋、殿阁、城墙、人物、舟、牛…… |
+| `inkwash/scenes_a.py` | 第 1–6 镜：序·锦城 / 古蜀 / 开明迁都 / 张仪筑城 / 都江堰 / 蜀锦 |
+| `inkwash/scenes_b.py` | 第 7–12 镜：武侯祠 / 杜甫草堂 / 交子 / 湖广填四川 / 今日成都 / 尾声长卷 |
+| `inkwash/scene_base.py` | 镜头基类：画布尺寸、镜头关键帧、雾带、印章、动态层接口 |
+| `inkwash/text.py` | 字幕切分与对齐、标题栏、篆刻风格印章 |
+| `inkwash/render.py` | 构建缓存、逐帧合成、转场、做旧、并行编码与封装 |
+| `inkwash/audio.py` | 旁白 + 古筝配乐：侧链闪避、两遍 loudnorm 到 −16 LUFS |
+| `inkwash/review.py` / `contact.py` | 自检网格图 / 成片联系表 |
+
+## 原理
+
+### 1. 宣纸
+
+`make_paper` 先铺米黄底色，再叠加多尺度值噪声形成云絮状的帘纹与厚薄不匀，然后撒上数万根随机弯曲的短纤维（亮暗各半）。边缘做出轻微的旧化泛黄。
+纤维图还会单独保存，后面所有墨迹都会被它"吃"进去：纤维处墨色更深，留白处更透。
+
+### 2. 墨的物理：吸光度叠加
+
+每个图层并不存颜色，而是存 **每通道吸光度 A**（Beer–Lambert），最终颜色为
+
+```
+颜色 = 宣纸 × exp(−ΣA)
+```
+
+所以淡墨叠淡墨会自然加深，赭石叠花青会得到灰绿，和真实的透明水色一样只能"减色"、不会盖住下层。
+颜料（焦墨、暖墨、花青、赭石、朱砂、藤黄、石绿……）都定义成三通道吸光向量。
+
+### 3. 笔触 `Layer.stroke`
+
+- 路径用 Catmull-Rom 样条重采样，用 KD 树求每个像素到中心线的最近点，得到沿笔方向的弧长 `s` 与横向偏移 `u`。
+- 笔宽沿 `s` 变化，带起笔、收笔与提按，并加入低频抖动。
+- 边缘被全局噪声场扰动，形成毛涩边。
+- 沿笔方向拉长的条纹噪声模拟笔毛与飞白。干笔时条纹被阈值截断，露出纸白。
+- 笔画两侧积墨形成"水口"，再乘上纸纤维。
+- **作画时间**：每个像素记录被画到的时刻 `T = t0 + dur·ease(s/L)`。渲染第 t 秒时，只显示 `T < t` 的部分，并用 `smoothstep` 淡入。笔触因此会在画面上真实地"一笔一笔写出来"。
+
+### 4. 渲染 `Layer.wash`（晕染）
+
+软形状场先经过噪声扭曲，再做"有机阈值"，然后叠加三种效果：
+
+- 边缘积墨（`m − blur(m)`），即水渍边；
+- 颜料颗粒沉淀；
+- 从种子点按距离扩散的时间场，即墨在纸上慢慢洇开。
+
+### 5. 洇墨晕边
+
+每个图层最后执行 `finalize`：把湿墨模糊后减去墨芯，得到一圈淡淡的晕。这圈晕再乘以纤维，时间比墨芯稍晚，表现墨落纸后向外渗的过程。
+
+### 6. 题材（皴法、点苔等）
+
+- **山**：勾勒山脊，自脊向下渐淡地染，顺坡用成束的披麻皴，山头点苔，山脚留出雾气。
+- **其他**：殿阁屋檐、城墙夯土层、竹节竹叶、古柏、人物，也都由若干参数化的笔触组合而成。
+- **各镜要点**：
+  - 都江堰：确定性地生成鱼嘴分水与树枝状渠网，用 Voronoi 划分稻田，按距鱼嘴的远近依次染色。
+  - 蜀锦：菱格、团窠、条纹三种纹样经 fbm 褶皱扭曲后，再加墨色衣纹。
+  - 金沙太阳神鸟：12 道旋转光芒与 4 只神鸟全由笔触构成。
+
+### 7. 镜头与动态
+
+- **构建与缓存**：每镜在更大的画布（例如 3600×2000、长卷 5200 宽）上一次性"构建"，把每层的吸光度和作画时间存成 float32 `.npy` 缓存，带 mipmap。
+- **逐帧渲染**：按镜头关键帧（PCHIP 平滑插值的平移与推拉）做仿射采样，不同图层有不同的视差。
+- **实时动态**：都江堰渠中流动的墨线、春雨与涟漪、香烟与茶汽、飘落的铜钱、迁徙的人群与逆水木船，都在屏幕空间每帧实时绘制。
+- **雾与转场**：漂移的雾带向纸色混合。镜头之间用噪声与径向场驱动的"墨洇"转场：一道深色墨线推进，前后两镜交替。
+- **收尾**：尾声镜头最后拉远成带绫边与卷轴的整幅长卷，再淡回素纸，落"成都"大印。
+
+### 8. 字幕、标题与印章
+
+- **字幕**：`word_boundaries.json` 里是 TTS 的逐词时间（数字读作中文）。用 `difflib` 把它与显示文本（阿拉伯数字）逐字对齐，得到每个字的时刻。随后按标点切句，合并过短的分句与引号内的句子，每行不超过 16 字，底部居中。字体为 Noto Serif CJK SC，带纸色柔光描边以保证可读。
+- **标题栏**：每镜左上角显示标题与年代，并配一方序号小印（壹…拾贰）。
+- **钤印**：每镜都有一方朱文或白文印。印面有随机的崩边与印泥不匀，并带"按下—提起"的钤印动画。
+
+### 9. 声音
+
+`audio.py` 用 ffmpeg 处理声音：
+
+1. 旁白作为侧链，对古筝配乐做压缩闪避（说话时音乐自动让开）。
+2. 配乐在片尾淡出。
+3. 做两遍 `loudnorm`，整体响度归一到 **−16 LUFS**，真峰值 −1.5 dBTP。
+
+### 10. 编码
+
+3903 帧（130.1 秒）切成 150 帧一段，由多进程并行渲染。每段通过管道把 rgb24 原始帧送给 `ffmpeg libx264`（crf 16，yuv420p），最后拼接各段，并与 AAC 音轨封装。
+
+母版约 130 MB。需要更小的发布版时，可以两遍压到 5 Mbps（约 85 MB）：
+
+```bash
+cd out
+ffmpeg -i chengdu_ink.mp4 -c:v libx264 -preset slow -b:v 5000k -pass 1 -an -f null /dev/null
+ffmpeg -i chengdu_ink.mp4 -c:v libx264 -preset slow -b:v 5000k -maxrate 9000k -bufsize 12000k -pass 2 \
+       -pix_fmt yuv420p -c:a copy -movflags +faststart chengdu_ink_release.mp4
+```
+
+## 素材与授权
+
+`assets/` 下的文件来自任务提供的素材包：
+
+- `narration.mp3`：普通话旁白；
+- `scenes.json`：12 镜分镜、时间码与标题；
+- `word_boundaries.json`：逐词时间；
+- `脚本.md`：解说稿；
+- `bgm.mp3`：CC0 古筝配乐，见 `assets/MUSIC_LICENSE.txt`。
+
+所有画面均由本仓库代码程序化生成。
