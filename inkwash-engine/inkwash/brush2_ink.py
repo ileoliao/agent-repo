@@ -41,13 +41,25 @@ def splat(h, w, xs, ys, weights):
 _K = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
 
+def _smoothstep(e0, e1, x):
+    t = np.clip((x - e0) / (e1 - e0 + 1e-9), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
 def capillary(wm, fiber, gran, iters, reach=1.0):
-    """毛细渗化：湿墨沿纸纤维向外爬。每步 3x3 膨胀，再乘以由纤维图决定的传导率(纤维亮处导得远)。
-    返回渗出场 (>=wm)。"""
+    """毛细渗化：湿墨只沿偏亮的纸纤维往外爬成丝，而不是铺一圈均匀光晕。
+
+    纤维图的底约 0.3、纤维脊更高。传导率在脊上才打开，所以膨胀的壳只会留在纤维上，
+    前沿收成羽状毛边。返回渗出场 (>= wm)。"""
     if iters <= 0:
         return wm
-    cond = np.clip(reach * (0.78 + 1.1 * (fiber - 0.45) + 0.25 * (gran - 0.5)), 0.0, 0.95).astype(np.float32)
-    m = wm.copy()
+    ridge = _smoothstep(0.39, 0.52, fiber)
+    grain_ok = np.clip(0.55 + 0.9 * (gran - 0.42), 0.2, 1.25)
+    cond = np.clip(reach * (0.04 + 0.96 * ridge) * grain_ok, 0.0, 0.93).astype(np.float32)
+    m = np.asarray(wm, np.float32).copy()
+    keep = np.float32(0.92)
     for _ in range(int(iters)):
-        np.maximum(m, cv2.dilate(m, _K) * cond, out=m)
+        shell = np.maximum(cv2.dilate(m, _K) - m, 0.0)
+        m += shell * cond * keep
+        keep = np.float32(max(0.55, float(keep) * 0.94))
     return m
