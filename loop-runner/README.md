@@ -153,6 +153,8 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
    - 没有在角色里指定模型时，用 Copilot 列表里的第一个，顺序不固定。建议先设置 `loopRunner.modelFamily`（`List Available Models` 能看到可用的 family）
 6. 可选：配置 `loopRunner.notifyCommand`，用 `Send a Test Notification` 测试
 
+**日常使用**：点状态栏的 `Loop` 会弹出菜单，里面有启停团队、打开收件箱、打开最新结果（`Open Latest Result`，即 `.loop/outbox/` 下最近修改的文件）、重新加载、派任务、查看状态，以及设置凭证、列出模型等不常用的操作。这些命令在命令面板里被隐藏，但仍可通过菜单使用。
+
 ## 测试
 
 `npm test`：mock 的 vscode 加脚本化的假模型，跑真实的 runner。覆盖：

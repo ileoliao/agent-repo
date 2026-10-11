@@ -48,6 +48,7 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `tools.ts` | Generic tool schemas and `runTool` | types only (elided) |
 | `runner.ts` | The agent loop for one work item: run, park, resume | yes |
 | `inbox.ts` | Sidebar tree view and gate rendering | yes |
+| `outbox.ts` | `latestOutput`: newest file under `.loop/outbox/` (Open Latest Result). Pure, no `vscode` | no |
 | `extension.ts` | Glue: `TeamService` (tick, schedule, single worker), commands, notifications, secrets | yes |
 
 **Rule:** keep `vscode` out of every module marked "no". The test suite loads those modules without VS Code; `runner.ts` is tested through a mock `vscode` module.

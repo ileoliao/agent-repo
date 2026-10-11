@@ -9,6 +9,7 @@ import { checkWake } from './wake';
 import { runItem } from './runner';
 import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
 import { InboxView, showGate } from './inbox';
+import { latestOutput } from './outbox';
 import { createSimModel, simEnabled, simNow, simPauseMs, simTrace } from './sim-model';
 import { runSim } from './sim-drive';
 
@@ -431,7 +432,7 @@ class TeamService {
 export function activate(ctx: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Loop Runner');
   const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  bar.command = 'loopRunner.focusInbox';
+  bar.command = 'loopRunner.menu';
   const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
   const refresh = () => {
     inbox.refresh();
@@ -473,6 +474,30 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('loopRunner.status', () => { out.show(true); out.appendLine(svc.status()); }),
     vscode.commands.registerCommand('loopRunner.focusInbox', () => vscode.commands.executeCommand('loopRunner.inbox.focus')),
+    vscode.commands.registerCommand('loopRunner.openLatestResult', async () => {
+      const file = latestOutput(root());
+      if (!file) { vscode.window.showInformationMessage('Loop Runner: no agent output yet.'); return; }
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file), { preview: false });
+    }),
+    // One entry point for the status bar: the commands people reach for, without hunting in the palette.
+    vscode.commands.registerCommand('loopRunner.menu', async () => {
+      const run = (command: string) => () => vscode.commands.executeCommand(command);
+      const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
+        svc.running
+          ? { label: '$(debug-stop) Stop Team', run: run('loopRunner.stopTeam') }
+          : { label: '$(play) Start Team', run: run('loopRunner.startTeam') },
+        { label: '$(inbox) Open Inbox', description: inbox.pendingCount() ? `${inbox.pendingCount()} need you` : undefined, run: run('loopRunner.focusInbox') },
+        { label: '$(file-text) Open Latest Result', run: run('loopRunner.openLatestResult') },
+        { label: '$(sync) Reload & Validate Team', run: run('loopRunner.reloadTeam') },
+        { label: '$(send) Give an Agent a Task', run: run('loopRunner.runAgent') },
+        { label: '$(info) Show Team Status', run: run('loopRunner.status') },
+        { label: '$(key) Set Secret', run: run('loopRunner.setSecret') },
+        { label: '$(list-unordered) List Available Models', run: run('loopRunner.listModels') },
+        { label: '$(bell) Send a Test Notification', run: run('loopRunner.testNotify') }
+      ];
+      const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Loop Runner' });
+      await pick?.run();
+    }),
     vscode.commands.registerCommand('loopRunner.runAgent', async () => {
       if (!svc.running) { vscode.window.showWarningMessage('Start the team first (Loop Runner: Start Team).'); return; }
       const pick = await vscode.window.showQuickPick(

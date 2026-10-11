@@ -570,6 +570,23 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     fs.rmSync(S, { recursive: true, force: true });
   }
 
+  console.log('latest result: newest file under .loop/outbox');
+  {
+    const { latestOutput } = require(`${OUT}/outbox.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-outbox-'));
+    ok(latestOutput(R) === undefined, 'no outbox means no latest result');
+    const older = path.join(R, '.loop', 'outbox', 'techlead', 'old.md');
+    const newer = path.join(R, '.loop', 'outbox', 'sentinel', 'report.md');
+    fs.mkdirSync(path.dirname(older), { recursive: true });
+    fs.mkdirSync(path.dirname(newer), { recursive: true });
+    fs.writeFileSync(older, 'old');
+    fs.writeFileSync(newer, 'new');
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(older, past, past);
+    ok(latestOutput(R) === newer, 'picks the newest file across agent folders');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });
