@@ -1,0 +1,168 @@
+# Loop Runner 1.0
+
+让 VS Code 自定义 agent 在无人值守下运行的最小运行时，使用 Copilot 模型。
+
+**分工**：能力在 Skill 里，角色就是 VS Code 原生的 `.github/agents/*.agent.md`。Loop Runner 只补 VS Code 原生缺的那一层：
+
+- 定时触发，并在启动模型前做零 token 的唤醒检查
+- 角色之间转交
+- 提问和审批闸门，处理完从原地续跑
+- 策略、凭证、审计
+
+**范围已冻结。** 交互式协作（在 Chat 里跟某个角色对话）直接用 VS Code 原生功能，不在这里重做。
+
+## 同一个角色，两种用法
+
+```markdown
+---
+name: sentinel                       # ← 以下为 VS Code 原生字段
+description: 一句话职责（Chat 里显示，也是队友转交时看到的说明）
+model: ['Claude Sonnet 4.5', 'GPT-5.2']
+handoffs:
+  - label: Hand to techlead
+    agent: techlead
+    prompt: Investigate the anomaly above.
+loop:                                # ← Loop Runner 专用，VS Code 不使用
+  skills: [harbor-anomaly-detect]
+  schedule: "*/15 9-21 * * 1-5"      # 本机时区的 cron
+  wakeIf: python3 .github/skills/harbor-anomaly-detect/scripts/detect.py --exit-code
+  task: 唤醒后要做的事
+  policy: .loop/policies/sentinel.json   # 可选
+  model: claude-sonnet-4.5           # 可选：无人值守时强制指定的模型 family
+  maxSteps: 15
+---
+角色说明（两种模式共用）
+```
+
+- **白天**：在 Copilot Chat 的 agent 下拉框里选 `sentinel`，跟它对话，按钮式转交给 techlead
+- **无人值守**：Loop Runner 按 `loop:` 块来调度
+- 只有带 `loop:` 块的 agent 才会加入团队，纯交互的 agent 不受影响
+- 转交对象来自原生的 `handoffs[].agent`
+- 模型选择顺序：`loop.model`（按 family 匹配）→ 原生 `model` 列表（按显示名匹配）→ 设置 `loopRunner.modelFamily` → 第一个可用模型
+- 打开文件时 VS Code 可能会提示 `loop` 字段不受支持，可以忽略
+
+## wakeIf：没事时不花 token
+
+定时触发时，先按策略运行 `loop.wakeIf`，运行时只看退出码：
+
+| 退出码 | 含义 | 处理 |
+|---|---|---|
+| 0 | 有事要处理 | 唤醒 agent，脚本的 stdout 作为上下文传入，agent 不必再检测一遍 |
+| 1 | 没事 | 不调用模型 |
+| 其他 / 超时 | 检测本身坏了 | 提醒你一次，直到恢复；不唤醒模型 |
+
+检测逻辑完全在你的 skill 脚本里，只要给它加一个 `--exit-code` 模式即可。
+
+## 和你协作：提问、审批、续跑
+
+- **`ask_human`**：agent 拿不准时提问，附上它的判断和选项
+- **`request_approval`**：需要签字的动作，给出确切命令和可编辑的草稿
+
+两者都会让工作项暂停，并把对话存成 checkpoint。你在资源管理器的 **Loop Inbox** 里处理后，它从原地续跑，之前的上下文都还在：
+
+- 答复后：拿到你的答复继续
+- 批准后：执行的是你改过的草稿，并拿到执行结果继续
+- 拒绝后：拿到你的反馈修改，再重新申请
+
+其他规则：
+
+- 每轮最多发起一个闸门
+- deny 规则在申请时和执行时各检查一次，人工批准也越不过 deny 列表
+
+**通知**：有新问题或审批、工作项 blocked 或出错、`wakeIf` 失败时，VS Code 会弹窗。要推到 VS Code 外，在用户设置里配置 `loopRunner.notifyCommand`，指向你的通知 skill 脚本；事件放在环境变量 `LOOP_EVENT`（JSON）里。
+
+## 运行时给 agent 的通用工具
+
+`read_file`、`list_dir`、`write_file`、`edit_file`、`run_command`、`ask_human`、`request_approval`、`handoff`、`finish`
+
+- 具体能做什么由 skill 决定；分配给某角色的 skill 的 `scripts/` 对它自动放行
+- 原生的 `tools` 字段只作用于 Chat 模式；无人值守时的权限由 policy 决定
+
+## 目录
+
+```
+.github/agents/*.agent.md            角色（VS Code 原生格式 + loop: 块）
+.github/skills/<skill>/              能力（也识别 .agents/skills、.claude/skills、.loop/skills）
+.loop/policy.json                    默认策略；.loop/policies/*.json 按角色覆盖
+.loop/outbox/                        agent 写草稿的地方，你可以编辑
+.loop/queue/<agent>|_waiting|_done   工作项
+.loop/gates/                         收件箱（问题、审批）
+.loop/checkpoints/                   暂停时的对话快照
+.loop/runs/<date>/<chainId>.jsonl    审计，一条转交链一个文件；wake-<date>.jsonl 记录每次唤醒检查
+```
+
+## 设计说明
+
+**三条原则**
+
+- 运行时不懂业务
+- 状态全部放在 `.loop/` 的文件里
+- 模型只能通过工具接触外界，每个工具都先过策略
+
+**模块与职责**
+
+| 模块 | 职责 | 依赖 vscode |
+|---|---|---|
+| `frontmatter.ts` `team.ts` | 解析角色和 skill，校验团队，选择模型 | 否 |
+| `cron.ts` `wake.ts` | 定时匹配，按 wakeIf 退出码决定是否唤醒 | 否 |
+| `queue.ts` | 工作项、闸门、checkpoint、审计，全部存为文件 | 否 |
+| `policy.ts` `exec.ts` | 命令和写入的准许或拒绝；无交互执行、超时、凭证注入与脱敏 | 否 |
+| `gates.ts` | 处理答复、批准执行、拒绝；通知 | 否 |
+| `tools.ts` | 通用工具的定义和执行 | 仅类型 |
+| `runner.ts` | 单个工作项的 agent 循环：运行、暂停、续跑 | 是 |
+| `inbox.ts` `extension.ts` | 收件箱界面；调度 tick、单 worker、命令、通知 | 是 |
+
+**一个工作项的一生**
+
+1. 定时触发后先跑 `wakeIf`，有事才入队
+2. 单 worker 按先来先处理取出工作项
+3. `runner` 循环：发请求、执行工具调用、把结果喂回，直到出现以下情况之一：
+   - `handoff`：同一 `chainId` 进入队友的队列
+   - 闸门：存 checkpoint，工作项进 `_waiting`
+   - `finish`：结束
+4. 你在收件箱处理后，结果写入闸门，工作项被唤醒，从断点续跑
+
+**不能破坏的不变量**（完整的 11 条见 `AGENTS.md`）
+
+- 拒绝是一个工具结果，不是异常或弹窗
+- 循环里永远不阻塞等人
+- deny 规则优先于一切，人工批准也越不过
+- 凭证永远不进提示词
+- 对话以纯数据保存，续跑时逐字节重放
+- 提示词静态部分在前，保护缓存
+
+## 给其他 AI 用
+
+| 文件 | 给谁 | 作用 |
+|---|---|---|
+| `AGENTS.md` | 维护本仓库代码的 AI | 架构、冻结范围、数据契约、不变量、改动清单。Copilot 等工具会自动读取 |
+| `.github/copilot-instructions.md` | 本仓库里的 Copilot | 指向 `AGENTS.md` 和 authoring skill |
+| `.github/skills/loop-team-authoring/` | 为团队写角色和 Skill 的 AI | 角色文件模板、skill 脚本约定、wakeIf 契约、策略写法、交付前检查清单。**复制到你的工作仓库**，Copilot 帮你新建角色或 Skill 时就会自动按约定来写 |
+
+## 上手
+
+1. **先跑冒烟测试**：按 `examples/smoke/README.md` 操作，10 分钟走通安装、模型、定时、提问、审批和续跑，不碰任何真实系统
+2. 把示例的 `.github/agents/` 和 `.loop/policies/` 复制到工作区，按实际 skill 名修改
+3. 运行 `Loop Runner: Reload & Validate Team`，会报告缺失的 skill、无法无人值守的转交目标、写错的 cron
+4. 运行 `Loop Runner: Set Secret` 配置 `HARBOR_PAT`、`JIRA_TOKEN` 等凭证
+5. 运行 `Loop Runner: Start Team`。首次会弹出 Copilot 授权，必须由人触发
+6. 可选：配置 `loopRunner.notifyCommand`，用 `Send a Test Notification` 测试
+
+## 测试
+
+`npm test`：mock 的 vscode 加脚本化的假模型，跑真实的 runner，共 73 项检查。覆盖：
+
+- 原生格式解析、模型选择
+- `wakeIf` 的四种情况
+- 转交、被拒后继续
+- 三条续跑路径：答复、拒绝附反馈、批准执行
+- 通知、凭证脱敏、超时、stdin 关闭、审计
+- 冒烟测试工作区按角色说明完整跑一遍
+
+## 限制
+
+- 只在 VS Code 打开时运行，是现有告警的补充
+- 单 worker，按先来先处理串行执行
+- 闸门等待超过几分钟后，提示缓存会失效，续跑时整段对话按全价重读一次
+- 正则策略是启发式的，不是沙箱
+- 发给模型的数据需要先确认合规，脱敏放在 skill 脚本里做

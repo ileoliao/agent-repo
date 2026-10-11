@@ -1,0 +1,20 @@
+{
+  "allowCommands": [
+    "^git (status|diff|log|show|branch|add|commit)\\b",
+    "^(ls|cat|head|tail|wc|grep|rg|find)\\b",
+    "^(npm|pnpm|yarn) (test|run (build|lint|test))\\b",
+    "^(go (build|test|vet)|dotnet (build|test))\\b"
+  ],
+  "denyCommands": [
+    "\\brm\\s+-rf?\\b",
+    "\\bgit (push|reset --hard|clean)\\b",
+    "\\b(curl|wget|ssh|scp|nc)\\b",
+    "\\bsudo\\b",
+    ">\\s*/"
+  ],
+  "writablePaths": ["src/**", "test/**", "tests/**", "docs/**"],
+  "protectedPaths": [".loop/**", ".git/**", ".github/**", ".vscode/**", "**/*.env", "**/secrets/**"],
+  "onUnmatched": "deny",
+  "commandTimeoutSec": 120,
+  "maxOutputBytes": 16000
+}

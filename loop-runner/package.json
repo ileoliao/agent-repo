@@ -1,0 +1,192 @@
+{
+  "name": "loop-runner",
+  "displayName": "Loop Runner",
+  "description": "Unattended runtime for VS Code custom agents on Copilot models: schedules with zero-token wake checks, handoffs, ask/approve gates that resume, policy and audit.",
+  "version": "1.0.0",
+  "publisher": "local",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:.github/agents"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "loopRunner.startTeam",
+        "title": "Start Team",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.stopTeam",
+        "title": "Stop Team",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.reloadTeam",
+        "title": "Reload & Validate Team",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.status",
+        "title": "Show Team Status",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.runAgent",
+        "title": "Give an Agent a Task",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.setSecret",
+        "title": "Set Secret (env var for skill scripts)",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.testNotify",
+        "title": "Send a Test Notification",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.listModels",
+        "title": "List Available Models",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.focusInbox",
+        "title": "Open Inbox",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.openGate",
+        "title": "Open",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.answer",
+        "title": "Answer",
+        "category": "Loop Runner",
+        "icon": "$(reply)"
+      },
+      {
+        "command": "loopRunner.approve",
+        "title": "Approve",
+        "category": "Loop Runner",
+        "icon": "$(check)"
+      },
+      {
+        "command": "loopRunner.reject",
+        "title": "Reject",
+        "category": "Loop Runner",
+        "icon": "$(close)"
+      },
+      {
+        "command": "loopRunner.refreshInbox",
+        "title": "Refresh",
+        "category": "Loop Runner",
+        "icon": "$(refresh)"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "loopRunner.inbox",
+          "name": "Loop Inbox"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "loopRunner.refreshInbox",
+          "when": "view == loopRunner.inbox",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "loopRunner.answer",
+          "when": "view == loopRunner.inbox && viewItem == question-pending",
+          "group": "inline"
+        },
+        {
+          "command": "loopRunner.approve",
+          "when": "view == loopRunner.inbox && viewItem == approval-pending",
+          "group": "inline"
+        },
+        {
+          "command": "loopRunner.reject",
+          "when": "view == loopRunner.inbox && viewItem == approval-pending",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "loopRunner.openGate",
+          "when": "false"
+        },
+        {
+          "command": "loopRunner.answer",
+          "when": "false"
+        },
+        {
+          "command": "loopRunner.approve",
+          "when": "false"
+        },
+        {
+          "command": "loopRunner.reject",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Loop Runner",
+      "properties": {
+        "loopRunner.modelFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Default Copilot model family for agents without a 'model' field. Empty = first available."
+        },
+        "loopRunner.maxSteps": {
+          "type": "number",
+          "default": 40,
+          "description": "Default max model turns per work item."
+        },
+        "loopRunner.maxHops": {
+          "type": "number",
+          "default": 5,
+          "description": "Max handoffs in one chain."
+        },
+        "loopRunner.policyFile": {
+          "type": "string",
+          "default": ".loop/policy.json",
+          "description": "Default policy for agents without their own 'policy' field."
+        },
+        "loopRunner.notifyCommand": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Command run whenever the team needs you (question, approval, blocked, error). Receives the event as JSON in LOOP_EVENT, plus LOOP_EVENT_KIND and LOOP_EVENT_TITLE; secrets are injected. Typically a notify skill script, e.g. \"python3 .github/skills/notify-wecom/scripts/send.py\". User settings only, so a repository cannot set it."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-dependencies --allow-missing-repository",
+    "test": "tsc -p ./ && node test/e2e.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.95.0",
+    "typescript": "^5.5.0"
+  }
+}

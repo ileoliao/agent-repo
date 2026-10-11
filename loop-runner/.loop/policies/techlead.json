@@ -1,0 +1,24 @@
+{
+  "allowCommands": [
+    "^git (status|diff|log|show|branch|add|commit|checkout -b|switch -c|fetch|clone)\\b",
+    "^git -C repos/[\\w.-]+ (status|diff|log|show|branch|add|commit|checkout -b|switch -c|fetch)\\b",
+    "^git (-C repos/[\\w.-]+ )?push (-u )?origin agent/[\\w./-]+$",
+    "^(ls|cat|head|tail|wc|grep|rg|find|jq)\\b",
+    "^(npm|pnpm|yarn) (ci|test|run (build|lint|test))\\b",
+    "^(go (build|test|vet)|dotnet (build|test)|mvn -q (test|verify))\\b",
+    "^cd repos/[\\w.-]+$"
+  ],
+  "denyCommands": [
+    "\\brm\\s+-[a-z]*r",
+    "\\bgit push\\b(?!.*\\borigin agent/)",
+    "\\bgit push\\b.*(--force|-f\\b)",
+    "\\bgit (reset --hard|clean)\\b",
+    "\\b(curl|wget|ssh|scp|nc)\\b",
+    "\\bsudo\\b",
+    ">\\s*/"
+  ],
+  "writablePaths": ["repos/**"],
+  "protectedPaths": [".loop/**", ".git/**", "**/.github/**", "**/.vscode/**", "**/*.env", "**/secrets/**"],
+  "commandTimeoutSec": 600,
+  "maxOutputBytes": 16000
+}
