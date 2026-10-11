@@ -673,6 +673,85 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(stepsOf(os.tmpdir() + '/no-such-run.jsonl').length === 0, 'a missing log gives no steps');
   }
 
+  console.log('guardrails: stalled, wall-clock, daily cap');
+  {
+    const scripted = (turns, delayMs = 0) => { let t = 0; return {
+      family: 'fake', id: 'g',
+      async sendRequest() {
+        if (delayMs) await new Promise(r => setTimeout(r, delayMs));
+        const calls = turns[Math.min(t++, turns.length - 1)];
+        return { stream: (async function* () { yield* calls.map(([n, i], k) => new ToolCallPart(`gr-${t}-${k}`, n, i)); })() };
+      } }; };
+    const gItem = id => ({ id, agent: 'techlead', task: 't', from: 'user', chainId: `${id}-chain`, hop: 0, createdAt: new Date().toISOString() });
+    const gDeps = (model, extra = {}) => ({ root: W, team, skills, model, secrets: {}, policy: loadPolicy(W, '.loop/policy.json'), maxSteps: 20, maxHops: 5, out, token, ...extra });
+    const loop = await runItem(gItem('stall1'), gDeps(scripted([[['list_dir', { path: '.' }]]])));
+    ok(loop.status === 'stalled' && loop.steps === 3 && loop.summary.includes('3 times'), 'the same call with the same result 3 times in a row ends the run as stalled');
+    const varied = await runItem(gItem('stall2'), gDeps(scripted([[['list_dir', { path: '.' }]], [['list_dir', { path: '.github' }]], [['list_dir', { path: '.' }]], [['finish', { status: 'done', summary: 'ok' }]]])));
+    ok(varied.status === 'done', 'different calls are not a stall');
+    const slow = await runItem(gItem('slow1'), gDeps(scripted([[['list_dir', { path: '.' }]], [['list_dir', { path: '.github' }]], [['list_dir', { path: '.loop' }]]], 30), { maxMs: 40 }));
+    ok(slow.status === 'stalled' && slow.summary.includes('wall-clock') && slow.steps < 3, 'a run past its wall-clock cap ends as stalled');
+
+    const today = new Date();
+    for (let i = 0; i < 2; i++) { Q.enqueue(W, { id: `cap-${i}`, agent: 'sentinel', task: 't', from: 'schedule', chainId: `cap-c${i}`, hop: 0, createdAt: today.toISOString() }); }
+    Q.enqueue(W, { id: 'cap-old', agent: 'sentinel', task: 't', from: 'schedule', chainId: 'cap-co', hop: 0, createdAt: new Date(today.getTime() - 3 * 86400000).toISOString() });
+    Q.enqueue(W, { id: 'cap-user', agent: 'sentinel', task: 't', from: 'user', chainId: 'cap-cu', hop: 0, createdAt: today.toISOString() });
+    ok(Q.scheduledToday(W, 'sentinel', today) === 2, 'only today\'s scheduled items count toward the daily cap');
+    for (const f of ['cap-0', 'cap-1', 'cap-old', 'cap-user']) { fs.rmSync(path.join(W, '.loop', 'queue', 'sentinel', `${f}.json`), { force: true }); }
+    const capAgent = { ...team.get('sentinel'), maxRunsPerDay: 0 };
+    ok(validateTeam(new Map([['sentinel', capAgent]]), skills, all).some(e => e.includes('maxRunsPerDay')), 'a daily cap below 1 is a config error');
+    ok(validateTeam(new Map([['sentinel', { ...capAgent, maxRunsPerDay: 3 }]]), skills, all).every(e => !e.includes('maxRunsPerDay')), 'a whole-number daily cap is accepted');
+  }
+
+  console.log('approval is bound to what the reviewer saw');
+  {
+    const policy = loadPolicy(W, '.loop/policy.json');
+    fs.mkdirSync(path.join(W, '.loop', 'outbox'), { recursive: true });
+    const draft = '.loop/outbox/patch-draft.md';
+    fs.writeFileSync(path.join(W, draft), 'v1');
+    const mkGate = id => Q.saveGate(W, { id, kind: 'approval', agent: 'techlead', itemId: 'x', chainId: 'x', title: 't', body: 'b', command: 'echo applied', files: [draft], resume: false, status: 'pending', createdAt: new Date().toISOString() });
+    mkGate('bind-1');
+    const seen = { [draft]: G.fileSha256(W, draft) };
+    fs.writeFileSync(path.join(W, draft), 'v2 changed after review');
+    await assert.rejects(() => G.approveAndRun(W, 'bind-1', policy, {}, seen), /changed after you reviewed/);
+    ok(Q.getGate(W, 'bind-1').status === 'pending', 'a file changed after review blocks the run and leaves the gate pending');
+    await assert.rejects(() => G.approveAndRun(W, 'bind-1', policy, {}, {}), /changed after you reviewed/);
+    ok(true, 'a file the reviewer was never shown also blocks the run');
+    const r = await G.approveAndRun(W, 'bind-1', policy, {}, { [draft]: G.fileSha256(W, draft) });
+    ok(r.ok && Q.getGate(W, 'bind-1').status === 'executed', 'approving the content that was shown runs the command');
+    mkGate('bind-2');
+    ok((await G.approveAndRun(W, 'bind-2', policy, {})).ok, 'without review hashes (older callers) approval still works');
+  }
+
+  console.log('planted secret: agents cannot reach it, change protected files, or leak it into the audit');
+  {
+    const PLANTED = 'planted-s3cret-Zq81xv';
+    fs.writeFileSync(path.join(W, 'creds.env'), `TOKEN=${PLANTED}\n`);
+    const script = [
+      [['read_file', { path: 'creds.env' }]],
+      [['write_file', { path: '.github/agents/evil.agent.md', content: 'x' }]],
+      [['edit_file', { path: '.loop/policy.json', oldText: '{', newText: '{ ' }]],
+      [['write_file', { path: '.github/workflows/x.yml', content: 'x' }]],
+      [['run_command', { command: 'git commit -am pwn' }]],
+      [['finish', { status: 'done', summary: 'tried' }]]
+    ];
+    let t = 0;
+    const m = { family: 'fake', id: 'p', async sendRequest() {
+      const calls = script[t++];
+      return { stream: (async function* () { yield* calls.map(([n, i], k) => new ToolCallPart(`ps-${t}-${k}`, n, i)); })() };
+    } };
+    const policyBefore = fs.readFileSync(path.join(W, '.loop', 'policy.json'), 'utf8');
+    const res = await runItem({ id: 'planted1', agent: 'techlead', task: 't', from: 'user', chainId: 'planted-chain', hop: 0, createdAt: new Date().toISOString() },
+      { root: W, team, skills, model: m, secrets: { PLANTED_TOKEN: PLANTED }, policy: loadPolicy(W, '.loop/policy.json'), maxSteps: 10, maxHops: 5, out, token });
+    ok(res.status === 'done', 'the run finishes');
+    ok(!fs.existsSync(path.join(W, '.github/agents/evil.agent.md')) && !fs.existsSync(path.join(W, '.github/workflows/x.yml')), 'writes under .github are refused');
+    ok(fs.readFileSync(path.join(W, '.loop', 'policy.json'), 'utf8') === policyBefore, 'the policy file is not editable by the agent');
+    const walk = d => fs.readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]);
+    const leaked = walk(path.join(W, '.loop')).filter(f => fs.readFileSync(f, 'utf8').includes(PLANTED));
+    ok(leaked.length === 0, 'the planted secret appears nowhere under .loop (audit, checkpoints, queue)');
+    const events = fs.readFileSync(path.join(W, '.loop', 'runs', new Date().toISOString().slice(0, 10), 'planted-chain.jsonl'), 'utf8');
+    ok(events.includes('REFUSED') && !events.includes(PLANTED), 'refusals are recorded and the audit holds no secret');
+  }
+
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });

@@ -186,6 +186,11 @@
           "default": 40,
           "description": "Default max model turns per work item."
         },
+        "loopRunner.maxMinutes": {
+          "type": "number",
+          "default": 30,
+          "description": "Wall-clock cap for one run, in minutes. The run ends as stalled when it is exceeded."
+        },
         "loopRunner.maxHops": {
           "type": "number",
           "default": 5,

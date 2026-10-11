@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import { Gate, listGates } from './queue';
+import { fileSha256 } from './gates';
+import * as path from 'path';
 import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
 
@@ -15,11 +17,23 @@ export interface Step {
 
 export interface ConsoleRun extends RunSummary { steps: Step[] }
 
+/** A pending gate plus what the reviewer sees of each draft file, with the hash the approval is bound to. */
+export interface GateView extends Gate { previews: { path: string; text: string; sha256: string; truncated: boolean }[] }
+
+const PREVIEW_CHARS = 6000;
+function previewsOf(root: string, g: Gate): GateView['previews'] {
+  return g.files.map(f => {
+    let text = '';
+    try { text = fs.readFileSync(path.join(root, f), 'utf8'); } catch { text = '(file is missing)'; }
+    return { path: f, text: text.slice(0, PREVIEW_CHARS), sha256: fileSha256(root, f), truncated: text.length > PREVIEW_CHARS };
+  });
+}
+
 export interface ConsoleModel {
   running: boolean;
   active?: string;
   next?: { agent: string; at: string };
-  pending: Gate[];
+  pending: GateView[];
   agents: AgentRow[];
   runs: ConsoleRun[];
 }
@@ -66,7 +80,7 @@ export function consoleModel(root: string, state: { running: boolean; active?: s
     running: state.running,
     active: state.active,
     next: nw ? { agent: nw.agent, at: nw.at.toISOString() } : undefined,
-    pending: listGates(root).filter(g => g.status === 'pending'),
+    pending: listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) })),
     agents,
     runs: recentRuns(root, runLimit).map(r => ({ ...r, steps: stepsOf(r.file) }))
   };
@@ -80,11 +94,12 @@ const ago = (iso: string) => {
 };
 const STATUS_ICON: Record<string, string> = { done: '✔', running: '⟳', waiting: '🔔', error: '✖', retry: '↻', max_steps: '⚠', stalled: '⚠', blocked: '⚠' };
 
-function gateCard(g: Gate): string {
+function gateCard(g: GateView): string {
   const files = g.files.map(f => `<a href="#" data-open="${esc(f)}">${esc(f)}</a>`).join(' ');
   const head = `<div class="card-head"><b>${g.kind === 'question' ? '❓' : '✅'} ${esc(g.title)}</b><span class="muted">${esc(g.agent)} · ${esc(ago(g.createdAt))}</span></div>`;
   const body = g.body ? `<div class="body">${esc(g.body)}</div>` : '';
-  const filesRow = files ? `<div class="muted">Drafts: ${files}</div>` : '';
+  const filesRow = (files ? `<div class="muted">Drafts: ${files}</div>` : '') +
+    g.previews.map(p => `<details open><summary class="muted">${esc(p.path)}${p.truncated ? ' (first part shown)' : ''}</summary><pre data-hash-for="${esc(p.path)}" data-hash="${esc(p.sha256)}">${esc(p.text)}</pre></details>`).join('');
   if (g.kind === 'question') {
     const opts = (g.options ?? []).map(o => `<button class="secondary" data-answer="${esc(g.id)}" data-text="${esc(o)}">${esc(o)}</button>`).join('');
     return `<div class="card attention" data-gate="${esc(g.id)}">${head}${body}${filesRow}
@@ -156,7 +171,7 @@ document.addEventListener('click', e => {
   else if (d.cmd) vs.postMessage({ type:'cmd', name:d.cmd });
   else if (d.answer) vs.postMessage({ type:'answer', id:d.answer, text:d.text });
   else if (d.send) { const text = val(d.send).trim(); if (text) vs.postMessage({ type:'answer', id:d.send, text }); }
-  else if (d.approve) vs.postMessage({ type:'approve', id:d.approve });
+  else if (d.approve) { const seen = {}; document.querySelectorAll('[data-gate="'+d.approve+'"] [data-hash-for]').forEach(x => seen[x.dataset.hashFor] = x.dataset.hash); vs.postMessage({ type:'approve', id:d.approve, seen }); }
   else if (d.reject) vs.postMessage({ type:'reject', id:d.reject, feedback:val(d.reject) });
 });
 window.addEventListener('message', ev => {
