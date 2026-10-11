@@ -26,6 +26,24 @@ export function outputsFrom(resultTexts: string[]): string[] {
   return [...new Set(paths)];
 }
 
+/** Files this item's commands left in `.loop/outbox`, from the `wrote` field of its `tool` audit events (survives a resume). */
+export function wroteFromAudit(root: string, chainId: string, itemId: string): string[] {
+  const dir = path.join(root, '.loop', 'runs');
+  if (!fs.existsSync(dir)) { return []; }
+  const out: string[] = [];
+  for (const day of fs.readdirSync(dir)) {
+    const f = path.join(dir, day, `${chainId}.jsonl`);
+    if (!fs.existsSync(f)) { continue; }
+    for (const line of fs.readFileSync(f, 'utf8').split('\n').filter(Boolean)) {
+      try {
+        const e = JSON.parse(line);
+        if (e.type === 'tool' && e.itemId === itemId && Array.isArray(e.wrote)) { out.push(...e.wrote.map(String)); }
+      } catch { /* a torn line is ignored */ }
+    }
+  }
+  return [...new Set(out)];
+}
+
 /**
  * Newest audit chains, read from the existing `.loop/runs/<date>/<chainId>.jsonl` files. Wake checks are skipped.
  * Read-only; the runtime's data contract is unchanged (`outputs` on the end event is optional and additive).

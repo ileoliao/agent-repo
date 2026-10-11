@@ -19,3 +19,24 @@ export function latestOutput(root: string): string | undefined {
   walk(path.join(root, '.loop', 'outbox'));
   return best?.file;
 }
+
+/** Size and mtime of every file under .loop/outbox, keyed by workspace-relative path. */
+export function snapshotOutbox(root: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const walk = (dir: string) => {
+    if (!fs.existsSync(dir)) { return; }
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(file); continue; }
+      const st = fs.statSync(file);
+      out.set(path.relative(root, file).replace(/\\/g, '/'), `${st.size}:${st.mtimeMs}`);
+    }
+  };
+  walk(path.join(root, '.loop', 'outbox'));
+  return out;
+}
+
+/** Files that are new or changed between two snapshots. */
+export function changedFiles(before: Map<string, string>, after: Map<string, string>): string[] {
+  return [...after].filter(([p, sig]) => before.get(p) !== sig).map(([p]) => p).sort();
+}

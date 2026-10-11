@@ -4,7 +4,8 @@ import { Policy, skillScriptRule } from './policy';
 import { PlainMsg, PlainPart, WorkItem, audit, getGate, loadCheckpoint, saveCheckpoint } from './queue';
 import { redact } from './exec';
 import { buildTools, runTool, ToolOutcome } from './tools';
-import { outputsFrom } from './runs';
+import { outputsFrom, wroteFromAudit } from './runs';
+import { changedFiles, snapshotOutbox } from './outbox';
 import type { Agent as PiAgent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
 
@@ -225,6 +226,8 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
     execute: async (callId: string, input: any) => {
       const t1 = Date.now();
       let o: ToolOutcome;
+      // Scripts write files without telling us; compare the outbox around a command to learn what it produced.
+      const before = t.name === 'run_command' ? snapshotOutbox(deps.root) : undefined;
       if (parkedThisTurn && (t.name === 'ask_human' || t.name === 'request_approval')) {
         o = { text: 'Not sent: only one human gate per turn. Ask again after the first is resolved.' };
       } else {
@@ -238,7 +241,8 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
         }
       }
       deps.out.appendLine(`    ${t.name} ${brief(input)} → ${o.decision ?? ''} ${(o.park ? `parked on ${o.park}` : o.text).split('\n')[0].slice(0, 100)}`);
-      log({ type: 'tool', step, name: t.name, input, decision: o.decision, gateId: o.park, ms: Date.now() - t1, result: o.text.slice(0, 2000) });
+      const wrote = before ? changedFiles(before, snapshotOutbox(deps.root)) : [];
+      log({ type: 'tool', step, name: t.name, input, decision: o.decision, gateId: o.park, ms: Date.now() - t1, result: o.text.slice(0, 2000), ...(wrote.length ? { wrote } : {}) });
       if (o.park && !parked) { parked = { gateId: o.park, callId }; parkedThisTurn = true; }
       if (o.finished) { finished = o.finished; }
       const sig = `${t.name}\n${JSON.stringify(input)}\n${o.text}`;
@@ -320,7 +324,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   const transcriptNow = piToPlain(pi.state.messages as any[]);
   const results = transcriptNow.flatMap(m => m.parts.flatMap(p => (p.t === 'result' ? [p.text] : [])));
   const done = finished as { status: string; summary: string } | undefined;
-  log({ type: 'end', step, status, summary: done?.summary, outputs: outputsFrom(results) });
+  log({ type: 'end', step, status, summary: done?.summary, outputs: [...new Set([...outputsFrom(results), ...wroteFromAudit(deps.root, item.chainId, item.id)])] });
   deps.out.appendLine(`■ ${agent.name}: ${status}${done ? ` — ${done.summary}` : ''}`);
   return { status, summary: done?.summary, steps: step };
 }
