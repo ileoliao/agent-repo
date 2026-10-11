@@ -655,6 +655,21 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(rows.every(r => r.name !== undefined && typeof r.file === 'string'), 'every team row has a name and an agent file');
   }
 
+  console.log('outputs include files that commands leave in the outbox');
+  {
+    fs.mkdirSync(path.join(W, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(W, 'scripts', 'w.sh'), 'mkdir -p .loop/outbox/cmd && echo hi > .loop/outbox/cmd/made.md\n');
+    const pol = { ...loadPolicy(W, '.loop/policy.json') }; pol.allowCommands = [...pol.allowCommands, '^bash scripts/w\\.sh$'];
+    let t = 0;
+    const script = [[['run_command', { command: 'bash scripts/w.sh' }]], [['finish', { status: 'done', summary: 'ran' }]]];
+    const m = { family: 'fake', id: 'o', async sendRequest() { const c = script[t++]; return { stream: (async function* () { yield* c.map(([n, i], k) => new ToolCallPart(`ob-${t}-${k}`, n, i)); })() }; } };
+    const r = await runItem({ id: 'obox1', agent: 'techlead', task: 't', from: 'user', chainId: 'obox-chain', hop: 0, createdAt: new Date().toISOString() },
+      { root: W, team, skills, model: m, secrets: {}, policy: pol, maxSteps: 5, maxHops: 5, out, token });
+    ok(r.status === 'done', 'the run finishes');
+    const run = require(`${OUT}/runs.js`).recentRuns(W).find(x => x.chainId === 'obox-chain');
+    ok(run && JSON.stringify(run.outputs) === JSON.stringify(['.loop/outbox/cmd/made.md']), 'a file a script wrote into the outbox is listed as the run\'s output');
+  }
+
   console.log('console page: model and rendering');
   {
     const { consoleModel, stepsOf, renderBody, renderPage } = require(`${OUT}/console.js`);

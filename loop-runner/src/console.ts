@@ -92,73 +92,159 @@ const ago = (iso: string) => {
   const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
   return isNaN(m) ? '' : m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
 };
-const STATUS_ICON: Record<string, string> = { done: '✔', running: '⟳', waiting: '🔔', error: '✖', retry: '↻', max_steps: '⚠', stalled: '⚠', blocked: '⚠' };
+
+/** Small stroke icons (16px, currentColor) so the page needs no font or external file. */
+const ICONS: Record<string, string> = {
+  check: 'M3 8.5l3 3 7-7',
+  x: 'M4 4l8 8M12 4l-8 8',
+  alert: 'M8 2.5l6 10.5H2L8 2.5zM8 7v3M8 11.5v.5',
+  bell: 'M4 11V7a4 4 0 018 0v4l1 1.5H3L4 11zM6.5 14a1.5 1.5 0 003 0',
+  help: 'M6 6a2 2 0 114 0c0 1.5-2 1.5-2 3M8 12v.5',
+  play: 'M5 3.5v9l7-4.5-7-4.5z',
+  stop: 'M4.5 4.5h7v7h-7z',
+  spin: 'M8 2.5a5.5 5.5 0 105.5 5.5',
+  clock: 'M8 2.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM8 5v3.2l2 1.3',
+  file: 'M4 2.5h5l3 3v8H4v-11zM9 2.5v3h3',
+  bot: 'M4 6h8v6H4V6zM8 6V3.5M6.2 8.8v.4M9.8 8.8v.4',
+  chevron: 'M6 4l4 4-4 4',
+  send: 'M2.5 8l11-5-4 10-2.5-4L2.5 8z',
+  dot: 'M8 6a2 2 0 100 4 2 2 0 000-4z'
+};
+const icon = (name: string, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICONS[name] ?? ICONS.dot}"/></svg>`;
+
+const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
+  done: { label: 'Done', tone: 'ok', ic: 'check' }, running: { label: 'Running', tone: 'info', ic: 'spin' },
+  waiting: { label: 'Waiting for you', tone: 'warn', ic: 'bell' }, error: { label: 'Error', tone: 'bad', ic: 'x' },
+  retry: { label: 'Will retry', tone: 'warn', ic: 'clock' }, blocked: { label: 'Blocked', tone: 'warn', ic: 'alert' },
+  max_steps: { label: 'Step limit', tone: 'warn', ic: 'alert' }, stalled: { label: 'Stalled', tone: 'bad', ic: 'alert' },
+  nothing_to_do: { label: 'Nothing to do', tone: 'mute', ic: 'check' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
+};
+const chip = (status: string) => { const s = STATUS[status] ?? { label: status, tone: 'mute', ic: 'dot' }; return `<span class="chip ${s.tone}">${icon(s.ic)}<span>${esc(s.label)}</span></span>`; };
+const btn = (label: string, attrs: string, kind = '', ic = '') => `<button class="btn ${kind}" ${attrs}>${ic ? icon(ic) : ''}<span>${esc(label)}</span></button>`;
 
 function gateCard(g: GateView): string {
-  const files = g.files.map(f => `<a href="#" data-open="${esc(f)}">${esc(f)}</a>`).join(' ');
-  const head = `<div class="card-head"><b>${g.kind === 'question' ? '❓' : '✅'} ${esc(g.title)}</b><span class="muted">${esc(g.agent)} · ${esc(ago(g.createdAt))}</span></div>`;
-  const body = g.body ? `<div class="body">${esc(g.body)}</div>` : '';
-  const filesRow = (files ? `<div class="muted">Drafts: ${files}</div>` : '') +
-    (g.previews ?? []).map(p => `<details open><summary class="muted">${esc(p.path)}${p.truncated ? ' (first part shown)' : ''}</summary><pre data-hash-for="${esc(p.path)}" data-hash="${esc(p.sha256)}">${esc(p.text)}</pre></details>`).join('');
-  if (g.kind === 'question') {
-    const opts = (g.options ?? []).map(o => `<button class="secondary" data-answer="${esc(g.id)}" data-text="${esc(o)}">${esc(o)}</button>`).join('');
-    return `<div class="card attention" data-gate="${esc(g.id)}">${head}${body}${filesRow}
-      <div class="row">${opts}</div>
-      <div class="row"><textarea rows="2" placeholder="Type an answer…" data-input="${esc(g.id)}"></textarea><button data-send="${esc(g.id)}">Send answer</button></div></div>`;
+  const isQ = g.kind === 'question';
+  const head = `<div class="card-head">${icon(isQ ? 'help' : 'bell', 'lead warn')}<div class="grow"><div class="card-title">${esc(g.title)}</div>
+    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${esc(ago(g.createdAt))}</span></div></div></div>`;
+  const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
+  const files = (g.previews ?? []).map(p => `<details class="file" open data-k="f-${esc(g.id)}-${esc(p.path)}"><summary>${icon('chevron', 'chev')}${icon('file')}<span class="mono grow">${esc(p.path)}</span>${p.truncated ? '<span class="muted">first part shown</span>' : ''}</summary>
+    <pre class="code" data-hash-for="${esc(p.path)}" data-hash="${esc(p.sha256)}">${esc(p.text)}</pre></details>`).join('')
+    + (g.files.length && !(g.previews ?? []).length ? g.files.map(f => `<a class="filechip" href="#" data-open="${esc(f)}">${icon('file')}${esc(f)}</a>`).join('') : '');
+  if (isQ) {
+    const opts = (g.options ?? []).map(o => btn(o, `data-answer="${esc(g.id)}" data-text="${esc(o)}"`, 'secondary')).join('');
+    return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Question from ${esc(g.agent)}">${head}${body}${files}
+      ${opts ? `<div class="row wrap">${opts}</div>` : ''}
+      <div class="row"><textarea rows="2" placeholder="Type an answer…" aria-label="Your answer" data-input="${esc(g.id)}"></textarea>${btn('Send answer', `data-send="${esc(g.id)}"`, 'primary', 'send')}</div></section>`;
   }
-  return `<div class="card attention" data-gate="${esc(g.id)}">${head}${body}${filesRow}
-    <div class="muted">This exact command runs when you approve:</div><pre>${esc(g.command ?? '')}</pre>
-    <div class="row"><textarea rows="1" placeholder="Feedback if you reject (optional)" data-input="${esc(g.id)}"></textarea>
-    <button data-approve="${esc(g.id)}">Approve and run</button><button class="secondary" data-reject="${esc(g.id)}">Reject</button></div></div>`;
+  return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${body}
+    <div class="label">This exact command runs when you approve</div><pre class="code cmd">${esc(g.command ?? '')}</pre>${files}
+    ${(g.previews ?? []).length ? '<div class="note">Your approval covers the file contents shown above. If a file changes before it runs, nothing runs and you review again.</div>' : ''}
+    <div class="row"><textarea rows="1" placeholder="Reason, if you reject (optional)" aria-label="Feedback for the agent" data-input="${esc(g.id)}"></textarea>
+    ${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"`, 'primary', 'check')}</div></section>`;
 }
 
 function runCard(r: ConsoleRun): string {
-  const steps = r.steps.map(s => `<li class="${s.ok ? '' : 'bad'}"><span class="step">${s.step || ''}</span><span class="k">${esc(s.kind)}</span> ${esc(s.title)}${s.detail ? `<div class="muted">${esc(s.detail)}</div>` : ''}</li>`).join('');
-  const outs = r.outputs.map(o => `<a href="#" data-open="${esc(o)}">📄 ${esc(o)}</a>`).join('<br>');
-  return `<details class="run"><summary><span class="st st-${esc(r.status)}">${STATUS_ICON[r.status] ?? '•'}</span> <b>${esc(r.agent)}</b>
-    <span class="muted">${esc(r.status)} · ${r.step} step${r.step === 1 ? '' : 's'} · ${esc(time(r.started))}</span>${r.summary ? `<div class="sum">${esc(clip(r.summary, 160))}</div>` : ''}</summary>
-    ${outs ? `<div class="outs">${outs}</div>` : ''}<ol>${steps || '<li class="muted">No steps recorded.</li>'}</ol>
-    <a href="#" data-open-abs="${esc(r.file)}" class="muted">Open raw log</a></details>`;
+  const steps = r.steps.map(s => `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.kind === 'end' ? 'check' : s.ok ? 'dot' : 'x')}</span>
+    <div class="grow"><div class="step-title"><span class="kind">${esc(s.kind)}</span>${s.step ? `<span class="muted">#${s.step}</span>` : ''}<span class="${s.kind === 'tool' || s.kind === 'gate' ? 'mono' : ''}">${esc(s.title)}</span></div>${s.detail ? `<div class="muted wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`).join('');
+  const outs = r.outputs.map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
+  return `<details class="run" data-k="r-${esc(r.chainId)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
+    <span class="grow run-sum">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'} · ${esc(ago(r.started))}</span></summary>
+    <div class="run-body">${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
+    <div class="label">What happened</div><ol class="timeline">${steps || '<li class="muted">No steps recorded.</li>'}</ol>
+    <a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a></div></details>`;
 }
+
+function agentRow(a: AgentRow): string {
+  const state = a.state === 'running' ? 'running' : a.state === 'waiting' ? 'waiting' : 'nothing_to_do';
+  const label = a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
+  const s = STATUS[state];
+  return `<div class="agent"><div class="agent-top">${icon('bot', 'lead')}<a class="agent-name" href="#" data-open="${esc(a.file)}">${esc(a.name)}</a>
+    <span class="chip ${a.state === 'idle' ? 'mute' : s.tone}">${icon(a.state === 'idle' ? 'dot' : s.ic)}<span>${label}</span></span></div>
+    <dl class="kv"><dt>Model</dt><dd class="mono">${esc(a.model ?? 'default')}</dd>
+    <dt>Next wake</dt><dd>${a.next ? esc(time(a.next.toISOString())) : '<span class="muted">manual only</span>'}</dd>
+    <dt>Last check</dt><dd>${a.lastWake ? `${a.lastWake.wake ? 'found work' : 'nothing to do'} <span class="muted">${esc(ago(a.lastWake.at))}</span>` : '<span class="muted">none yet</span>'}</dd></dl></div>`;
+}
+
+const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
 
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
-  const active = m.running && m.active;
-  const state = !m.running ? '<span class="pill off">Stopped</span>'
-    : active ? `<span class="pill on">Running · ${esc(m.active)}</span>`
-    : `<span class="pill idle">Idle${m.next ? ` · next wake ${esc(time(m.next.at))} (${esc(m.next.agent)})` : ''}</span>`;
-  const controls = `${m.running ? '<button class="secondary" data-cmd="stopTeam">Stop</button>' : '<button data-cmd="startTeam">Start team</button>'}
-    <button class="secondary" data-cmd="runAgent">Give a task…</button><button class="secondary" data-cmd="openLatestResult">Latest result</button>`;
-  const needs = m.pending.length
-    ? `<h2>Needs you <span class="badge">${m.pending.length}</span></h2>${m.pending.map(gateCard).join('')}`
-    : `<h2>Needs you</h2><div class="empty">Nothing is waiting for you.</div>`;
-  const agents = m.agents.length
-    ? `<table><tr><th>Agent</th><th>State</th><th>Next wake</th><th>Last check</th></tr>${m.agents.map(a => `<tr>
-      <td><a href="#" data-open="${esc(a.file)}">${esc(a.name)}</a><div class="muted">${esc(a.model ?? '')}</div></td>
-      <td>${a.state === 'running' ? '⟳ running' : a.state === 'waiting' ? '🔔 waiting on you' : '○ idle'}</td>
-      <td>${a.next ? esc(time(a.next.toISOString())) : '<span class="muted">manual</span>'}</td>
-      <td>${a.lastWake ? `${a.lastWake.wake ? 'found work' : 'nothing to do'} <span class="muted">${esc(time(a.lastWake.at))}</span>` : '<span class="muted">none yet</span>'}</td></tr>`).join('')}</table>`
-    : '<div class="empty">No agents have joined the team. Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.</div>';
-  const runs = m.runs.length ? m.runs.map(runCard).join('') : '<div class="empty">No runs yet. Start the team, or use “Give a task…”.</div>';
-  return `<div class="top">${state}<span class="grow"></span>${controls}</div>${needs}<h2>Agents</h2>${agents}<h2>Recent runs</h2>${runs}`;
+  const live = m.runs.find(r => r.status === 'running' && r.agent === m.active);
+  const state = !m.running ? `<span class="state off">${icon('stop')}Stopped</span>`
+    : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc(m.active)}${live ? ` · step ${live.step}` : ''}</span>`
+    : `<span class="state idle">${icon('clock')}Idle${m.next ? ` · next wake ${esc(time(m.next.at))}` : ''}</span>`;
+  const actions = (m.running ? btn('Stop', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
+    + btn('Give a task', 'data-cmd="runAgent"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult"', 'secondary', 'file');
+  const last = m.runs.find(r => r.status !== 'running');
+  const tiles = [
+    { k: 'Needs you', v: String(m.pending.length), tone: m.pending.length ? 'warn' : '', sub: m.pending.length ? 'waiting for your decision' : 'all clear' },
+    { k: 'Agents', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
+    { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}` : 'no runs yet' },
+    { k: 'Next wake', v: m.next ? time(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
+  ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
+  const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
+  const runs = m.runs.length ? m.runs.map(runCard).join('') : empty('clock', 'No runs yet', 'Press Start team, or use “Give a task” to run an agent now.');
+  const agents = m.agents.length ? m.agents.map(agentRow).join('')
+    : empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.');
+  return `<header class="bar"><div class="brand">Loop Console</div>${state}<span class="grow"></span><div class="row">${actions}</div></header>
+    <div class="tiles">${tiles}</div>
+    <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
+    <h2>Recent runs</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`;
 }
 
 const STYLE = `
-body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:12px 18px;max-width:900px}
-h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;opacity:.8;margin:22px 0 8px}
-.top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1}
-.pill{padding:3px 10px;border-radius:12px;font-weight:600}.on{background:var(--vscode-charts-green);color:#000}.idle{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}.off{background:var(--vscode-input-background)}
-.badge{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-radius:9px;padding:0 7px}
-.card,.run{border:1px solid var(--vscode-panel-border);border-radius:6px;padding:10px 12px;margin:8px 0}.attention{border-color:var(--vscode-charts-orange)}
-.card-head{display:flex;justify-content:space-between;gap:8px}.body{margin:6px 0;white-space:pre-wrap}
-.muted{opacity:.7;font-size:12px}.empty{opacity:.7;padding:8px 0}
-.row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}textarea{flex:1;min-width:200px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,transparent);padding:4px}
-button{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:0;border-radius:3px;padding:5px 12px;cursor:pointer}button.secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}
-pre{background:var(--vscode-textCodeBlock-background);padding:8px;overflow:auto;white-space:pre-wrap}
-table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--vscode-panel-border);vertical-align:top}th{font-weight:600;opacity:.7}
-summary{cursor:pointer}.sum{margin:2px 0 0 22px;opacity:.85}.outs{margin:8px 0}ol{padding-left:0;list-style:none;margin:8px 0}li{padding:3px 0;border-left:2px solid var(--vscode-panel-border);padding-left:8px;margin-bottom:2px}li.bad{border-color:var(--vscode-charts-red)}
-.step{display:inline-block;min-width:22px;opacity:.6}.k{opacity:.6;font-size:11px;margin-right:4px}.st-done{color:var(--vscode-charts-green)}.st-error{color:var(--vscode-charts-red)}
-a{color:var(--vscode-textLink-foreground)}`;
+:root{--gap:12px;--r:6px}
+*{box-sizing:border-box}
+body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);line-height:1.45}
+.mono,code,pre{font-family:var(--vscode-editor-font-family,monospace);font-size:.92em}
+.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}
+.ic{flex:none}.big{width:28px;height:28px}.lead{width:18px;height:18px;margin-top:2px}.spin{animation:sp 1.2s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+.bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;padding:12px 0;margin-bottom:4px;background:var(--vscode-editor-background);border-bottom:1px solid var(--vscode-panel-border)}
+.brand{font-size:1.25em;font-weight:600;margin-right:4px}
+.state{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-weight:600;font-size:.92em;border:1px solid var(--vscode-panel-border)}
+.state.on{color:var(--vscode-charts-green);border-color:var(--vscode-charts-green)}.state.idle{color:var(--vscode-foreground)}.state.off{color:var(--vscode-descriptionForeground)}
+.row{display:flex;gap:8px;align-items:flex-start}.row.wrap{flex-wrap:wrap}.row>textarea{flex:1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:5px 12px;border:1px solid transparent;border-radius:2px;font:inherit;cursor:pointer;white-space:nowrap}
+.btn.primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.btn.primary:hover{background:var(--vscode-button-hoverBackground)}
+.btn.secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}.btn.secondary:hover{background:var(--vscode-button-secondaryHoverBackground)}
+.btn:focus-visible,a:focus-visible,summary:focus-visible,textarea:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+textarea{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:2px;padding:6px 8px;font:inherit;resize:vertical;min-width:0}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--gap);margin:16px 0 8px}
+.tile{padding:10px 12px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background,transparent)}
+.tile-k{font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground)}.tile-v{font-size:1.5em;font-weight:600;margin:2px 0}
+.tile.warn{border-color:var(--vscode-charts-orange)}.tile.warn .tile-v{color:var(--vscode-charts-orange)}.tile.ok .tile-v{color:var(--vscode-charts-green)}.tile.bad .tile-v{color:var(--vscode-charts-red)}.tile.info .tile-v{color:var(--vscode-charts-blue)}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}
+@media (max-width:820px){.cols{grid-template-columns:1fr}}
+h2{display:flex;align-items:center;gap:8px;margin:22px 0 10px;font-size:.82em;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--vscode-descriptionForeground)}
+.count{padding:0 7px;border-radius:999px;font-size:.95em;color:var(--vscode-badge-foreground);background:var(--vscode-badge-background)}.count.warn{background:var(--vscode-charts-orange);color:#000}
+.card{border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:14px;margin-bottom:var(--gap);background:var(--vscode-sideBar-background,transparent)}
+.card.attention{border-left:3px solid var(--vscode-charts-orange)}
+.card-head{display:flex;gap:10px}.card-title{font-weight:600;font-size:1.05em}.lead.warn{color:var(--vscode-charts-orange)}
+.meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:.88em;color:var(--vscode-descriptionForeground)}.meta>*+*::before{content:"·";margin-right:8px}
+.tag{padding:0 6px;border-radius:3px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}.meta .tag::before{content:none;margin:0}
+.body{margin:10px 0;white-space:pre-wrap}.label{margin:12px 0 4px;font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground)}
+.note{margin:8px 0;font-size:.9em;color:var(--vscode-descriptionForeground)}
+.code{margin:0 0 6px;padding:10px;border-radius:4px;background:var(--vscode-textCodeBlock-background);white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}.code.cmd{border-left:3px solid var(--vscode-charts-blue)}
+details>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;border-radius:4px}details>summary::-webkit-details-marker{display:none}
+.chev{transition:transform .12s}details[open]>summary>.chev{transform:rotate(90deg)}
+.file{margin:8px 0}.file>summary{padding:4px 0;color:var(--vscode-descriptionForeground)}
+.filechip{display:inline-flex;align-items:center;gap:6px;margin:2px 6px 2px 0;padding:2px 8px;border:1px solid var(--vscode-panel-border);border-radius:999px;color:var(--vscode-textLink-foreground);text-decoration:none;overflow-wrap:anywhere}.filechip:hover{background:var(--vscode-list-hoverBackground)}
+a{color:var(--vscode-textLink-foreground)}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;font-size:.88em;font-weight:600;white-space:nowrap;border:1px solid currentColor}
+.chip.ok{color:var(--vscode-charts-green)}.chip.bad{color:var(--vscode-charts-red)}.chip.warn{color:var(--vscode-charts-orange)}.chip.info{color:var(--vscode-charts-blue)}.chip.mute{color:var(--vscode-descriptionForeground)}
+.run{border:1px solid var(--vscode-panel-border);border-radius:var(--r);margin-bottom:8px;background:var(--vscode-sideBar-background,transparent)}
+.run>summary{padding:10px 12px}.run>summary:hover{background:var(--vscode-list-hoverBackground)}.run-agent{font-weight:600}.run-sum{color:var(--vscode-descriptionForeground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run-body{padding:0 14px 12px 36px}
+.timeline{list-style:none;margin:6px 0 10px;padding:0}
+.step{display:flex;gap:10px;padding:5px 0;position:relative}.step:not(:last-child)::before{content:"";position:absolute;left:7px;top:22px;bottom:-4px;width:1px;background:var(--vscode-panel-border)}
+.node{color:var(--vscode-descriptionForeground);margin-top:1px}.step.bad .node{color:var(--vscode-charts-red)}.step-title{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;overflow-wrap:anywhere}
+.kind{font-size:.75em;text-transform:uppercase;letter-spacing:.05em;color:var(--vscode-descriptionForeground)}
+.agent{border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:12px;margin-bottom:8px;background:var(--vscode-sideBar-background,transparent)}
+.agent-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.agent-name{font-weight:600;flex:1;text-decoration:none}.agent-name:hover{text-decoration:underline}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0 0;font-size:.92em}.kv dt{color:var(--vscode-descriptionForeground)}.kv dd{margin:0;overflow-wrap:anywhere}
+.empty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 12px;text-align:center;border:1px dashed var(--vscode-panel-border);border-radius:var(--r);color:var(--vscode-descriptionForeground)}.empty-title{color:var(--vscode-foreground);font-weight:600}
+.link{font-size:.9em}`;
 
 const SCRIPT = `
 const vs = acquireVsCodeApi(); const app = document.getElementById('app');
@@ -174,19 +260,24 @@ document.addEventListener('click', e => {
   else if (d.approve) { const seen = {}; document.querySelectorAll('[data-gate="'+d.approve+'"] [data-hash-for]').forEach(x => seen[x.dataset.hashFor] = x.dataset.hash); vs.postMessage({ type:'approve', id:d.approve, seen }); }
   else if (d.reject) vs.postMessage({ type:'reject', id:d.reject, feedback:val(d.reject) });
 });
+// Re-render without losing what the user is doing: open sections, typed text, focus and scroll.
 window.addEventListener('message', ev => {
   if (ev.data.type !== 'body') return;
-  // Never overwrite something the user is typing.
-  if ([...document.querySelectorAll('textarea')].some(x => x.value || x === document.activeElement)) return;
-  const keep = new Set([...document.querySelectorAll('details.run[open] summary b')].map(b => b.parentElement.textContent));
+  const open = new Set([...document.querySelectorAll('details[open]')].map(d => d.dataset.k));
+  const closed = new Set([...document.querySelectorAll('details:not([open])')].map(d => d.dataset.k));
+  const typed = {}; document.querySelectorAll('textarea[data-input]').forEach(t => { typed[t.dataset.input] = t.value; });
+  const f = document.activeElement; const focus = f && f.dataset && f.dataset.input;
+  const sel = f && f.selectionStart;
   app.innerHTML = ev.data.html;
-  document.querySelectorAll('details.run').forEach(d => { if (keep.has(d.querySelector('summary').textContent)) d.open = true; });
+  document.querySelectorAll('details').forEach(d => { if (closed.has(d.dataset.k)) d.open = false; else if (open.has(d.dataset.k)) d.open = true; });
+  document.querySelectorAll('textarea[data-input]').forEach(t => { if (typed[t.dataset.input]) t.value = typed[t.dataset.input]; });
+  if (focus) { const t = document.querySelector('[data-input="'+focus+'"]'); if (t) { t.focus(); if (sel != null) t.setSelectionRange(sel, sel); } }
 });
 vs.postMessage({ type:'ready' });`;
 
 /** Full page. The script is the only inline code and carries the nonce; everything shown is escaped. */
 export function renderPage(m: ConsoleModel, nonce: string, cspSource: string): string {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>${STYLE}</style></head><body><div id="app">${renderBody(m)}</div><script nonce="${nonce}">${SCRIPT}</script></body></html>`;
+<title>Loop Console</title><style>${STYLE}</style></head><body><div id="app">${renderBody(m)}</div><script nonce="${nonce}">${SCRIPT}</script></body></html>`;
 }
