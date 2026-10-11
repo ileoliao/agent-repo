@@ -431,15 +431,31 @@ class TeamService {
 
 export function activate(ctx: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Loop Runner');
+  // Status bar: one click per common action. A status bar item cannot host a dropdown, and a QuickPick always opens at the top of the window.
   const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  bar.command = 'loopRunner.menu';
+  bar.command = 'loopRunner.focusInbox';
+  const toggle = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
+  const result = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 48);
+  result.text = '$(file-text) Result';
+  result.tooltip = 'Open the latest agent output';
+  result.command = 'loopRunner.openLatestResult';
+  result.show();
+  const menu = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 47);
+  menu.text = '$(menu)';
+  menu.tooltip = 'Loop Runner: all commands';
+  menu.command = 'loopRunner.menu';
+  menu.show();
   const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
   const refresh = () => {
     inbox.refresh();
     const n = inbox.pendingCount();
     bar.text = `$(${svc.running ? 'sync' : 'debug-pause'}) Loop${svc.activeAgent ? `: ${svc.activeAgent}` : ''}${n ? ` · $(bell-dot) ${n}` : ''}`;
-    bar.tooltip = n ? `${n} item(s) need you` : 'Loop Runner';
+    bar.tooltip = n ? `${n} item(s) need you: click to open the inbox` : 'Loop Runner: click to open the inbox';
     bar.show();
+    toggle.text = svc.running ? '$(debug-stop) Stop' : '$(play) Start';
+    toggle.tooltip = svc.running ? 'Stop the Loop Runner team' : 'Start the Loop Runner team';
+    toggle.command = svc.running ? 'loopRunner.stopTeam' : 'loopRunner.startTeam';
+    toggle.show();
     if (simEnabled()) {
       const folder = svc.root();
       if (folder) {
@@ -463,7 +479,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   const policyFor = (g: Gate) => loadPolicy(root(), svc.team.get(g.agent)?.policy ?? svc.cfg().get<string>('policyFile', '.loop/policy.json'));
 
   ctx.subscriptions.push(
-    out, bar,
+    out, bar, toggle, result, menu,
     vscode.window.registerTreeDataProvider('loopRunner.inbox', inbox),
     vscode.commands.registerCommand('loopRunner.startTeam', () => svc.start(true)),
     vscode.commands.registerCommand('loopRunner.stopTeam', () => svc.stop(true)),
