@@ -1,0 +1,8 @@
+{
+  "apiUrl": "https://api.github.com",
+  "allowedRepos": ["your-org/harbor-service", "your-org/harbor-docs"],
+  "docsRepos": ["your-org/harbor-docs"],
+  "maxLines": 400,
+  "maxChars": 12000,
+  "timeoutSec": 30
+}

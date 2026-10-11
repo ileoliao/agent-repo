@@ -1,0 +1,11 @@
+{
+  "baseUrl": "",
+  "boardId": "",
+  "storyPointsField": "",
+  "blockedLabels": ["blocked"],
+  "blockedStatuses": ["blocked", "on hold"],
+  "staleDays": 3,
+  "dueSoonDays": 2,
+  "topN": 8,
+  "timeoutSec": 30
+}

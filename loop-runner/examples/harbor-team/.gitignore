@@ -1,0 +1,6 @@
+# Runtime state written by Loop Runner; only the policies are kept in git.
+.loop/*
+!.loop/policy.json
+!.loop/policies/
+__pycache__/
+*.pyc
