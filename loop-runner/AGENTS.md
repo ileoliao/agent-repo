@@ -17,8 +17,7 @@ The deployment constraint is real: the target environment allows only GitHub Cop
 
 Do not add features. In particular, do not add:
 
-- a chat participant or `@loop` entry point (use native VS Code chat with the same agent files)
-- per-agent memory or context compaction
+- per-agent memory beyond the standing-notes file below, or context compaction
 - parallel workers
 - built-in notification channels or business integrations
 
@@ -27,6 +26,8 @@ Bug fixes, security fixes and test improvements are welcome. If a change seems t
 **Approved additions (2026-10-11): the console.** The owner approved a native console on top of the existing surfaces: the status bar line (running agent, step, next wake), the sidebar "Agents" group (state, next run, last wake check, opens the agent file), "Recent runs" with the files each run wrote, and "Open Latest Result" reading `end.outputs`. It stays native (no chat, no notifications). The one data addition is the optional `outputs` field on the `end` audit event. Setup checks and a sample-agent command are not approved yet.
 
 **Approved (2026-10-11): pi as the loop.** The owner decided the basic harness should be pi's `Agent` rather than our own loop. `runItem`'s interface, the checkpoint format and the audit events are unchanged; the e2e suite and the sim pass on it. Tools are executed sequentially. pi validates tool arguments against the schemas (strings such as `"5"` are coerced; a missing required field comes back as a tool error).
+
+**Approved (2026-10-11): `@loop` in the Chat window and standing notes.** The owner asked to steer agents by conversation. `@loop` (`/status`, `/pending`, or free text) uses the model picked in Chat. It reads team state with tools and can only *propose* changes (schedule, task text, role edit, standing note, one-off task, answer a question, start/stop); the user sees the diff and presses Apply, and `applyChange` refuses a file that changed since it was proposed. Approvals are never decided in chat: they stay in the console, where the exact command and files are shown. Role and schedule edits write `.github/agents/*.agent.md` on the human's click, which is the only path by which those files change (invariant 5 still binds the agents themselves).
 
 **Approved additions (2026-10-11), second batch:** approval bound to what the reviewer saw (the console shows each draft file and sends its sha256; `approveAndRun` refuses if a file changed since or was never shown), run guardrails (stalled after 3 identical results, `loopRunner.maxMinutes`), and the optional `loop.maxRunsPerDay`. A capped wake is recorded as a `wake` audit event with `wake:false, capped:<n>`.
 
@@ -61,6 +62,9 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `status.ts` | `agentRows` and `nextWake`: team state, next scheduled wake, last wake check. Pure, no `vscode` | no |
 | `console.ts` | `consoleModel`, `stepsOf`, `renderBody`/`renderPage`: the console's data and HTML (every value escaped, one nonce script). Pure, no `vscode` | no |
 | `consoleView.ts` | Webview panel host: forwards page actions to the existing commands and gate functions; opens only files inside the workspace | yes |
+| `manage.ts` | `Change` for a schedule, task, role edit or memory note (`proposeSchedule`, `proposeRoleEdit`, `proposeRemember`, `proposeForget`), `diffOf`, `applyChange`, `memoryFor`. Patches single lines of the `loop:` block; nothing is written until `applyChange` | no |
+| `chatTools.ts` | The tools behind `@loop`: reads answer at once, every `propose_*` returns a Proposal (title, diff, `apply`). Pure over a small host interface | no |
+| `chat.ts` | The `@loop` chat participant: model tool loop, Apply and Dismiss buttons | yes |
 | `extension.ts` | Glue: `TeamService` (tick, schedule, single worker), commands, notifications, secrets | yes |
 
 **Rule:** keep `vscode` out of every module marked "no". The test suite loads those modules without VS Code; `runner.ts` is tested through a mock `vscode` module.
@@ -132,6 +136,7 @@ Model resolution order: `loop.model` (by family, no fallback) → native `model`
 - `runs/<date>/<chainId>.jsonl`: audit events; `wake-<date>.jsonl` records wake checks
 - `schedule-state.json`: `{ [agent]: "YYYY-MM-DDTHH:MM" }` UTC minute of the last schedule slot that role already handled. Used to catch up one missed `wakeIf` on start
 - `outbox/`: drafts written by agents and editable by the human
+- `memory/<agent>.md`, `memory/_all.md`: the human's standing notes, one dated bullet per line (max 8000 characters per file). `buildPrompt` puts everyone's notes, then the agent's own, under "Standing instructions from the human" after the static parts and before the work item. Agents cannot write here (`.loop/**` is protected); only an applied `@loop` proposal or the human does. A resumed run keeps the prompt it started with
 
 Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`, `retry`. Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
 

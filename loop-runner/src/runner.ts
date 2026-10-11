@@ -6,6 +6,7 @@ import { redact } from './exec';
 import { buildTools, runTool, ToolOutcome } from './tools';
 import { outputsFrom, wroteFromAudit } from './runs';
 import { changedFiles, snapshotOutbox } from './outbox';
+import { memoryFor } from './manage';
 import type { Agent as PiAgent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
 
@@ -42,7 +43,7 @@ You run unattended inside a policy. The human is not watching this conversation,
 - Commands are non-interactive. Never start servers, watchers or anything that does not exit.
 - Keep going until the work item is resolved, then call finish. If there is nothing to do, finish with nothing_to_do.`;
 
-export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps, 'team' | 'skills'>): string {
+export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps, 'team' | 'skills'>, memory = ''): string {
   const parts = [RUNTIME_RULES, `# Your role: ${agent.name}\n${agent.description}\n\n${agent.body}`];
   if (agent.skills.length) {
     parts.push('# Your skills');
@@ -54,6 +55,8 @@ export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps,
   if (agent.handoffs.length) {
     parts.push('# Teammates you can hand off to\n' + agent.handoffs.map(h => `- ${h}: ${deps.team.get(h)?.description ?? ''}`).join('\n'));
   }
+  // Standing notes the human gave in conversation. Sits after the static parts and before the per-run item, so the prefix stays stable.
+  if (memory.trim()) { parts.push(`# Standing instructions from the human (follow them in every run)\n${memory.trim()}`); }
   parts.push(`# Work item ${item.id}\nfrom: ${item.from} | chain: ${item.chainId} | hop: ${item.hop}\n\n${item.task}` +
     (item.context ? `\n\n## Context\n${item.context}` : ''));
   return parts.join('\n\n');
@@ -163,7 +166,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   } else if (item.resumeGate) {
     return { status: 'error', summary: `cannot resume: checkpoint or gate outcome missing (${item.resumeGate})`, steps: 0 };
   } else {
-    transcript = [{ role: 'user', parts: [{ t: 'text', v: buildPrompt(agent, item, deps) }] }];
+    transcript = [{ role: 'user', parts: [{ t: 'text', v: buildPrompt(agent, item, deps, memoryFor(deps.root, agent.name)) }] }];
     deps.out.appendLine(`\n▶ ${agent.name} ← ${item.from} | ${item.id} | ${deps.model.family}`);
     log({ type: 'start', from: item.from, hop: item.hop, task: item.task, model: deps.model.id });
   }

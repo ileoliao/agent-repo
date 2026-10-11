@@ -769,6 +769,116 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(events.includes('REFUSED') && !events.includes(PLANTED), 'refusals are recorded and the audit holds no secret');
   }
 
+  console.log('conversation changes: schedule, role edits, memory');
+  {
+    const M = require(`${OUT}/manage.js`);
+    const { buildPrompt } = require(`${OUT}/runner.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-manage-'));
+    fs.mkdirSync(path.join(R, '.github', 'agents'), { recursive: true });
+    const agentFile = path.join(R, '.github', 'agents', 'sentinel.agent.md');
+    const original = '---\nname: sentinel\ndescription: watches things\nloop:\n  skills: [probe]\n  schedule: "*/15 9-21 * * 1-5"\n  task: Check the dashboard.\n  maxSteps: 15\n---\nYou watch the dashboard.\nBe brief.\n';
+    fs.writeFileSync(agentFile, original);
+    const sched = M.proposeSchedule(R, 'sentinel', { schedule: '0 9 * * 1-5' });
+    ok(sched.change && sched.change.after.includes('  schedule: "0 9 * * 1-5"') && sched.change.after.includes('  maxSteps: 15') && sched.change.after.endsWith('Be brief.\n'), 'a new schedule changes one line and leaves the rest of the file alone');
+    ok(M.diffOf(sched.change).includes('-  schedule: "*/15 9-21 * * 1-5"') && M.diffOf(sched.change).includes('+  schedule: "0 9 * * 1-5"'), 'the proposal shows a diff');
+    ok(fs.readFileSync(agentFile, 'utf8') === original, 'proposing writes nothing');
+    ok(M.proposeSchedule(R, 'sentinel', { schedule: '61 * * * *' }).error, 'an invalid cron is rejected before any file is touched');
+    ok(M.proposeSchedule(R, 'nobody', { schedule: '0 9 * * *' }).error.includes('No agent named'), 'an unknown agent is rejected');
+    const off = M.proposeSchedule(R, 'sentinel', { schedule: null });
+    ok(off.change && !require(`${OUT}/frontmatter.js`).parseFrontmatter(off.change.after).meta.loop.schedule && off.change.after.includes('  # schedule: "*/15 9-21 * * 1-5"'), 'scheduling can be turned off, keeping the old schedule as a comment');
+    const multi = M.proposeSchedule(R, 'sentinel', { task: 'Line one.\nHe said "go" and \'stop\'.' });
+    ok(multi.change && require(`${OUT}/frontmatter.js`).parseFrontmatter(multi.change.after).meta.loop.task === 'Line one.\nHe said "go" and \'stop\'.', 'a task with both quote kinds and a newline round-trips through a block scalar');
+    {
+      const withProbe = original.replace('  task: Check the dashboard.', '  wakeIf: bash .github/skills/probe/scripts/check.sh\n  task: Check the dashboard.');
+      fs.writeFileSync(agentFile, withProbe);
+      const offP = M.proposeSchedule(R, 'sentinel', { schedule: null }); M.applyChange(R, offP.change);
+      const parsedOff = require(`${OUT}/frontmatter.js`).parseFrontmatter(fs.readFileSync(agentFile, 'utf8')).meta.loop;
+      ok(!parsedOff.schedule && !parsedOff.wakeIf, 'turned off: neither schedule nor wakeIf is live (so the config stays valid)');
+      const onP = M.proposeSchedule(R, 'sentinel', { schedule: '*/5 * * * *' });
+      M.applyChange(R, onP.change);
+      const parsedOn = require(`${OUT}/frontmatter.js`).parseFrontmatter(fs.readFileSync(agentFile, 'utf8')).meta.loop;
+      ok(parsedOn.schedule === '*/5 * * * *' && parsedOn.wakeIf === 'bash .github/skills/probe/scripts/check.sh' && onP.change.summary.includes('wakeIf restored'), 'turning it back on restores the zero-token wakeIf check');
+      ok(!fs.readFileSync(agentFile, 'utf8').includes('# schedule:'), 'the old commented schedule line is replaced, not left behind');
+      fs.writeFileSync(agentFile, original);
+    }
+    M.applyChange(R, M.proposeSchedule(R, 'sentinel', { schedule: '0 9 * * 1-5' }).change);
+    ok(loadAgents(R).get('sentinel').schedule === '0 9 * * 1-5', 'applying the change is read back by the team loader');
+    let stale = false; try { M.applyChange(R, off.change); } catch (e) { stale = /changed since/.test(e.message); }
+    ok(stale, 'a proposal built on an older file is refused');
+    const role = M.proposeRoleEdit(R, 'sentinel', 'Be brief.', 'Be brief. Answer in Chinese.');
+    ok(role.change && role.change.after.includes('Be brief. Answer in Chinese.') && role.change.after.startsWith('---\nname: sentinel'), 'a role edit touches only the body');
+    ok(M.proposeRoleEdit(R, 'sentinel', 'name: sentinel', 'x').error, 'the frontmatter cannot be edited through a role edit');
+    ok(M.proposeRoleEdit(R, 'sentinel', 'e', 'x').error.includes('times'), 'an ambiguous role edit asks for more context');
+
+    const rem = M.proposeRemember(R, 'sentinel', 'Reports go to the ops channel');
+    ok(rem.change && rem.change.before === null && /^- \d{4}-\d{2}-\d{2}: Reports go to the ops channel\n$/.test(rem.change.after), 'a remembered note is a dated line in .loop/memory/<agent>.md');
+    M.applyChange(R, rem.change);
+    M.applyChange(R, M.proposeRemember(R, 'all', 'Never email customers directly').change);
+    ok(M.memoryFor(R, 'sentinel').split('\n').length === 2 && M.memoryFor(R, 'sentinel').startsWith('- ') && M.memoryFor(R, 'other').includes('Never email'), 'a run is told everyone\'s notes and its own');
+    ok(M.proposeRemember(R, 'sentinel', 'Reports go to the ops channel').error.includes('already'), 'a duplicate note is not added twice');
+    const forget = M.proposeForget(R, 'sentinel', 'ops channel');
+    M.applyChange(R, forget.change);
+    ok(M.readMemory(R, 'sentinel') === '' && !fs.existsSync(path.join(R, '.loop', 'memory', 'sentinel.md')), 'forgetting the last note removes the file');
+    const a = loadAgents(R).get('sentinel');
+    const prompt = buildPrompt(a, { id: 'i1', task: 'do', from: 'user', chainId: 'c', hop: 0 }, { team: new Map(), skills: new Map() }, M.memoryFor(R, 'sentinel'));
+    ok(prompt.indexOf('# Standing instructions') > prompt.indexOf('# Your role') && prompt.indexOf('# Standing instructions') < prompt.indexOf('# Work item'), 'standing instructions sit after the role and before the work item');
+    ok(!buildPrompt(a, { id: 'i1', task: 'do', from: 'user', chainId: 'c', hop: 0 }, { team: new Map(), skills: new Map() }, '').includes('Standing instructions'), 'no notes means no section');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
+  console.log('@loop chat tools: read at once, change only after Apply');
+  {
+    const { runChatTool, CHAT_TOOLS } = require(`${OUT}/chatTools.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-chat-'));
+    fs.mkdirSync(path.join(R, '.github', 'agents'), { recursive: true });
+    const file = path.join(R, '.github', 'agents', 'sentinel.agent.md');
+    const src = '---\nname: sentinel\ndescription: watches\nloop:\n  schedule: "0 9 * * *"\n  task: Look.\n---\nYou watch.\n';
+    fs.writeFileSync(file, src);
+    fs.writeFileSync(path.join(R, '.github', 'agents', 'planner.agent.md'), '---\nname: planner\ndescription: chat only\n---\nPlan.\n');
+    const calls = { submit: [], answer: [], power: [], reload: 0 };
+    const host = { root: R, state: () => ({ running: true, active: undefined }), submit: (a, t) => calls.submit.push([a, t]), answer: (i, t) => calls.answer.push([i, t]),
+      power: async on => { calls.power.push(on); }, reload: async () => { calls.reload++; return []; } };
+    const list = JSON.parse((await runChatTool('list_agents', {}, host)).text);
+    ok(list.agents.length === 2 && list.agents.find(a => a.name === 'sentinel').schedule === '0 9 * * *' && list.agents.find(a => a.name === 'planner').runsUnattended === false, 'list_agents tells team agents from chat-only ones');
+    ok(CHAT_TOOLS.every(t => t.name && t.description && t.inputSchema.type === 'object') && CHAT_TOOLS.filter(t => t.name.startsWith('propose_')).length === 7, 'every change goes through a propose_ tool');
+
+    const sched = await runChatTool('propose_schedule', { agent: 'sentinel', schedule: '*/30 9-18 * * 1-5' }, host);
+    ok(sched.proposal && sched.proposal.detail.includes('+  schedule: "*/30 9-18 * * 1-5"') && fs.readFileSync(file, 'utf8') === src, 'a schedule request becomes a diff and writes nothing');
+    ok(/Apply button/.test(sched.text) && /nothing has changed/i.test(sched.text), 'the model is told nothing has happened yet');
+    const msg = await sched.proposal.apply();
+    ok(loadAgents(R).get('sentinel').schedule === '*/30 9-18 * * 1-5' && calls.reload === 1 && msg.includes('Team reloaded'), 'Apply writes the file and reloads the team');
+    ok((await runChatTool('propose_schedule', { agent: 'sentinel', schedule: 'every day' }, host)).text.startsWith('Not proposed'), 'a bad cron is explained to the model, not proposed');
+    ok((await runChatTool('propose_schedule', { agent: 'planner', schedule: '0 9 * * *', task: 'x' }, host)).text.includes('no loop: block'), 'a chat-only agent cannot be scheduled from here');
+
+    const mem = await runChatTool('propose_remember', { agent: 'sentinel', note: 'Reports go to ops' }, host);
+    ok(mem.proposal && !fs.existsSync(path.join(R, '.loop', 'memory', 'sentinel.md')), 'a note is proposed, not written');
+    const reloadsBefore = calls.reload;
+    await mem.proposal.apply();
+    ok(fs.readFileSync(path.join(R, '.loop', 'memory', 'sentinel.md'), 'utf8').includes('Reports go to ops') && calls.reload === reloadsBefore, 'applying a note writes it without reloading the team');
+    ok((await runChatTool('get_memory', { agent: 'sentinel' }, host)).text.includes('Reports go to ops'), 'get_memory reads it back');
+
+    const run = await runChatTool('propose_run', { agent: 'sentinel', task: 'Check now' }, host);
+    ok(run.proposal && calls.submit.length === 0, 'a task is proposed, not queued');
+    await run.proposal.apply();
+    ok(JSON.stringify(calls.submit) === '[["sentinel","Check now"]]', 'Apply queues the task');
+    ok((await runChatTool('propose_run', { agent: 'planner', task: 'x' }, host)).text.startsWith('Not proposed'), 'a chat-only agent cannot be given a task');
+
+    Q.saveGate(R, { id: 'cq1', kind: 'question', agent: 'sentinel', itemId: 'i', chainId: 'c', title: 'Which host?', body: 'b', files: [], resume: true, status: 'pending', createdAt: new Date().toISOString() });
+    Q.saveGate(R, { id: 'ca1', kind: 'approval', agent: 'sentinel', itemId: 'i', chainId: 'c', title: 'Run it', body: 'b', command: 'echo', files: [], resume: true, status: 'pending', createdAt: new Date().toISOString() });
+    ok(JSON.parse((await runChatTool('list_pending', {}, host)).text).length === 2, 'list_pending shows both kinds');
+    const ans = await runChatTool('propose_answer', { gate_id: 'cq1', answer: 'mac-mini' }, host);
+    ok(ans.proposal && calls.answer.length === 0, 'an answer is proposed, not sent');
+    await ans.proposal.apply();
+    ok(JSON.stringify(calls.answer) === '[["cq1","mac-mini"]]', 'Apply sends the human\'s answer');
+    ok((await runChatTool('propose_answer', { gate_id: 'ca1', answer: 'yes' }, host)).text.includes('Loop Console'), 'an approval cannot be decided in chat; the model is sent to the console');
+    ok((await runChatTool('propose_answer', { gate_id: 'nope', answer: 'x' }, host)).text.startsWith('Not proposed'), 'an unknown gate is refused');
+    const pw = await runChatTool('propose_team_power', { on: false }, host);
+    await pw.proposal.apply();
+    ok(calls.power.join() === 'false', 'stop is proposed, then done on Apply');
+    ok((await runChatTool('propose_team_power', { on: true }, host)).text.includes('already running'), 'starting a running team is a no-op');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
   console.log('console: run status, review binding, page states');
   {
     const { consoleModel, renderBody } = require(`${OUT}/console.js`);
