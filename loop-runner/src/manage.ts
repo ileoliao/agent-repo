@@ -65,6 +65,32 @@ export function setLoopField(text: string, key: string, value: string | number |
 
 type Agent = ReturnType<typeof loadAllAgents> extends Map<string, infer A> ? A : never;
 type Read = { ok: false; error: string } | { ok: true; agent: Agent; file: string; text: string };
+/** Turn a live single-line field into a comment (`  # key: value`), so switching it back on can restore it. */
+function commentOutLoopField(text: string, key: string): string {
+  const nl = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const fm = frontmatterRange(lines);
+  if (!fm) { return text; }
+  const at = lines.findIndex((l, i) => i > fm[0] && i < fm[1] && new RegExp(`^  ${key}:`).test(l));
+  if (at < 0) { return text; }
+  let end = at + 1;
+  while (end < fm[1] && /^\s{3,}\S/.test(lines[end])) { end++; }
+  lines.splice(at, end - at, ...lines.slice(at, end).map(l => `  # ${l.slice(2)}`));
+  return lines.join(nl);
+}
+
+/** Inverse of commentOutLoopField for a single-line field. Returns the text unchanged when there is nothing to restore. */
+function uncommentLoopField(text: string, key: string): string {
+  const nl = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const fm = frontmatterRange(lines);
+  if (!fm) { return text; }
+  const at = lines.findIndex((l, i) => i > fm[0] && i < fm[1] && new RegExp(`^  # ${key}:`).test(l));
+  if (at < 0 || /^  #\s{3,}\S/.test(lines[at + 1] ?? '')) { return text; }
+  lines[at] = `  ${lines[at].slice(4)}`;
+  return lines.join(nl);
+}
+
 const readAgent = (root: string, name: string): Read => {
   const a = loadAllAgents(root).get(name);
   if (!a) { return { ok: false, error: `No agent named "${name}". Agents: ${[...loadAllAgents(root).keys()].join(', ') || 'none'}.` }; }
@@ -79,14 +105,17 @@ export function proposeSchedule(root: string, name: string, p: { schedule?: stri
   let after = r.text;
   const notes: string[] = [];
   if (p.schedule === null) {
-    after = setLoopField(after, 'schedule', undefined)!;
-    after = setLoopField(after, 'wakeIf', undefined)!;
-    notes.push('scheduling off (wakeIf removed with it)');
+    // Commented out, not deleted: wakeIf is invalid without a schedule, and turning scheduling back on should bring it back.
+    after = commentOutLoopField(commentOutLoopField(after, 'schedule'), 'wakeIf');
+    notes.push('scheduling off (schedule and wakeIf kept as comments)');
   } else if (p.schedule !== undefined) {
     const err = validateCron(p.schedule.trim());
     if (err) { return { error: `Not a valid 5-field cron expression: ${err}` }; }
+    const hadWakeIf = !!parseFrontmatter(after).meta.loop?.wakeIf;
+    after = uncommentLoopField(after, 'schedule');
     after = setLoopField(after, 'schedule', p.schedule.trim())!;
-    notes.push(`schedule \`${p.schedule.trim()}\``);
+    if (!hadWakeIf) { const restored = uncommentLoopField(after, 'wakeIf'); if (restored !== after) { after = restored; notes.push('wakeIf restored'); } }
+    notes.unshift(`schedule \`${p.schedule.trim()}\``);
   }
   if (p.task !== undefined) {
     if (!p.task.trim()) { return { error: 'The task text cannot be empty.' }; }

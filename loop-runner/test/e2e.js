@@ -785,10 +785,23 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(M.proposeSchedule(R, 'sentinel', { schedule: '61 * * * *' }).error, 'an invalid cron is rejected before any file is touched');
     ok(M.proposeSchedule(R, 'nobody', { schedule: '0 9 * * *' }).error.includes('No agent named'), 'an unknown agent is rejected');
     const off = M.proposeSchedule(R, 'sentinel', { schedule: null });
-    ok(off.change && !off.change.after.includes('schedule:'), 'scheduling can be turned off');
+    ok(off.change && !require(`${OUT}/frontmatter.js`).parseFrontmatter(off.change.after).meta.loop.schedule && off.change.after.includes('  # schedule: "*/15 9-21 * * 1-5"'), 'scheduling can be turned off, keeping the old schedule as a comment');
     const multi = M.proposeSchedule(R, 'sentinel', { task: 'Line one.\nHe said "go" and \'stop\'.' });
     ok(multi.change && require(`${OUT}/frontmatter.js`).parseFrontmatter(multi.change.after).meta.loop.task === 'Line one.\nHe said "go" and \'stop\'.', 'a task with both quote kinds and a newline round-trips through a block scalar');
-    M.applyChange(R, sched.change);
+    {
+      const withProbe = original.replace('  task: Check the dashboard.', '  wakeIf: bash .github/skills/probe/scripts/check.sh\n  task: Check the dashboard.');
+      fs.writeFileSync(agentFile, withProbe);
+      const offP = M.proposeSchedule(R, 'sentinel', { schedule: null }); M.applyChange(R, offP.change);
+      const parsedOff = require(`${OUT}/frontmatter.js`).parseFrontmatter(fs.readFileSync(agentFile, 'utf8')).meta.loop;
+      ok(!parsedOff.schedule && !parsedOff.wakeIf, 'turned off: neither schedule nor wakeIf is live (so the config stays valid)');
+      const onP = M.proposeSchedule(R, 'sentinel', { schedule: '*/5 * * * *' });
+      M.applyChange(R, onP.change);
+      const parsedOn = require(`${OUT}/frontmatter.js`).parseFrontmatter(fs.readFileSync(agentFile, 'utf8')).meta.loop;
+      ok(parsedOn.schedule === '*/5 * * * *' && parsedOn.wakeIf === 'bash .github/skills/probe/scripts/check.sh' && onP.change.summary.includes('wakeIf restored'), 'turning it back on restores the zero-token wakeIf check');
+      ok(!fs.readFileSync(agentFile, 'utf8').includes('# schedule:'), 'the old commented schedule line is replaced, not left behind');
+      fs.writeFileSync(agentFile, original);
+    }
+    M.applyChange(R, M.proposeSchedule(R, 'sentinel', { schedule: '0 9 * * 1-5' }).change);
     ok(loadAgents(R).get('sentinel').schedule === '0 9 * * 1-5', 'applying the change is read back by the team loader');
     let stale = false; try { M.applyChange(R, off.change); } catch (e) { stale = /changed since/.test(e.message); }
     ok(stale, 'a proposal built on an older file is refused');
