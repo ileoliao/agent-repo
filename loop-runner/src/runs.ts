@@ -11,11 +11,24 @@ export interface RunSummary {
   started: string;
   /** Audit file (`.loop/runs/<date>/<chainId>.jsonl`). */
   file: string;
+  /** Workspace-relative files the run wrote successfully (from the end event; empty for older runs). */
+  outputs: string[];
+  /** Highest step reached. */
+  step: number;
+}
+
+/**
+ * Files a run wrote, from its tool results. Only successful writes count: a refused or failed write
+ * never produces "Wrote …" or "Edited …". Works on the result texts, so it also holds after a resume.
+ */
+export function outputsFrom(resultTexts: string[]): string[] {
+  const paths = resultTexts.map(t => /^(?:Wrote|Edited) (.+)\.$/.exec(t)?.[1]).filter((p): p is string => !!p);
+  return [...new Set(paths)];
 }
 
 /**
  * Newest audit chains, read from the existing `.loop/runs/<date>/<chainId>.jsonl` files. Wake checks are skipped.
- * Read-only; the runtime's data contract is unchanged.
+ * Read-only; the runtime's data contract is unchanged (`outputs` on the end event is optional and additive).
  */
 export function recentRuns(root: string, limit = 15): RunSummary[] {
   const dir = path.join(root, '.loop', 'runs');
@@ -49,7 +62,9 @@ export function recentRuns(root: string, limit = 15): RunSummary[] {
       status,
       summary: String(last?.summary ?? last?.message ?? last?.reason ?? ''),
       started: String(first.ts ?? ''),
-      file
+      file,
+      outputs: Array.isArray(last?.type === 'end' ? last.outputs : undefined) ? last.outputs.map(String) : [],
+      step: Math.max(0, ...events.map(e => Number(e.step) || 0))
     });
   }
   return out;

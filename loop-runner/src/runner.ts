@@ -4,6 +4,7 @@ import { Policy, skillScriptRule } from './policy';
 import { PlainMsg, PlainPart, WorkItem, audit, getGate, loadCheckpoint, saveCheckpoint } from './queue';
 import { redact } from './exec';
 import { buildTools, runTool, ToolOutcome } from './tools';
+import { outputsFrom } from './runs';
 
 export interface RunDeps {
   root: string;
@@ -193,7 +194,9 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   }
 
   const status = finished?.status ?? (deps.token.isCancellationRequested ? 'cancelled' : step >= limit ? 'max_steps' : 'stalled');
-  log({ type: 'end', step, status, summary: finished?.summary });
+  // Every successful write in the transcript, including turns before a resume.
+  const results = transcript.flatMap(m => m.parts.flatMap(p => (p.t === 'result' ? [p.text] : [])));
+  log({ type: 'end', step, status, summary: finished?.summary, outputs: outputsFrom(results) });
   deps.out.appendLine(`■ ${agent.name}: ${status}${finished ? ` — ${finished.summary}` : ''}`);
   return { status, summary: finished?.summary, steps: step };
 }

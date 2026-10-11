@@ -41,6 +41,20 @@ export function missedSince(expr: string, lastKey: string | undefined, now: Date
   return false;
 }
 
+/**
+ * First minute strictly after `from` that matches, searched up to `maxDays` ahead. Undefined when none is found.
+ * Used for the "next run" display only; the scheduler still decides with cronMatches on each tick.
+ */
+export function nextMatch(expr: string, from: Date, maxDays = 8): Date | undefined {
+  const start = new Date(from.getTime());
+  start.setSeconds(0, 0);
+  for (let t = start.getTime() + 60_000, i = 0; i < maxDays * 24 * 60; i++, t += 60_000) {
+    const d = new Date(t);
+    if (cronMatches(expr, d)) { return d; }
+  }
+  return undefined;
+}
+
 export function cronMatches(expr: string, d: Date): boolean {
   const f = expr.trim().split(/\s+/);
   const [min, hour, dom, mon, dow] = f.map((x, i) => expand(x, RANGES[i][0], RANGES[i][1]));
