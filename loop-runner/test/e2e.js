@@ -863,6 +863,9 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     await pw.proposal.apply();
     ok(calls.power.join() === 'false', 'stop is proposed, then done on Apply');
     ok((await runChatTool('propose_team_power', { on: true }, host)).text.includes('already running'), 'starting a running team is a no-op');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
   console.log('console: run status, review binding, page states');
   {
     const { consoleModel, renderBody } = require(`${OUT}/console.js`);
