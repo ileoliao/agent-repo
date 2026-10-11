@@ -26,6 +26,8 @@ Bug fixes, security fixes and test improvements are welcome. If a change seems t
 
 **Approved additions (2026-10-11): the console.** The owner approved a native console on top of the existing surfaces: the status bar line (running agent, step, next wake), the sidebar "Agents" group (state, next run, last wake check, opens the agent file), "Recent runs" with the files each run wrote, and "Open Latest Result" reading `end.outputs`. It stays native (no chat, no notifications). The one data addition is the optional `outputs` field on the `end` audit event. Setup checks and a sample-agent command are not approved yet.
 
+**Approved (2026-10-11): pi as the loop.** The owner decided the basic harness should be pi's `Agent` rather than our own loop. `runItem`'s interface, the checkpoint format and the audit events are unchanged; the e2e suite and the sim pass on it. Tools are executed sequentially. pi validates tool arguments against the schemas (strings such as `"5"` are coerced; a missing required field comes back as a tool error).
+
 **Approved additions (2026-10-11), second batch:** approval bound to what the reviewer saw (the console shows each draft file and sends its sha256; `approveAndRun` refuses if a file changed since or was never shown), run guardrails (stalled after 3 identical results, `loopRunner.maxMinutes`), and the optional `loop.maxRunsPerDay`. A capped wake is recorded as a `wake` audit event with `wake:false, capped:<n>`.
 
 **Approved addition (2026-10-11): the Loop Console webview.** After the owner found the native surfaces too hard to read, a single webview page (`Loop Runner: Open Console`, also the status bar item) shows what needs you (answer, approve with the exact command shown, reject), the agents, and a step timeline with output files for each recent run. It only reads `.loop/` and calls the existing gate functions; no new data contract, no new runtime behaviour.
@@ -52,7 +54,7 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `wake.ts` | `checkWake`: runs `loop.wakeIf` and interprets its exit code | no |
 | `gates.ts` | Resolve gates (answer, approve-and-run, reject) and `notify` | no |
 | `tools.ts` | Generic tool schemas and `runTool` | types only (elided) |
-| `runner.ts` | The agent loop for one work item: run, park, resume | yes |
+| `runner.ts` | One work item on pi's `Agent` (`@earendil-works/pi-agent-core`): `streamFn` over `vscode.lm`, tools via `runTool`, `finishTurn` for park, finish, caps and checkpoints. Converts between pi messages and `PlainMsg` | yes |
 | `inbox.ts` | Sidebar tree view and gate rendering | yes |
 | `outbox.ts` | `latestOutput`: newest file under `.loop/outbox/` (fallback for Open Latest Result). Pure, no `vscode` | no |
 | `runs.ts` | `recentRuns` and `outputsFrom`: read-only summaries of `.loop/runs/*.jsonl`. Pure, no `vscode` | no |
@@ -83,7 +85,7 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 4. **Compound commands are checked per segment** (split on `&&`, `||`, `;`, `|`, a single `&`, and newlines; quotes are respected). Command substitution (`$(` and backticks) is always denied. Shell redirection into a protected path, or out of the workspace, is always denied. These hard rejects are applied at `request_approval` and again in `approveAndRun`.
 5. **Agents cannot edit their own definitions or the runtime's state.** `.loop/**`, `.github/**` and `.git/**` are protected by default. `.loop/outbox/**` is the only always-writable carve-out, used for drafts.
 6. **Secrets never reach the model.** They are injected as env vars at exec time and redacted from every tool result, including `read_file` and values shorter than 4 characters. The child environment is an allowlist plus those secrets, not a copy of `process.env`. The allowlist includes non-secret plumbing (`SSH_AUTH_SOCK`, DBus/XDG runtime, proxy and CA variables) but never tokens such as `GH_TOKEN`; give those to the runtime with Set Secret. Only their names appear in prompts.
-7. **The transcript is plain data.** `runner.ts` keeps `PlainMsg[]` as the single source of truth and converts to `vscode` classes only per request. Checkpoints must replay byte-identically, which keeps the prompt-cache prefix stable.
+7. **The transcript is plain data.** Checkpoints store `PlainMsg[]`; `runner.ts` converts to pi messages when resuming and back at every checkpoint, and to `vscode` classes only per request (pi's own message state is never persisted). Checkpoints must replay byte-identically, which keeps the prompt-cache prefix stable.
 8. **Prompt order is static-first.** Order: runtime rules, then role, then skills, then teammates, then the work item. Do not put timestamps or per-run data earlier in the prompt; it breaks prompt caching, which matters under token-based Copilot billing.
 9. **One gate per turn.** A second gate call in the same turn returns `Not sent: ...` and creates nothing.
 10. **`notifyCommand` is machine-scoped.** A repository must not be able to set it.
@@ -162,6 +164,7 @@ Secrets are stored in SecretStorage under `loopRunner.secret.<NAME>`, with the l
 
 ```bash
 npm install
+# pi is ESM-only: runner.ts loads it with dynamic import(); tsconfig uses module node20; pins are exact (1.1.0)
 npm test          # tsc + test/e2e.js; must print "ALL <n> CHECKS PASSED"
 npm run package   # esbuild bundles src into out/extension.js (so `diff` is inside the vsix), then npx @vscode/vsce
 ```
