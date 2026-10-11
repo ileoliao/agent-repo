@@ -39,8 +39,9 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `frontmatter.ts` | Dependency-free YAML subset: nested maps, lists of maps, block scalars, quote-aware comments | no |
 | `cron.ts` | 5-field cron matcher (local time; DOM/DOW OR semantics) | no |
 | `team.ts` | Load agents and skills, `validateTeam`, `pickModel` | no |
-| `policy.ts` | Allow/deny decisions for commands and writes; `skillScriptRule` | no |
-| `exec.ts` | Non-interactive shell execution: stdin closed, timeout, env and secret injection, redaction | no |
+| `policy.ts` | Allow/deny decisions for commands and writes; hard rejects (substitution, redirection, chaining); `skillScriptRule` | no |
+| `exec.ts` | Loop Runner shell wrapper: allowlisted env, secret injection, redaction, output cap. Process spawn/kill is pi's | no |
+| `vendor/pi/` | Vendored pi tool implementations (bash, read, write, edit, ls, find, grep). No TUI | no |
 | `queue.ts` | File-backed state: work items, gates, checkpoints, audit | no |
 | `wake.ts` | `checkWake`: runs `loop.wakeIf` and interprets its exit code | no |
 | `gates.ts` | Resolve gates (answer, approve-and-run, reject) and `notify` | no |
@@ -68,9 +69,9 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 1. **Refusal is a tool result, never an exception or a dialog.** Policy denials return text starting with `REFUSED`; tool exceptions return `ERROR: ...`. The loop always continues so the model can change course. This is the reason the runtime does not stall.
 2. **Nothing ever blocks waiting for a human.** There are no modal prompts inside the loop. Human input only arrives through gates, which park the item and free the worker.
 3. **Deny wins.** Deny rules are checked before allow rules, at `request_approval` time **and again** at execution time. Human approval cannot bypass a deny rule.
-4. **Compound commands are checked per segment** (split on `&&`, `||`, `;`, `|`). Command substitution (`$(` and backticks) is always denied.
+4. **Compound commands are checked per segment** (split on `&&`, `||`, `;`, `|`, a single `&`, and newlines; quotes are respected). Command substitution (`$(` and backticks) is always denied. Shell redirection into a protected path, or out of the workspace, is always denied. These hard rejects are applied at `request_approval` and again in `approveAndRun`.
 5. **Agents cannot edit their own definitions or the runtime's state.** `.loop/**`, `.github/**` and `.git/**` are protected by default. `.loop/outbox/**` is the only always-writable carve-out, used for drafts.
-6. **Secrets never reach the model.** They are injected as env vars at exec time and redacted from output. Only their names appear in prompts.
+6. **Secrets never reach the model.** They are injected as env vars at exec time and redacted from every tool result, including `read_file` and values shorter than 4 characters. The child environment is an allowlist plus those secrets, not a copy of `process.env`. Only their names appear in prompts.
 7. **The transcript is plain data.** `runner.ts` keeps `PlainMsg[]` as the single source of truth and converts to `vscode` classes only per request. Checkpoints must replay byte-identically, which keeps the prompt-cache prefix stable.
 8. **Prompt order is static-first.** Order: runtime rules, then role, then skills, then teammates, then the work item. Do not put timestamps or per-run data earlier in the prompt; it breaks prompt caching, which matters under token-based Copilot billing.
 9. **One gate per turn.** A second gate call in the same turn returns `Not sent: ...` and creates nothing.
@@ -115,9 +116,12 @@ Model resolution order: `loop.model` (by family, no fallback) → native `model`
 - `gates/<id>.json`: `Gate` with `kind` (`question` | `approval`), `status`, `resume`, `outcome`, `itemId`
 - `checkpoints/<itemId>.json`: `Checkpoint` with `messages`, `turnResults`, `parkedCallId`, `step`
 - `runs/<date>/<chainId>.jsonl`: audit events; `wake-<date>.jsonl` records wake checks
+- `schedule-state.json`: `{ [agent]: "YYYY-MM-DDTHH:MM" }` UTC minute of the last schedule slot that role already handled. Used to catch up one missed `wakeIf` on start
 - `outbox/`: drafts written by agents and editable by the human
 
-Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`. Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
+Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`, `retry`. Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
+
+`retry` means the item was left in `queue/<agent>/` instead of `_done`. Reasons: `cancelled` (Stop Team, or the run was cancelled as VS Code closed) and `rate-limit`. The rate-limit path pauses the worker, then runs that same item again. A successful Start Team sets globalState `loopRunner.teamStarted`. The next activation starts the team on its own and drains the queue before scheduling. The first start stays a user command so Copilot's consent dialog has a user gesture. Stop Team clears the flag. Pending gates are announced again on every start, including ones that already have `notifiedAt`.
 
 ### Notify
 
@@ -133,7 +137,7 @@ Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `
 | `maxSteps` | 40 |
 | `maxHops` | 5 |
 | Nudges when the model calls no tool | 2, then `stalled` |
-| Pause after a quota or rate-limit error | 10 min |
+| Pause after a quota or rate-limit error | 10 min, item stays queued and is retried |
 | Notify timeout | 30 s |
 
 Secrets are stored in SecretStorage under `loopRunner.secret.<NAME>`, with the list of names kept in globalState `loopRunner.secretNames`.
@@ -143,7 +147,7 @@ Secrets are stored in SecretStorage under `loopRunner.secret.<NAME>`, with the l
 ```bash
 npm install
 npm test          # tsc + test/e2e.js; must print "ALL <n> CHECKS PASSED"
-npm run package   # produces loop-runner-<version>.vsix
+npm run package   # esbuild bundles src into out/extension.js (so `diff` is inside the vsix), then npx @vscode/vsce
 ```
 
 `test/e2e.js` builds a throwaway workspace from the sample `.github/agents` and `.loop/policies` plus stub skills. It then runs the real runner with a mock `vscode` module and a scripted fake model. Every behaviour change needs a check there, especially anything touching the invariants above.

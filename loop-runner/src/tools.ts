@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Policy, decideCommand, decideWrite, deniedBy } from './policy';
+import { Policy, decideCommand, decideWrite, hardReject } from './policy';
 import { AgentDef } from './team';
 import { WorkItem, enqueue, newId, saveGate } from './queue';
-import { exec } from './exec';
+import { exec, redact } from './exec';
+import { createEditToolDefinition } from './vendor/pi/tools/edit';
+import { createLsToolDefinition } from './vendor/pi/tools/ls';
+import { createReadToolDefinition } from './vendor/pi/tools/read';
+import { createWriteToolDefinition } from './vendor/pi/tools/write';
 
 export interface ToolContext {
   root: string;
@@ -32,17 +36,25 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
   const tools: vscode.LanguageModelChatTool[] = [
     {
       name: 'read_file',
-      description: 'Read a UTF-8 text file in the workspace (workspace-relative path). Use for SKILL.md references, code, data.',
+      description: 'Read a UTF-8 text file in the workspace (workspace-relative path). Use for SKILL.md references, code, data. To continue a truncated read, pass startLine (and optionally endLine).',
       inputSchema: {
         type: 'object',
-        properties: { path: { type: 'string' }, startLine: { type: 'number' }, endLine: { type: 'number' } },
+        properties: {
+          path: { type: 'string' },
+          startLine: { type: 'number', description: 'First line to return, 1-based. Also accepts offset as an alias.' },
+          endLine: { type: 'number', description: 'Last line to return, inclusive.' }
+        },
         required: ['path']
       }
     },
     {
       name: 'list_dir',
-      description: 'List a workspace directory (non-recursive). "." is the root.',
-      inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] }
+      description: 'List a workspace directory (non-recursive). "." is the root. If the result says the entry limit was reached, call again with a higher limit.',
+      inputSchema: {
+        type: 'object',
+        properties: { path: { type: 'string' }, limit: { type: 'number', description: 'Maximum entries to return (default 500).' } },
+        required: ['path']
+      }
     },
     {
       name: 'write_file',
@@ -134,42 +146,53 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
 }
 
 export async function runTool(name: string, input: any, ctx: ToolContext): Promise<ToolOutcome> {
+  const outcome = await dispatchTool(name, input, ctx);
+  if (outcome.text) outcome.text = redact(outcome.text, ctx.secrets);
+  return outcome;
+}
+
+async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise<ToolOutcome> {
   switch (name) {
     case 'read_file': {
-      const abs = inside(ctx.root, input.path);
-      const lines = fs.readFileSync(abs, 'utf8').split('\n');
-      const s = Math.max(1, input.startLine ?? 1);
-      const e = Math.min(lines.length, input.endLine ?? lines.length);
-      return { text: lines.slice(s - 1, e).map((l, i) => `${s + i}\t${l}`).join('\n') };
+      const rel = workspaceRel(ctx.root, input.path);
+      const window = readWindow(input);
+      const result = await createReadToolDefinition(ctx.root).execute(
+        'read', { path: rel, offset: window.offset, limit: window.limit }, abortSignal(ctx)
+      );
+      return { text: rewriteReadHint(toolText(result)) };
     }
     case 'list_dir': {
-      const abs = inside(ctx.root, input.path || '.');
-      return {
-        text: fs.readdirSync(abs, { withFileTypes: true })
-          .filter(d => d.name !== '.git' && d.name !== 'node_modules')
-          .map(d => (d.isDirectory() ? d.name + '/' : d.name))
-          .join('\n')
-      };
+      const rel = workspaceRel(ctx.root, input.path || '.');
+      const limit = asNumber(input.limit);
+      const result = await createLsToolDefinition(ctx.root).execute(
+        'ls', limit == null ? { path: rel } : { path: rel, limit }, abortSignal(ctx)
+      );
+      return { text: toolText(result) };
     }
     case 'write_file':
     case 'edit_file': {
-      const rel = path.relative(ctx.root, inside(ctx.root, input.path)).replace(/\\/g, '/');
+      const rel = workspaceRel(ctx.root, input.path);
       const gate = decideWrite(ctx.policy, rel);
       if (gate.decision !== 'allow') {
         return { text: `REFUSED by policy (${gate.rule}).`, decision: 'deny' };
       }
-      const abs = path.join(ctx.root, rel);
+      const signal = abortSignal(ctx);
       if (name === 'write_file') {
-        fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, input.content, 'utf8');
+        await createWriteToolDefinition(ctx.root).execute('write', { path: rel, content: input.content ?? '' }, signal);
         return { text: `Wrote ${rel}.`, decision: 'allow' };
       }
-      const before = fs.readFileSync(abs, 'utf8');
-      const n = before.split(input.oldText).length - 1;
-      if (n !== 1) {
-        return { text: `edit_file failed: oldText matched ${n} times (need exactly 1).`, decision: 'allow' };
+      const definition = createEditToolDefinition(ctx.root);
+      const prepared = definition.prepareArguments?.({ path: rel, oldText: input.oldText, newText: input.newText })
+        ?? { path: rel, edits: [{ oldText: input.oldText, newText: input.newText }] };
+      try {
+        await definition.execute('edit', prepared, signal);
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        const found = /Found (\d+) occurrences/.exec(msg);
+        if (found) return { text: `edit_file failed: oldText matched ${found[1]} times (need exactly 1).`, decision: 'allow' };
+        if (msg.includes('Could not find')) return { text: 'edit_file failed: oldText matched 0 times (need exactly 1).', decision: 'allow' };
+        throw e;
       }
-      fs.writeFileSync(abs, before.replace(input.oldText, input.newText), 'utf8');
       return { text: `Edited ${rel}.`, decision: 'allow' };
     }
     case 'run_command': {
@@ -193,7 +216,7 @@ export async function runTool(name: string, input: any, ctx: ToolContext): Promi
     case 'request_approval': {
       const isApproval = name === 'request_approval';
       if (isApproval) {
-        const deny = deniedBy(ctx.policy, input.command);
+        const deny = hardReject(ctx.policy, input.command ?? '');
         if (deny) {
           return { text: `REFUSED: command matches deny rule ${deny}; not even a human can approve it here.`, decision: 'deny' };
         }
@@ -248,10 +271,47 @@ export async function runTool(name: string, input: any, ctx: ToolContext): Promi
   }
 }
 
-function inside(root: string, rel: string): string {
+function abortSignal(ctx: ToolContext): AbortSignal {
+  const ac = new AbortController();
+  if (ctx.token.isCancellationRequested) ac.abort();
+  else ctx.token.onCancellationRequested(() => ac.abort());
+  return ac.signal;
+}
+
+function toolText(result: { content?: { type?: string; text?: string }[] }): string {
+  return (result.content ?? []).map(part => part.text ?? '').join('\n');
+}
+
+function asNumber(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return undefined;
+}
+
+/** `startLine`/`endLine` are the tool contract. `offset` is accepted because older hints used that name. */
+function readWindow(input: any): { offset?: number; limit?: number } {
+  const start = asNumber(input.startLine ?? input.offset);
+  const end = asNumber(input.endLine);
+  if (end == null) return { offset: start, limit: asNumber(input.limit) };
+  const from = start ?? 1;
+  return { offset: start, limit: Math.max(0, end - from + 1) };
+}
+
+/** pi's reader says `offset`; this tool's schema is `startLine`/`endLine`. */
+function rewriteReadHint(text: string): string {
+  return text.replace(/Use offset=(\d+) to continue/g, 'Use startLine=$1 to continue');
+}
+
+/** Workspace-relative path, or throw if it escapes the root. pi resolves the path against cwd. */
+function workspaceRel(root: string, rel: string): string {
   const abs = path.resolve(root, rel ?? '.');
   if (abs !== root && !abs.startsWith(root + path.sep)) {
     throw new Error(`Path escapes workspace: ${rel}`);
   }
-  return abs;
+  const relative = path.relative(root, abs);
+  return (relative === '' ? '.' : relative).replace(/\\/g, '/');
+}
+
+function inside(root: string, rel: string): string {
+  return path.resolve(root, workspaceRel(root, rel));
 }

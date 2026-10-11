@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AgentDef, SkillDef } from './team';
 import { Policy, skillScriptRule } from './policy';
 import { PlainMsg, PlainPart, WorkItem, audit, getGate, loadCheckpoint, saveCheckpoint } from './queue';
+import { redact } from './exec';
 import { buildTools, runTool, ToolOutcome } from './tools';
 
 export interface RunDeps {
@@ -104,11 +105,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
     while (!finished && step < maxSteps && !deps.token.isCancellationRequested) {
       step++;
       const t0 = Date.now();
-      const response = await deps.model.sendRequest(
-        transcript.map(toVscode),
-        { tools, toolMode: vscode.LanguageModelChatToolMode.Required },
-        deps.token
-      );
+      const response = await sendWithToolMode(deps, transcript.map(toVscode), tools);
       const assistant: PlainPart[] = [];
       const calls: { callId: string; name: string; input: any }[] = [];
       let text = '';
@@ -145,7 +142,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
               secrets: deps.secrets, maxHops: deps.maxHops, token: deps.token
             });
           } catch (e: any) {
-            o = { text: `ERROR: ${e?.message ?? String(e)}` };
+            o = { text: redact(`ERROR: ${e?.message ?? String(e)}`, deps.secrets) };
           }
         }
         deps.out.appendLine(`    ${call.name} ${brief(call.input)} → ${o.decision ?? ''} ${(o.park ? `parked on ${o.park}` : o.text).split('\n')[0].slice(0, 100)}`);
@@ -166,6 +163,11 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
     }
   } catch (e: any) {
     const msg = e instanceof vscode.LanguageModelError ? `${e.code}: ${e.message}` : e?.message ?? String(e);
+    if (deps.token.isCancellationRequested) {
+      deps.out.appendLine(`  !! cancelled: ${msg}`);
+      log({ type: 'error', step, message: msg, cancelled: true });
+      return { status: 'cancelled', summary: msg, steps: step };
+    }
     deps.out.appendLine(`  !! ${msg}`);
     log({ type: 'error', step, message: msg });
     return { status: 'error', summary: msg, steps: step };
@@ -175,6 +177,36 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   log({ type: 'end', step, status, summary: finished?.summary });
   deps.out.appendLine(`■ ${agent.name}: ${status}${finished ? ` — ${finished.summary}` : ''}`);
   return { status, summary: finished?.summary, steps: step };
+}
+
+/**
+ * Some models reject `Required` when many tools are registered (the API notes that a few
+ * only allow a single tool in that mode). Fall back to `Auto` once on that error.
+ */
+async function sendWithToolMode(
+  deps: RunDeps,
+  messages: vscode.LanguageModelChatMessage[],
+  tools: vscode.LanguageModelChatTool[]
+): Promise<vscode.LanguageModelChatResponse> {
+  const required = vscode.LanguageModelChatToolMode?.Required;
+  const auto = vscode.LanguageModelChatToolMode?.Auto;
+  const first = required ?? auto;
+  try {
+    return await deps.model.sendRequest(messages, { tools, toolMode: first }, deps.token);
+  } catch (e) {
+    if (deps.token.isCancellationRequested || required == null || auto == null || !isToolModeError(e)) {
+      throw e;
+    }
+    deps.out.appendLine('  model rejected tool mode Required; retrying with Auto.');
+    return await deps.model.sendRequest(messages, { tools, toolMode: auto }, deps.token);
+  }
+}
+
+function isToolModeError(e: unknown): boolean {
+  const err = e as { code?: string; message?: string };
+  const msg = `${err?.code ?? ''} ${err?.message ?? e}`.toLowerCase();
+  if (/quota|rate/.test(msg)) return false;
+  return /tool.?mode|too many tools|single tool/.test(msg) || (/required/.test(msg) && /tool/.test(msg));
 }
 
 function brief(input: unknown): string {
