@@ -35,6 +35,11 @@
         "category": "Loop Runner"
       },
       {
+        "command": "loopRunner.openConsole",
+        "title": "Open Console",
+        "category": "Loop Runner"
+      },
+      {
         "command": "loopRunner.menu",
         "title": "Menu",
         "category": "Loop Runner"

@@ -3,12 +3,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { AgentDef, SkillDef, loadAllAgents, loadSkills, pickModel, validateTeam } from './team';
 import { cronMatches, minuteKey, missedSince } from './cron';
-import { Gate, WorkItem, audit, complete, enqueue, hasOpenScheduled, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
+import { Gate, WorkItem, audit, complete, enqueue, getGate, hasOpenScheduled, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
 import { loadPolicy, skillScriptRule } from './policy';
 import { checkWake } from './wake';
 import { runItem } from './runner';
 import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
 import { InboxView, showGate } from './inbox';
+import { ConsolePanel } from './consoleView';
 import { latestOutput } from './outbox';
 import { recentRuns } from './runs';
 import { agentRows, nextWake } from './status';
@@ -437,7 +438,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Loop Runner');
   // Status bar: one click per common action. A status bar item cannot host a dropdown, and a QuickPick always opens at the top of the window.
   const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  bar.command = 'loopRunner.focusInbox';
+  bar.command = 'loopRunner.openConsole';
   const toggle = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
   const result = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 48);
   result.text = '$(file-text) Result';
@@ -450,8 +451,10 @@ export function activate(ctx: vscode.ExtensionContext) {
   menu.command = 'loopRunner.menu';
   menu.show();
   const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, () => svc.activeAgent);
+  let consolePanel: ConsolePanel | undefined;
   const refresh = () => {
     inbox.refresh();
+    consolePanel?.refresh();
     const n = inbox.pendingCount();
     // Live state in one line: what is running (and which step), or when the next wake is due.
     const r = svc.root();
@@ -486,11 +489,27 @@ export function activate(ctx: vscode.ExtensionContext) {
     return r;
   };
   // A resolved gate may have woken a parked item; tick so the worker picks it up right away.
-  const after = (_woke: boolean) => { svc.tick(); inbox.refresh(); };
+  const after = (_woke: boolean) => { svc.tick(); inbox.refresh(); consolePanel?.refresh(); };
   const policyFor = (g: Gate) => loadPolicy(root(), svc.team.get(g.agent)?.policy ?? svc.cfg().get<string>('policyFile', '.loop/policy.json'));
+  const approveGate = async (id: string) => {
+    const g = getGate(root(), id);
+    if (!g) { throw new Error(`No approval ${id}`); }
+    const r = await approveAndRun(root(), id, policyFor(g), await svc.secrets());
+    out.appendLine(`✔ ${g.title}: ${r.ok ? 'executed' : 'FAILED'}\n${r.text}`);
+    after(r.woke);
+  };
+  consolePanel = new ConsolePanel({
+    root: () => svc.root(),
+    state: () => ({ running: svc.running, active: svc.activeAgent }),
+    answer: (id, text) => after(answerQuestion(root(), id, text).woke),
+    approve: approveGate,
+    reject: (id, fb) => after(rejectApproval(root(), id, fb).woke)
+  });
+  const panelTimer = setInterval(() => consolePanel?.refresh(), 5000);
 
   ctx.subscriptions.push(
-    out, bar, toggle, result, menu,
+    out, bar, toggle, result, menu, { dispose: () => clearInterval(panelTimer) },
+    vscode.commands.registerCommand('loopRunner.openConsole', () => consolePanel?.show()),
     vscode.window.registerTreeDataProvider('loopRunner.inbox', inbox),
     vscode.commands.registerCommand('loopRunner.startTeam', () => svc.start(true)),
     vscode.commands.registerCommand('loopRunner.stopTeam', () => svc.stop(true)),
@@ -517,6 +536,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         svc.running
           ? { label: '$(debug-stop) Stop Team', run: run('loopRunner.stopTeam') }
           : { label: '$(play) Start Team', run: run('loopRunner.startTeam') },
+        { label: '$(dashboard) Open Console', run: run('loopRunner.openConsole') },
         { label: '$(inbox) Open Inbox', description: inbox.pendingCount() ? `${inbox.pendingCount()} need you` : undefined, run: run('loopRunner.focusInbox') },
         { label: '$(file-text) Open Latest Result', run: run('loopRunner.openLatestResult') },
         { label: '$(sync) Reload & Validate Team', run: run('loopRunner.reloadTeam') },
