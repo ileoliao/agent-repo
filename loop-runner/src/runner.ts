@@ -15,6 +15,8 @@ export interface RunDeps {
   secrets: Record<string, string>;
   maxSteps: number;
   maxHops: number;
+  /** Wall-clock cap for one run, counted from this call (so a resume gets a fresh allowance). Unset = none. */
+  maxMs?: number;
   out: vscode.OutputChannel;
   token: vscode.CancellationToken;
 }
@@ -112,9 +114,17 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
 
   let finished: { status: string; summary: string } | undefined;
   let nudges = 0;
+  const startedAt = Date.now();
+  // The same call with the same result three times in a row means the agent is going in circles.
+  let lastSig = '';
+  let repeats = 0;
 
   try {
     while (!finished && step < limit && !deps.token.isCancellationRequested) {
+      if (deps.maxMs && Date.now() - startedAt > deps.maxMs) {
+        finished = { status: 'stalled', summary: `stopped after ${Math.round(deps.maxMs / 60000)} minutes (wall-clock cap)` };
+        break;
+      }
       step++;
       const t0 = Date.now();
       // Auto, not Required: Copilot rejects Required with more than one tool, and it does so inside the
@@ -164,6 +174,12 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
         deps.out.appendLine(`    ${call.name} ${brief(call.input)} → ${o.decision ?? ''} ${(o.park ? `parked on ${o.park}` : o.text).split('\n')[0].slice(0, 100)}`);
         log({ type: 'tool', step, name: call.name, input: call.input, decision: o.decision, gateId: o.park, ms: Date.now() - t1, result: o.text.slice(0, 2000) });
         results.push({ callId: call.callId, text: o.text });
+        const sig = `${call.name}\n${JSON.stringify(call.input)}\n${o.text}`;
+        repeats = sig === lastSig ? repeats + 1 : 1;
+        lastSig = sig;
+        if (repeats >= 3 && !o.park && !o.finished && !finished) {
+          finished = { status: 'stalled', summary: `stopped: ${call.name} gave the same result ${repeats} times in a row` };
+        }
         if (o.park && !parked) { parked = { gateId: o.park, callId: call.callId }; }
         if (o.finished) { finished = o.finished; }
       }

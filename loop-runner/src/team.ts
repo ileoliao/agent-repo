@@ -34,6 +34,8 @@ export interface AgentDef {
   /** Copilot model family override for unattended runs (e.g. claude-sonnet-4.5). */
   modelFamily?: string;
   maxSteps?: number;
+  /** Scheduled wakes allowed per local day (all outcomes count). Unset = no cap. */
+  maxRunsPerDay?: number;
   policy?: string;
   file: string;
 }
@@ -81,6 +83,7 @@ export function loadAllAgents(root: string): Map<string, AgentDef & { inLoop: bo
       wakeIf: loop?.wakeIf ? String(loop.wakeIf) : undefined,
       modelFamily: loop?.model ? String(loop.model) : undefined,
       maxSteps: typeof loop?.maxSteps === 'number' ? loop.maxSteps : undefined,
+      maxRunsPerDay: typeof loop?.maxRunsPerDay === 'number' ? loop.maxRunsPerDay : undefined,
       policy: loop?.policy ? String(loop.policy) : undefined,
       file: path.posix.join(AGENT_DIR, f),
       inLoop: !!loop
@@ -117,6 +120,7 @@ export function validateTeam(team: Map<string, AgentDef>, skills: Map<string, Sk
       if (e) { errors.push(`${a.name}: ${e}`); }
       if (!a.task) { errors.push(`${a.name}: loop.schedule is set but loop.task is missing`); }
     }
+    if (a.maxRunsPerDay !== undefined && (!Number.isInteger(a.maxRunsPerDay) || a.maxRunsPerDay < 1)) { errors.push(`${a.name}: loop.maxRunsPerDay must be a whole number of at least 1`); }
     if (a.wakeIf && !a.schedule) { errors.push(`${a.name}: loop.wakeIf only applies to scheduled runs; add loop.schedule`); }
   }
   return errors;

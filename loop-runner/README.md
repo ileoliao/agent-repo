@@ -191,3 +191,10 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 ## 控制台 (Loop Console)
 
 状态栏左侧的 Loop 项或命令 `Loop Runner: Open Console` 会打开一个页面:顶部是运行状态和 启动/停止/下任务 按钮;「Needs you」里直接回答问题、批准(显示将要执行的完整命令)或拒绝;下面是各 agent 的状态,以及每次运行的步骤时间线和产出的文件(点击打开)。页面每 5 秒自动刷新。
+
+## 防护与写权限建议
+
+- **卡住保护**:同一个调用连续 3 次得到相同结果,或单次运行超过 `loopRunner.maxMinutes`(默认 30 分钟),运行会以 `stalled` 结束并通知你。
+- **每日上限**:agent 的 `loop:` 里可加 `maxRunsPerDay: 4`,限制每个本地日的定时唤醒次数。
+- **审批绑定内容**:在控制台批准时,页面显示每个草稿文件的内容,批准的是你看到的那一版;文件之后被改动则不会执行,需要重新审核。
+- **不要让 agent 直接改工作区**:让 agent 只写 `.loop/outbox/`,把补丁作为草稿放进审批;应用补丁用一个受审批的 skill(在 `loop/<agent>/<item>` 分支的 worktree 里应用并开草稿 PR)。给任何 loop 写权限之前,先在一次性仓库里跑 `npm test` 里的 planted-secret 检查。

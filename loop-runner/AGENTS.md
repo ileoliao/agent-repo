@@ -26,6 +26,8 @@ Bug fixes, security fixes and test improvements are welcome. If a change seems t
 
 **Approved additions (2026-10-11): the console.** The owner approved a native console on top of the existing surfaces: the status bar line (running agent, step, next wake), the sidebar "Agents" group (state, next run, last wake check, opens the agent file), "Recent runs" with the files each run wrote, and "Open Latest Result" reading `end.outputs`. It stays native (no chat, no notifications). The one data addition is the optional `outputs` field on the `end` audit event. Setup checks and a sample-agent command are not approved yet.
 
+**Approved additions (2026-10-11), second batch:** approval bound to what the reviewer saw (the console shows each draft file and sends its sha256; `approveAndRun` refuses if a file changed since or was never shown), run guardrails (stalled after 3 identical results, `loopRunner.maxMinutes`), and the optional `loop.maxRunsPerDay`. A capped wake is recorded as a `wake` audit event with `wake:false, capped:<n>`.
+
 **Approved addition (2026-10-11): the Loop Console webview.** After the owner found the native surfaces too hard to read, a single webview page (`Loop Runner: Open Console`, also the status bar item) shows what needs you (answer, approve with the exact command shown, reject), the agents, and a step timeline with output files for each recent run. It only reads `.loop/` and calls the existing gate functions; no new data contract, no new runtime behaviour.
 
 ## Division of labour (the core design rule)
@@ -105,6 +107,7 @@ loop:                           # Loop Runner only; presence = joins the team
   model: <copilot family>       # overrides native model for unattended runs
   policy: .loop/policies/x.json
   maxSteps: 15
+  maxRunsPerDay: 4              # optional cap on scheduled wakes per local day (>= 1)
 ```
 
 The body is role instructions shared by Chat mode and unattended mode.
@@ -147,6 +150,8 @@ Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `
 | `maxOutputBytes` | 16000 (tool output keeps head and tail) |
 | `maxSteps` | 40 |
 | `maxHops` | 5 |
+| `maxMinutes` | 30 (wall-clock cap per run; ends as `stalled`) |
+| Stall | 3 identical call+result in a row ends the run as `stalled` |
 | Nudges when the model calls no tool | 2, then `stalled` |
 | Pause after a quota or rate-limit error | 10 min, item stays queued and is retried |
 | Notify timeout | 30 s |

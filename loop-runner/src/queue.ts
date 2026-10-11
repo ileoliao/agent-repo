@@ -112,6 +112,13 @@ export function hasOpenScheduled(root: string, agent: string): boolean {
   return pending(root, agent).some(i => i.from === 'schedule') || waiting(root).some(i => i.agent === agent && i.from === 'schedule');
 }
 
+/** Scheduled items this agent already had today (local date), whether queued, parked or finished. */
+export function scheduledToday(root: string, agent: string, now = new Date()): number {
+  const day = now.toDateString();
+  const mine = [...pending(root, agent), ...waiting(root).filter(i => i.agent === agent), ...readDir<WorkItem>(L(root, 'queue', '_done')).filter(i => i.agent === agent)];
+  return mine.filter(i => i.from === 'schedule' && new Date(i.createdAt).toDateString() === day).length;
+}
+
 /**
  * `gateId` is the gate a `waiting` item parked on. The human may have resolved it while the turn was still
  * running, before the item reached `_waiting`; that answer's wake() found nothing, so wake it here.

@@ -8,7 +8,7 @@ export interface ConsoleActions {
   root: () => string | undefined;
   state: () => { running: boolean; active?: string };
   answer: (gateId: string, text: string) => void;
-  approve: (gateId: string) => Promise<void>;
+  approve: (gateId: string, seen: Record<string, string>) => Promise<void>;
   reject: (gateId: string, feedback: string) => void;
 }
 
@@ -52,7 +52,7 @@ export class ConsolePanel {
         case 'ready': this.refresh(); break;
         case 'cmd': if (COMMANDS[m.name]) { await vscode.commands.executeCommand(COMMANDS[m.name]); } break;
         case 'answer': this.a.answer(String(m.id), String(m.text)); break;
-        case 'approve': await this.a.approve(String(m.id)); break;
+        case 'approve': await this.a.approve(String(m.id), m.seen && typeof m.seen === 'object' ? m.seen : {}); break;
         case 'reject': this.a.reject(String(m.id), String(m.feedback ?? '')); break;
         case 'open': case 'openAbs': {
           // Only files inside the workspace; the page cannot ask for anything else.

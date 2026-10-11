@@ -1,6 +1,9 @@
 import { Gate, audit, getGate, saveGate, wake } from './queue';
 import { Policy, hardReject } from './policy';
 import { exec } from './exec';
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Resolving human gates. vscode-free so it can be tested directly.
@@ -26,6 +29,11 @@ function pendingGate(root: string, id: string, kind: Gate['kind']): Gate {
   return g;
 }
 
+/** sha256 of a workspace file's bytes, or 'missing'. What the reviewer saw is compared against this at execution time. */
+export function fileSha256(root: string, rel: string): string {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex'); } catch { return 'missing'; }
+}
+
 export function answerQuestion(root: string, id: string, answer: string) {
   const g = pendingGate(root, id, 'question');
   return settle(root, g, 'answered', `The human answered: ${answer}${EDIT_NOTE(g)}`);
@@ -43,8 +51,14 @@ export function rejectApproval(root: string, id: string, feedback?: string) {
  * substitution, and redirection onto a protected path. Human approval cannot bypass them,
  * even if the gate was queued before the policy changed.
  */
-export async function approveAndRun(root: string, id: string, policy: Policy, secrets: Record<string, string>) {
+export async function approveAndRun(root: string, id: string, policy: Policy, secrets: Record<string, string>, seen?: Record<string, string>) {
   const g = pendingGate(root, id, 'approval');
+  // When the reviewer approved from a view that showed file contents, run only what they saw: a file that
+  // changed since (or a file they were never shown) means the approval no longer matches, so ask again.
+  if (seen) {
+    const changed = g.files.filter(f => seen[f] === undefined || seen[f] !== fileSha256(root, f));
+    if (changed.length) { throw new Error(`Not run: ${changed.join(', ')} changed after you reviewed it. Review again, then approve.`); }
+  }
   const deny = hardReject(policy, g.command ?? '');
   if (deny) { throw new Error(`Blocked by deny rule ${deny}`); }
   const r = await exec(g.command!, { cwd: root, timeoutSec: policy.commandTimeoutSec, maxOutputBytes: policy.maxOutputBytes, secrets });

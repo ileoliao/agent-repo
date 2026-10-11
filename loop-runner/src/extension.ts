@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { AgentDef, SkillDef, loadAllAgents, loadSkills, pickModel, validateTeam } from './team';
 import { cronMatches, minuteKey, missedSince } from './cron';
-import { Gate, WorkItem, audit, complete, enqueue, getGate, hasOpenScheduled, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
+import { Gate, WorkItem, audit, complete, enqueue, getGate, hasOpenScheduled, scheduledToday, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
 import { loadPolicy, skillScriptRule } from './policy';
 import { checkWake } from './wake';
 import { runItem } from './runner';
@@ -288,6 +288,10 @@ class TeamService {
     this.lastFired.set(a.name, minuteKey(now));
     this.saveFired(root);
     if (hasOpenScheduled(root, a.name)) return;
+    if (a.maxRunsPerDay !== undefined && scheduledToday(root, a.name, now) >= a.maxRunsPerDay) {
+      audit(root, `wake-${now.toISOString().slice(0, 10)}`, { type: 'wake', agent: a.name, wake: false, capped: a.maxRunsPerDay });
+      return;
+    }
     const policy = loadPolicy(root, a.policy ?? this.cfg().get<string>('policyFile', '.loop/policy.json'));
     const extraAllow = a.skills.map(s => this.skills.get(s)).filter((s): s is SkillDef => !!s).map(s => skillScriptRule(s.relDir));
     const w = await checkWake(root, a, policy, extraAllow, await this.secrets());
@@ -340,6 +344,7 @@ class TeamService {
           model, secrets: await this.secrets(),
           maxSteps: this.cfg().get<number>('maxSteps', 40),
           maxHops: this.cfg().get<number>('maxHops', 5),
+          maxMs: this.cfg().get<number>('maxMinutes', 30) * 60_000,
           out: this.out, token: this.current.token
         });
         this.current.dispose();
@@ -491,10 +496,10 @@ export function activate(ctx: vscode.ExtensionContext) {
   // A resolved gate may have woken a parked item; tick so the worker picks it up right away.
   const after = (_woke: boolean) => { svc.tick(); inbox.refresh(); consolePanel?.refresh(); };
   const policyFor = (g: Gate) => loadPolicy(root(), svc.team.get(g.agent)?.policy ?? svc.cfg().get<string>('policyFile', '.loop/policy.json'));
-  const approveGate = async (id: string) => {
+  const approveGate = async (id: string, seen?: Record<string, string>) => {
     const g = getGate(root(), id);
     if (!g) { throw new Error(`No approval ${id}`); }
-    const r = await approveAndRun(root(), id, policyFor(g), await svc.secrets());
+    const r = await approveAndRun(root(), id, policyFor(g), await svc.secrets(), seen);
     out.appendLine(`✔ ${g.title}: ${r.ok ? 'executed' : 'FAILED'}\n${r.text}`);
     after(r.woke);
   };
