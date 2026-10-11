@@ -142,11 +142,15 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 
 ## 上手
 
+0. **先装好扩展**：本机需要 Node.js（20 或更高）和网络（会用 `npx` 拉取 `@vsce`）。克隆仓库后在 `loop-runner` 目录运行 `npm install && npm run package`，得到 `loop-runner-1.0.0.vsix`；在扩展面板 → `…` → 从 VSIX 安装。
 1. **先跑冒烟测试**：克隆本仓库后，单独打开源码里的 `examples/smoke`（不在 vsix 里），按该目录的 `README.md` 操作。10 分钟走通安装、模型、定时、提问、审批和续跑，不碰任何真实系统
 2. 把示例的 `.github/agents/` 和 `.loop/policies/` 复制到工作区，按实际 skill 名修改
 3. 运行 `Loop Runner: Reload & Validate Team`，会报告缺失的 skill、无法无人值守的转交目标、写错的 cron
 4. 运行 `Loop Runner: Set Secret` 配置 `HARBOR_PAT`、`JIRA_TOKEN` 等凭证
-5. 运行 `Loop Runner: Start Team`。首次会弹出 Copilot 授权，必须由人触发。成功启动过之后，再次打开工作区会自动接着跑，并先处理队列里没做完的项。`Stop Team` 会取消这个自动启动
+5. 运行 `Loop Runner: Start Team`。首次会弹出 Copilot 授权，必须由人点这个命令来触发：授权框在 Start Team 时就会弹出（扩展会对每个还没授权的模型发一个极小的请求），不会拖到第一次无人值守的唤醒。如果此时 Copilot 还没登录好、模型列表为空，会最多等 2 分钟，仍为空就报错，登录好后重新 Start Team。成功启动过之后（按工作区记录，互不影响），再次打开该工作区会自动接着跑，并先处理队列里没做完的项。`Stop Team` 会取消这个自动启动
+   - `gh`、`git push` 需要的令牌（`GH_TOKEN`、`GITHUB_TOKEN` 等）不会从 VS Code 的环境继承，请用 `Set Secret` 配置。`SSH_AUTH_SOCK`、DBus、代理（`HTTP(S)_PROXY`、`NO_PROXY`）和自签 CA（`NODE_EXTRA_CA_CERTS`、`SSL_CERT_FILE`）这类非密钥变量会传给命令
+   - 代理地址里如果带了用户名密码，会被命令看到，建议改用不带凭据的代理或单独的 skill 脚本
+   - 没有在角色里指定模型时，用 Copilot 列表里的第一个，顺序不固定。建议先设置 `loopRunner.modelFamily`（`List Available Models` 能看到可用的 family）
 6. 可选：配置 `loopRunner.notifyCommand`，用 `Send a Test Notification` 测试
 
 ## 测试
@@ -160,7 +164,7 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 - 通知、凭证脱敏、超时、stdin 关闭、审计
 - 命令拼接、重定向到受保护路径、进程树超时、凭证不从环境继承、批准时再次拒绝命令替换、Windows shell 选择
 - 冒烟测试工作区按角色说明完整跑一遍（`scripts/py.js` 在 `python3` / `python` / `py` 里自己挑）
-- 错过的 cron、`read_file` 的 `startLine` 续读、`list_dir` 的 `limit`、工具模式 Required 失败后改走 Auto、取消不记成完成
+- 错过的 cron、`read_file` 的 `startLine` 续读、`list_dir` 的 `limit`、请求一律用 Auto（Copilot 在响应流里才拒绝 Required，假模型在流里抛错也不会让工作项出错）、上下文超限不当作限流、被中断的项从上一轮续跑而不重复转交、答复在同一轮内到达也能续跑、长输出保留真正的尾部、睡眠期间错过的 cron 补跑一次、取消不记成完成
 
 ## 限制
 

@@ -59,6 +59,11 @@ const ENV_ALLOW = new Set([
   'userprofile', 'homedrive', 'homepath', 'appdata', 'localappdata',
   'programfiles', 'programfiles(x86)', 'programw6432', 'term', 'colorterm',
   'processor_architecture', 'systemdrive', 'userdomain',
+  // Plumbing for git/ssh/gh behind keyrings, agents, proxies and private CAs. Tokens (GH_TOKEN, ...) stay out:
+  // give those to a role with Set Secret.
+  'ssh_auth_sock', 'dbus_session_bus_address', 'xdg_runtime_dir',
+  'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+  'node_extra_ca_certs', 'ssl_cert_file', 'ssl_cert_dir', 'requests_ca_bundle', 'curl_ca_bundle',
 ]);
 
 /**
@@ -99,13 +104,22 @@ async function run(command: string, o: ExecOptions): Promise<{ code: number | nu
   const ac = new AbortController();
   const sub = o.onCancel?.(() => ac.abort());
   const ops = operationsFor(resolveShellConfig());
-  let buf = '';
   const cap = o.maxOutputBytes;
+  // Keep the first `cap` chars and a rolling window of the last `cap`..2*cap chars, so the real end of a long
+  // log survives. The middle is dropped and the final cut below leaves cap/2 on each side.
+  let head = '';
+  let tail = '';
+  const append = (str: string) => {
+    const room = Math.max(0, cap - head.length);
+    head += str.slice(0, room);
+    tail += str.slice(room);
+    if (tail.length > cap * 2) tail = tail.slice(-cap);
+  };
   let code: number | null = null;
   let status: string;
   try {
     const result = await ops.exec(command, o.cwd, {
-      onData: (data) => { if (buf.length < cap * 4) buf += data.toString(); },
+      onData: (data) => append(data.toString()),
       signal: ac.signal,
       timeout: o.timeoutSec,
       env: buildShellEnv(o.secrets, o.env),
@@ -119,13 +133,14 @@ async function run(command: string, o: ExecOptions): Promise<{ code: number | nu
       status = `killed by SIGKILL (timeout ${o.timeoutSec}s or cancelled)`;
     } else {
       code = null;
-      buf += (buf && !buf.endsWith('\n') ? '\n' : '') + msg;
+      const sofar = head + tail;
+      append((sofar && !sofar.endsWith('\n') ? '\n' : '') + msg);
       status = 'error';
     }
   } finally {
     sub?.dispose();
   }
-  let text = redact(buf, o.secrets);
+  let text = redact(head + tail, o.secrets);
   if (text.length > cap) {
     const half = Math.floor(cap / 2);
     text = text.slice(0, half) + '\n...[truncated]...\n' + text.slice(-half);

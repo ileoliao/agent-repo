@@ -4,12 +4,13 @@
 
 ## 0. 准备
 
-- 本机需要 `python3`、`python`、`py` 里的任意一个。探测和发送都走 `scripts/py.js`，它会按这个顺序自己挑，不用改角色文件。
+- 本机需要 Node.js（20 或更高；探测脚本和打包都用它）。另外需要 `python3`、`python`、`py` 里的任意一个。探测和发送都走 `scripts/py.js`，它会按这个顺序自己挑，不用改角色文件。
   - Windows 上如果 `python` 打开的是应用商店占位程序，装好真正的 Python，或确认 `py` 能跑。包装脚本会在 `python` 失败后继续试 `py`。
 - 在 VS Code 里**单独打开本文件夹**作为工作区。这个文件夹在源码仓库的 `examples/smoke`，不在安装用的 vsix 里。克隆仓库后：文件 → 打开文件夹 → `examples/smoke`。
 
 ## 1. 安装与模型（最关键的一步）
 
+0. 生成 VSIX（需要网络，会用 `npx` 拉取 vsce）：在源码仓库的 `loop-runner` 目录运行 `npm install && npm run package`，得到 `loop-runner-1.0.0.vsix`。在 Node 20 上可能出现 `EBADENGINE` 警告，可以忽略
 1. 扩展面板 → `…` → 从 VSIX 安装 → 选 `loop-runner-1.0.0.vsix`
 2. 命令面板运行 `Loop Runner: List Available Models`
    - ✅ 输出面板列出若干 Copilot 模型，这一步通过
@@ -20,7 +21,8 @@
 1. 运行 `Loop Runner: Reload & Validate Team`，应输出 `Team reloaded OK`
 2. 运行 `Loop Runner: Set Secret`，名称填 `SMOKE_TOKEN`，值随便填，比如 `abc12345`
 3. 运行 `Loop Runner: Start Team`
-   - 首次会弹出 Copilot 模型授权，选允许。这一步必须由人点，扩展激活时不会自己弹授权
+   - 首次会在这一步弹出 Copilot 模型授权，选允许（扩展会向每个还没授权的模型发一个极小的请求来触发它）。必须由人点这个命令，扩展激活时不会自己弹授权
+   - 冒烟 agent 没指定模型，会用 Copilot 列表里的第一个，顺序不固定，可能不是你想要的。Start 之前先在设置里填 `loopRunner.modelFamily`（用 `List Available Models` 看 family）
    - 状态栏出现 `Loop`
    - 之后关掉 VS Code 再打开这个文件夹，团队会自动接着跑，并先处理队列里没做完的项。点 `Stop Team` 会取消这次自动启动
 
@@ -58,7 +60,8 @@
 |---|---|
 | Reload 报 skill 找不到 | 打开的文件夹不对，必须是 `examples/smoke` 本身 |
 | 弹出 "wakeIf check is failing" | `python3`、`python`、`py` 都不可用，或 `node` 不在 PATH 里 |
-| `no Copilot model matches` | 在设置 `loopRunner.modelFamily` 里填一个 List Available Models 列出的 family |
+| `Copilot returned no models` | Copilot 还没登录好或网络没通（列表为空时会先等最多 2 分钟）。等 Copilot 就绪后重新运行 Start Team；改 `modelFamily` 没用 |
+| `no Copilot model matches` | 列表不为空但没有匹配的模型：核对 `loop.model`，或在 `loopRunner.modelFamily` 里填一个 List Available Models 列出的 family |
 | 一直没反应 | 运行 `Loop Runner: Show Team Status`，确认 running 为 true；cron 每分钟才检查一次 |
 
 全部走通后，再按根目录的 README 接入真实的角色和 Skill。

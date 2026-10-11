@@ -95,7 +95,7 @@ async function phasePark(check) {
   check('read_file returned the note', !!(readEv && String(readEv.result).includes('SIM_NOTE_42')), readEv && String(readEv.result).slice(0, 300));
 
   const mode = readTrace().filter(e => String(e.event).startsWith('tool-mode'));
-  check('tool mode Required fell back to Auto', mode.some(e => e.event === 'tool-mode-required-rejected') && mode.some(e => e.event === 'tool-mode-auto-accepted'), JSON.stringify(mode));
+  check('requests use Auto; a Required-rejecting model (error in the stream) never sees Required', !mode.some(e => e.event === 'tool-mode-required-rejected') && mode.some(e => e.event === 'tool-mode-auto-accepted'), JSON.stringify(mode));
 
   const waiting = listJson(path.join(WS, '.loop', 'queue', '_waiting'));
   const gates = listJson(path.join(WS, '.loop', 'gates')).filter(g => g.status === 'pending');
