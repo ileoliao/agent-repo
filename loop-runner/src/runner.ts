@@ -119,7 +119,7 @@ function piToPlain(msgs: readonly (AgentMessage | Message)[]): PlainMsg[] {
 export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult> {
   // pi ships as ESM only; a dynamic import works from the compiled CommonJS output and from the esbuild bundle.
   const { Agent } = await import('@earendil-works/pi-agent-core');
-  const { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai');
+  const { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai/utils/event-stream');
 
   const agent = deps.team.get(item.agent)!;
   const extraAllow = agent.skills
