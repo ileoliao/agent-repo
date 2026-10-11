@@ -863,6 +863,42 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     await pw.proposal.apply();
     ok(calls.power.join() === 'false', 'stop is proposed, then done on Apply');
     ok((await runChatTool('propose_team_power', { on: true }, host)).text.includes('already running'), 'starting a running team is a no-op');
+  console.log('console: run status, review binding, page states');
+  {
+    const { consoleModel, renderBody } = require(`${OUT}/console.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-pro-'));
+    const day = path.join(R, '.loop', 'runs', '2026-10-11');
+    fs.mkdirSync(day, { recursive: true });
+    const line = o => JSON.stringify(o);
+    fs.writeFileSync(path.join(day, 'resumed.jsonl'), [
+      line({ ts: '2026-10-11T09:00:00Z', chainId: 'resumed', agent: 'a1', type: 'start' }),
+      line({ ts: '2026-10-11T09:00:05Z', chainId: 'resumed', agent: 'a1', type: 'park', step: 1, gateId: 'g' }),
+      line({ ts: '2026-10-11T09:10:00Z', chainId: 'resumed', agent: 'a1', type: 'resume', gateId: 'g' })
+    ].join('\n'));
+    const { recentRuns } = require(`${OUT}/runs.js`);
+    ok(recentRuns(R)[0].status === 'running' && recentRuns(R)[0].updated === '2026-10-11T09:10:00Z', 'a run that resumed after a park is running again, with its last event time');
+    const cut = consoleModel(R, { running: false });
+    ok(cut.runs[0].status === 'interrupted', 'a run no worker owns is shown as interrupted, not running forever');
+    ok(consoleModel(R, { running: true, active: 'a1' }).runs[0].status === 'running', 'the active agent\'s run stays running');
+    ok(renderBody(cut).includes('Interrupted') && renderBody(cut).includes('Team stopped'), 'the page says so');
+
+    const F = path.join(R, '.loop', 'outbox'); fs.mkdirSync(F, { recursive: true });
+    fs.writeFileSync(path.join(F, 'd.md'), 'draft v1');
+    Q.saveGate(R, { id: 'pg1', kind: 'approval', agent: 'a1', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'echo hi', files: ['.loop/outbox/d.md', '.loop/outbox/gone.md'], resume: false, status: 'pending', createdAt: new Date().toISOString() });
+    const m = consoleModel(R, { running: true });
+    const pv = m.pending[0].previews;
+    ok(pv[0].sha256 === G.fileSha256(R, '.loop/outbox/d.md') && pv[1].sha256 === 'missing', 'the shown draft and its hash come from the same bytes; a missing file is marked missing');
+    const html = renderBody(m);
+    ok(/<button class="btn primary" data-approve="pg1" disabled>/.test(html) && html.includes('is missing, so this cannot be approved'), 'approval is disabled while a draft is missing');
+    await assert.rejects(() => G.approveAndRun(R, 'pg1', loadPolicy(W, '.loop/policy.json'), {}, { '.loop/outbox/d.md': pv[0].sha256, '.loop/outbox/gone.md': 'missing' }), /changed after you reviewed/);
+    ok(true, 'the host also refuses an approval that covers a missing file');
+    ok(html.includes('data-copy="echo hi"') && html.includes('<time datetime='), 'the command can be copied and times carry their exact value');
+    fs.writeFileSync(path.join(F, 'big.md'), 'x'.repeat(7000));
+    Q.saveGate(R, { id: 'pg2', kind: 'approval', agent: 'a1', itemId: 'i', chainId: 'c', title: 't2', body: 'b', command: 'echo', files: ['.loop/outbox/big.md'], resume: false, status: 'pending', createdAt: new Date().toISOString() });
+    ok(renderBody(consoleModel(R, { running: true })).includes('Open full file'), 'a long draft offers the full file and says approval covers all of it');
+    const banner = renderBody({ ...m, note: { tone: 'bad', text: '<b>boom</b>' } });
+    ok(banner.includes('role="alert"') && banner.includes('&lt;b&gt;boom') && !banner.includes('<b>boom'), 'a page-level error is shown, escaped');
+    ok(renderBody({ ...m, running: true, active: undefined }).includes('Team on · idle'), 'a running team with no active agent is labelled idle, not stopped');
     fs.rmSync(R, { recursive: true, force: true });
   }
 

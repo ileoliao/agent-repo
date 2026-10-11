@@ -13,14 +13,14 @@ export interface AgentRow {
   /** Next scheduled wake, if the agent has a schedule. */
   next?: Date;
   /** Latest wake check: whether it found work, and when. */
-  lastWake?: { wake: boolean; at: string };
+  lastWake?: { wake: boolean; at: string; capped?: number };
   /** Workspace-relative path of the agent file. */
   file: string;
 }
 
 /** Latest wake check per agent, from the newest `wake-<date>.jsonl` files (the last two days). */
-function lastWakes(root: string): Map<string, { wake: boolean; at: string }> {
-  const out = new Map<string, { wake: boolean; at: string }>();
+function lastWakes(root: string): Map<string, { wake: boolean; at: string; capped?: number }> {
+  const out = new Map<string, { wake: boolean; at: string; capped?: number }>();
   const dir = path.join(root, '.loop', 'runs');
   if (!fs.existsSync(dir)) { return out; }
   const days = fs.readdirSync(dir).filter(d => fs.statSync(path.join(dir, d)).isDirectory()).sort().slice(-2);
@@ -30,7 +30,7 @@ function lastWakes(root: string): Map<string, { wake: boolean; at: string }> {
       for (const line of fs.readFileSync(path.join(d, name), 'utf8').split('\n').filter(Boolean)) {
         try {
           const e = JSON.parse(line);
-          if (e.type === 'wake' && typeof e.agent === 'string') { out.set(e.agent, { wake: !!e.wake, at: String(e.ts ?? '') }); }
+          if (e.type === 'wake' && typeof e.agent === 'string') { out.set(e.agent, { wake: !!e.wake, at: String(e.ts ?? ''), capped: typeof e.capped === 'number' ? e.capped : undefined }); }
         } catch { /* a torn line is ignored */ }
       }
     }
