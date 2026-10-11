@@ -26,3 +26,24 @@ for name, (pts, w, kw) in cases.items():
                 L.stroke(pts, w, model='bristle', **kw)
         res.append((time.perf_counter() - t) / n * 1e3)
     print(f'{name:<26} classic {res[0]:6.2f} ms   bristle {res[1]:6.2f} ms')
+
+# ---- 破墨 / 积墨: same w=20 L≈400 stroke with interact off vs on (inkwash.pomo)
+print('--- interact (bristle, w20 L400)')
+pts = [(100, 300), (300, 330), (500, 300)]
+under = [(100, 310), (300, 320), (500, 310)]
+for name, kw, prep in (('on fresh paper', dict(wet=0.5), None),
+                       ('wet-on-wet (0.3 s later)', dict(wet=0.8, ink=0.3), 0.3),
+                       ('积墨 over dried ink (6 s)', dict(wet=0.5, ink=0.4), 6.0)):
+    res = []
+    for ia in (False, True):
+        n, tot = 10, 0.0
+        for _ in range(n):
+            cvb = Canvas(700, 600, 1)
+            Lb = cvb.layer('b', interact=ia)
+            if prep is not None:
+                Lb.stroke(under, 22, model='bristle', ink=0.9, wet=0.9, t0=0.0)
+            t = time.perf_counter()
+            Lb.stroke(pts, 20, model='bristle', t0=prep or 0.0, **kw)
+            tot += time.perf_counter() - t
+        res.append(tot / n * 1e3)
+    print(f'{name:<26} off {res[0]:6.2f} ms   on {res[1]:6.2f} ms')

@@ -1,4 +1,10 @@
-"""毛笔模型的栅格部分：亚像素 splat、逐笔毛噪声、顺纸纤维的毛细渗化。"""
+"""毛笔模型的栅格部分：亚像素 splat、逐笔毛平滑噪声、湿图/墨图的顺纤维扩散与水线积墨。
+
+物理上的简化 (Curtis et al. 1997 watercolor; Chu & Tai 2005 MoXi)：
+  笔毛把 水(W) 与 墨(P) 分别落到局部 bbox 的两张图上；
+  随后若干步扩散：水按纸的传导率 (纤维脊上高 -> 顺纤维成丝) 向干处流，墨随水走但被纸纤维滤掉一部分 (mob<1)；
+  每步蒸发一点；水退时颜料被带向湿区边缘 -> 边线(水线)比芯深。
+"""
 from __future__ import annotations
 
 import cv2
@@ -38,28 +44,41 @@ def splat(h, w, xs, ys, weights):
     return out
 
 
-_K = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-
-
-def _smoothstep(e0, e1, x):
+def smoothstep(e0, e1, x):
     t = np.clip((x - e0) / (e1 - e0 + 1e-9), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 
 
-def capillary(wm, fiber, gran, iters, reach=1.0):
-    """毛细渗化：湿墨只沿偏亮的纸纤维往外爬成丝，而不是铺一圈均匀光晕。
+def conductance(fib, gran):
+    """纸的传导率：纤维脊 (fiber 亮脊) 上水走得快，纸面平处慢 -> 渗化顺纤维成羽丝，而不是一圈均匀光晕。"""
+    ridge = smoothstep(0.36, 0.58, fib)
+    return np.clip((0.22 + 0.78 * ridge) * (0.85 + 0.3 * (gran - 0.5)), 0.08, 1.0).astype(np.float32)
 
-    纤维图的底约 0.3、纤维脊更高。传导率在脊上才打开，所以膨胀的壳只会留在纤维上，
-    前沿收成羽状毛边。返回渗出场 (>= wm)。"""
+
+_K3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+
+def diffuse(Wm, Pm, cond, iters, mob=0.4, keep=0.9):
+    """毛细渗化：湿区前沿每步向外推 1 px，推进量 = 邻域最大含水量 × 传导率 × keep (逐步衰减)。
+    传导率在纤维脊上高 -> 前沿顺纤维伸出羽丝。墨随水外流，浓度为芯内浓度 × mob (纸纤维滤掉一部分颜料)。
+
+    返回 (W, P, Wmax)：渗化后的含水量、墨量 (芯内不变，只在外圈增加)、湿区 (=W，单调)。"""
+    W = Wm.astype(np.float32).copy()
     if iters <= 0:
-        return wm
-    ridge = _smoothstep(0.39, 0.52, fiber)
-    grain_ok = np.clip(0.55 + 0.9 * (gran - 0.42), 0.2, 1.25)
-    cond = np.clip(reach * (0.04 + 0.96 * ridge) * grain_ok, 0.0, 0.93).astype(np.float32)
-    m = np.asarray(wm, np.float32).copy()
-    keep = np.float32(0.92)
+        return W, Pm.astype(np.float32), W
+    k = np.float32(keep)
     for _ in range(int(iters)):
-        shell = np.maximum(cv2.dilate(m, _K) - m, 0.0)
-        m += shell * cond * keep
-        keep = np.float32(max(0.55, float(keep) * 0.94))
-    return m
+        shell = np.maximum(cv2.dilate(W, _K3) - W, 0.0)
+        W += shell * cond * k
+        k = np.float32(max(0.5, float(k) * 0.95))
+    # 芯内墨浓度向外延伸 (取邻域最大)，作为渗出水携带的浓度
+    conc = np.where(Wm > 0.05, Pm / (Wm + 1e-3), 0.0).astype(np.float32)
+    r = int(iters) + 1
+    conc = cv2.dilate(conc, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)))
+    P = Pm + np.float32(mob) * np.clip(W - Wm, 0, None) * conc
+    return W, P.astype(np.float32), W
+
+
+def edge_darkening(wet_mask, sig):
+    """Curtis 式边缘积墨：湿区内靠近边界的一圈 (mask·(1-blur(mask))) -> 0..~0.5。"""
+    return wet_mask * (1.0 - cv2.GaussianBlur(wet_mask, (0, 0), sig))

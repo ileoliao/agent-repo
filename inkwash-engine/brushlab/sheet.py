@@ -32,7 +32,8 @@ def _timed(self, pts, w, *a, **kw):
     r = _orig(self, pts, w, *a, **kw)
     p = np.asarray(core.catmull(pts, 1.0))
     ln = float(np.sum(np.hypot(*np.diff(p, axis=0).T))) if len(p) > 1 else 0.0
-    TIMES.append((_timed.test, kw.get('model', 'classic'), (time.perf_counter() - t) * 1e3, w, ln))
+    model = kw.get('model', 'classic') + ('+ia' if kw.get('interact') else '')
+    TIMES.append((_timed.test, model, (time.perf_counter() - t) * 1e3, w, ln))
     return r
 
 
@@ -60,17 +61,28 @@ def main(out):
     f1, f2 = ImageFont.truetype(FONT, 30), ImageFont.truetype(FONT, 22)
     d.text((LBL + 20, 25), '旧 · classic stroke', fill=(120, 40, 30), font=f1)
     d.text((LBL + CW + 20, 25), '新 · bristle 毛笔模型', fill=(120, 40, 30), font=f1)
+    pomo_at = None
     for i, (name, _) in enumerate(TESTS):
         y = TOP + i * CH
         d.line([(0, y), (W, y)], fill=(200, 190, 170), width=1)
         d.text((16, y + CH // 2 - 16), name, fill=(60, 50, 40), font=f2)
+        if pomo_at is None and (name.startswith(('破墨', '积墨', '湿破湿', '对照'))):
+            pomo_at = y
+    if pomo_at is not None:
+        # 破墨/积墨这几行两列都是毛笔，差别只在 interact
+        d.rectangle([LBL, pomo_at, W, pomo_at + 36], fill=(232, 222, 202))
+        d.text((LBL + 16, pomo_at + 4), '关 · interact=off', fill=(120, 40, 30), font=f2)
+        d.text((LBL + CW + 16, pomo_at + 4), '开 · interact=on', fill=(120, 40, 30), font=f2)
     d.line([(LBL + CW, TOP), (LBL + CW, H)], fill=(200, 190, 170), width=1)
     im.save(out)
     print('saved', out, im.size)
-    print(f'{"test":<16}{"n":>4}{"classic ms/stroke":>20}{"bristle ms/stroke":>20}{"max bristle ms":>16}')
+    print(f'{"test":<16}{"n":>4}{"left ms/stroke":>20}{"right ms/stroke":>20}{"max right ms":>16}')
     for name, _ in TESTS:
         c = [t for t in TIMES if t[0] == name and t[1] == 'classic']
         b = [t for t in TIMES if t[0] == name and t[1] == 'bristle']
+        if not c:   # 破墨/积墨 rows: left = bristle (interact off), right = bristle + interact
+            c, b = b, [t for t in TIMES if t[0] == name and t[1] == 'bristle+ia']
+        name = name.split(chr(10))[0]
         print(f'{name:<16}{len(b):>4}{np.mean([t[2] for t in c]):>20.2f}{np.mean([t[2] for t in b]):>20.2f}'
               f'{max(t[2] for t in b):>16.2f}')
 

@@ -176,14 +176,14 @@ class Canvas:
         self.nz_gran = fbm(h, w, 3, 2, r)
         self.layers: list[Layer] = []
 
-    def layer(self, name, parallax=1.0, fade=0.3, halo=0.9):
-        L = Layer(self, name, parallax, fade, halo)
+    def layer(self, name, parallax=1.0, fade=0.3, halo=0.9, interact=False):
+        L = Layer(self, name, parallax, fade, halo, interact)
         self.layers.append(L)
         return L
 
 
 class Layer:
-    def __init__(self, cv: Canvas, name, parallax, fade, halo):
+    def __init__(self, cv: Canvas, name, parallax, fade, halo, interact=False):
         self.cv = cv
         self.name = name
         self.parallax = parallax
@@ -195,6 +195,21 @@ class Layer:
         self.T = np.full((h, w), NEVER, np.float32)
         self.rng = np.random.default_rng(zlib.crc32(f'{name}/{len(cv.layers)}'.encode()) + cv.seed)
         self.extra = {}
+        # 破墨/积墨 (opt-in)：True 时毛笔笔触读写纸面湿度/墨量状态 (inkwash.pomo)，默认不建状态
+        self.interact = interact
+        self.paper_state = None
+
+    # ------------------------------------------------------------------ paper clock (破墨/积墨)
+    def set_time(self, t):
+        """纸面时钟设为 t (秒)：之后的 interact 笔触按 max(t0, t) 计算旧墨干了多少。"""
+        from .pomo import state
+        state(self).clock = float(t)
+
+    def dry(self, dt):
+        """让纸面晾 dt 秒 (时钟前进)。"""
+        from .pomo import state
+        st = state(self)
+        st.clock += float(dt)
 
     # ------------------------------------------------------------------ brush stroke
     def stroke(self, pts, w, ink=0.85, pig=INK, t0=0.0, dur=0.6, dry=0.15, wet=0.5,

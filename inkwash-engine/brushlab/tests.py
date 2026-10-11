@@ -81,17 +81,26 @@ def dian(L, x, y, new):
 
 
 def pima(L, x, y, new):
+    """一束披麻皴：间距不匀、略聚略散、长短与压力各异 (左束偏干、右束偏湿)。"""
     rng = np.random.default_rng(3)
+    ox = x + 110.0
     for j in range(6):
-        ox = x + 120 + j * 9 + rng.normal(0, 2)
-        q = [(ox + 230 * t + 60 * t * t, y + 25 + 210 * t - 30 * math.sin(t * 3)) for t in np.linspace(0, 1, 6)]
-        _s(L, new, q, rng.uniform(1.4, 2.4), ink=0.8 * rng.uniform(0.6, 1.0), dry=0.5, wet=0.4, rough=0.3,
-           wobble=0.25, taper=(0.25, 0.4), start_w=0.3, end_w=0.1, nw=dict(exit='tip', entry='lu'))
+        ox += rng.uniform(4, 15)
+        t0, t1 = rng.uniform(0, 0.12), rng.uniform(0.78, 1.0)
+        spread = rng.uniform(-14, 14)            # 末端聚/散
+        q = [(ox + 230 * t + 60 * t * t + spread * t * t, y + 25 + 210 * t - 30 * math.sin(t * 3))
+             for t in np.linspace(t0, t1, 6)]
+        _s(L, new, q, rng.uniform(1.3, 2.5), ink=0.8 * rng.uniform(0.6, 1.0), dry=0.5, wet=0.4, rough=0.3,
+           wobble=0.25, taper=(0.25, 0.4), start_w=0.3, end_w=0.1,
+           nw=dict(exit='tip', entry='lu', pressure=rng.uniform(0.75, 1.25, 4)))
+    ox = x + 372.0
     for j in range(5):
-        ox = x + 380 + j * 8
-        q = [(ox + 120 * t, y + 30 + 200 * t + 20 * math.sin(t * 4)) for t in np.linspace(0, 1, 6)]
-        _s(L, new, q, 2.2, ink=0.5, dry=0.1, wet=0.9, taper=(0.2, 0.4), start_w=0.3, end_w=0.1,
-           nw=dict(exit='tip', entry='lu'))
+        ox += rng.uniform(4, 13)
+        t0, t1 = rng.uniform(0, 0.1), rng.uniform(0.8, 1.0)
+        spread = rng.uniform(-12, 12)
+        q = [(ox + 120 * t + spread * t * t, y + 30 + 200 * t + 20 * math.sin(t * 4)) for t in np.linspace(t0, t1, 6)]
+        _s(L, new, q, rng.uniform(1.8, 2.6), ink=0.5 * rng.uniform(0.75, 1.1), dry=0.1, wet=0.9, taper=(0.2, 0.4),
+           start_w=0.3, end_w=0.1, nw=dict(exit='tip', entry='lu', pressure=rng.uniform(0.8, 1.2, 4)))
 
 
 def songzhen(L, x, y, new):
@@ -105,6 +114,61 @@ def songzhen(L, x, y, new):
                rough=0.4, taper=(0.05, 0.6), start_w=1.0, end_w=0.1, nw=dict(exit='tip'))
 
 
+# ---- 破墨 / 积墨 rows: both columns use the bristle model; left = interact off, right = interact on (inkwash.pomo)
+def _b(L, on, pts, w, **kw):
+    L.stroke(pts, w, model='bristle', interact=on, **kw)
+
+
+def pomo_dan_po_nong(L, x, y, new):
+    """淡破浓：先下浓墨 (湿)，趁湿用淡墨/清水笔压上去 -> 浓墨被推开，中间淡、边上一圈深。"""
+    _b(L, new, [(x + 50, y + 120), (x + 330, y + 105), (x + 610, y + 130)], 24, ink=1.0, dry=0.05, wet=0.9,
+       entry='cang', exit='hui', t0=0.0, seed=11)
+    _b(L, new, [(x + 120, y + 60), (x + 170, y + 125), (x + 230, y + 190)], 16, ink=0.12, dry=0.0, wet=1.2,
+       entry='cang', t0=0.4, seed=12)
+    _b(L, new, [(x + 330, y + 115), (x + 440, y + 125)], 13, ink=0.18, dry=0.0, wet=1.2, t0=0.5, seed=13)
+    L.dot(x + 540, y + 120, 12, ink=0.1, wet=1.3, t0=0.6, model='bristle', interact=new, ang=0.3, seed=14)
+
+
+def pomo_nong_po_dan(L, x, y, new):
+    """浓破淡：先铺一片淡墨 (湿)，趁湿下浓墨 -> 浓墨在湿处羽状化开。"""
+    _b(L, new, [(x + 50, y + 125), (x + 330, y + 110), (x + 610, y + 135)], 34, ink=0.25, dry=0.0, wet=1.2,
+       tip='ce', t0=0.0, seed=21)
+    _b(L, new, [(x + 90, y + 150), (x + 260, y + 105), (x + 420, y + 130)], 6, ink=1.0, dry=0.1, wet=0.5,
+       entry='cang', exit='tip', t0=0.35, seed=22)
+    for k, (dx, r) in enumerate(((470, 8), (520, 10), (575, 7))):
+        L.dot(x + dx, y + 118 + 8 * (k % 2), r, ink=1.0, wet=0.6, t0=0.45 + 0.05 * k, model='bristle',
+              interact=new, seed=23 + k)
+
+
+def pomo_shi_po_shi(L, x, y, new):
+    """湿破湿：两笔湿墨相交 -> 交叠处互相渗化、晕开。"""
+    _b(L, new, [(x + 60, y + 60), (x + 330, y + 120), (x + 600, y + 200)], 18, ink=0.55, dry=0.0, wet=1.1,
+       entry='cang', exit='hui', t0=0.0, seed=31)
+    _b(L, new, [(x + 60, y + 200), (x + 330, y + 125), (x + 600, y + 60)], 15, ink=0.35, dry=0.0, wet=1.2,
+       entry='cang', exit='hui', t0=0.3, seed=32)
+
+
+def pomo_jimo(L, x, y, new):
+    """积墨：同一处淡墨叠 4 层，每层等前一层干透 (t0 间隔 4 s ≫ tau) -> 层层的边都在，越叠越深。"""
+    for k in range(4):
+        dx, dy = 22 * k, 9 * ((-1) ** k)
+        _b(L, new, [(x + 60 + dx, y + 125 + dy), (x + 300 + dx, y + 100 + dy), (x + 560 - dx, y + 140 - dy)],
+           30 - 4 * k, ink=0.28, dry=0.15, wet=0.55, tip='ce', t0=4.0 * k, seed=41 + k)
+
+
+def pomo_control(L, x, y, new):
+    """对照：与淡破浓同样的两笔，但第二笔等第一笔干后 (t0 = 6 s) 才下 -> 开时是积墨叠压，不是破墨。"""
+    _b(L, new, [(x + 50, y + 120), (x + 330, y + 105), (x + 610, y + 130)], 24, ink=1.0, dry=0.05, wet=0.9,
+       entry='cang', exit='hui', t0=0.0, seed=11)
+    _b(L, new, [(x + 120, y + 60), (x + 170, y + 125), (x + 230, y + 190)], 16, ink=0.12, dry=0.0, wet=1.2,
+       entry='cang', t0=6.0, seed=12)
+    _b(L, new, [(x + 330, y + 115), (x + 440, y + 125)], 13, ink=0.18, dry=0.0, wet=1.2, t0=6.1, seed=13)
+    L.dot(x + 540, y + 120, 12, ink=0.1, wet=1.3, t0=6.2, model='bristle', interact=new, ang=0.3, seed=14)
+
+
 TESTS = [('中锋横画', heng), ('中锋竖画', shu), ('侧锋阔笔', cefeng), ('飞白枯笔', feibai), ('淡墨湿笔', danmo),
          ('藏锋起笔+回锋收笔', canghui), ('顿笔积墨', dunbi), ('转折散锋', zhuanzhe), ('长笔墨尽(墨量递减)', mojin),
-         ('点', dian), ('披麻皴(一束)', pima), ('松针', songzhen)]
+         ('点', dian), ('披麻皴(一束)', pima), ('松针', songzhen),
+         ('破墨：淡破浓\n左关·右开', pomo_dan_po_nong), ('破墨：浓破淡\n左关·右开', pomo_nong_po_dan),
+         ('湿破湿晕化\n左关·右开', pomo_shi_po_shi), ('积墨 4 层(干后叠)\n左关·右开', pomo_jimo),
+         ('对照：干后再下\n左关·右开', pomo_control)]

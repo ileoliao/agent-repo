@@ -323,52 +323,87 @@ python3 -m inkwash.contact out/chengdu_ink.mp4 out/contact_sheet.jpg   # 成片�
 
 ## 笔毛模型
 
-`Layer.stroke(..., model='bristle')` 才走这一支；默认 `model='classic'`，`core.py` 里经典笔触的像素计算不改。入口是 `brush2.bristle_stroke`，撒点和渗化在 `brush2_ink`。`w` 仍是半宽。山水里用 `shanshui/brush.py` 的 `bk()`，或 `python shanshui/paint.py --brush bristle`。
+`Layer.stroke(..., model='bristle')` 才走这一支；默认 `model='classic'`，`core.py` 里经典笔触的像素计算不改。入口是 `brush2.bristle_stroke`，撒点、扩散和水线在 `brush2_ink`。`w` 仍是半宽。山水里用 `shanshui/brush.py` 的 `bk()`，或 `python shanshui/paint.py --brush bristle`。
+
+v2 的原则：**不用噪声代替物理**。边缘不再按噪声啃、不再逐段抖动；不规则只来自笔毛的缓慢游移、纸纤维的吸水差异和毛细渗化。参考笔迹（八大山人、黄庭坚、米芾，公有领域）和观察记录在 `brushlab/ref/`、`brushlab/REF_NOTES.md`。
 
 ### 一束毛，不是一根矢量线
 
-`make_bristles(nb, tip, rng, load, rough, bristle)` 造 `nb ≈ 2.3·w` 根毛（夹在 5–90）。每根有横向位置 `o∈[-1,1]`、初始墨 `load0`、耗墨率 `rate`、断墨阈值 `thr`。相邻几根合成一簇（`cid`），共享墨量起伏和断墨，飞白才是一条丝，而不是散点。
+`make_bristles(nb, tip, rng, load, rough, bristle)` 造 `nb ≈ 2.3·max(w, max W)` 根毛（5–120，毛距 < 1 px，顿笔鼓起处也不出缝）。每根有横向位置 `o∈[-1,1]`、初始墨 `load0`、耗墨率 `rate`、断墨阈值 `thr`；相邻 2–nb/10 根为一簇（`cid`），共享墨量和耗墨率。
 
-- `tip='zhong'`：左右对称，芯部墨多，外缘毛耗得快。
-- `tip='ce'`：`o=-1` 是笔尖（齐、浓、少抖），`o=+1` 是笔肚（散、易枯、`jit` 大）。`skew` 让足迹相对路径斜一截。
+- `tip='zhong'`：对称，笔肚 `load0 ∝ 1.12 − 0.32·o²`，外缘毛耗得快。
+- `tip='ce'`：`o=-1` 笔尖（浓、齐），`o=+1` 笔根（墨少、先枯）；`skew`（默认 0.22）让足迹斜置。
 
-路径由 `path_frame` 给出切向、法向和曲率 `kap`。弯道上 `splay * |kap| * W` 把外侧毛扇开，并让外侧先干。
+毛的横向位置 `off = W·(o·reach·fan + jit·wander)`：`wander` 是簇共享、40–120 px 尺度的缓慢游移，`jit` 只有 0.015–0.1，所以轮廓"平滑但不规则"。弯道上 `splay·|κ|·W` 让外侧毛整体张开；簇间分叉量 `sep` 随 `wet` 减小（湿毛粘在一起）。张开处的落墨权重乘 `fan` 补密度，不出浅缝。
 
-每根毛的径向到达 `reach`、沿程粗细 `wj`、外缘高频 `poke` 和着墨粗细 `thick` 都不一样。点（弧长短于约 `2.8·w`）再把半径拉开、随机敲掉一部分外缘毛，所以点不是椭圆。
+### 提按、藏锋、回锋、顿笔、点
 
-### 提按、藏锋、回锋、顿笔
-
-`width_profile` 里半宽乘 `pressure ** 1.28`（`pressure` 可以是标量、数组或 `callable(u)`），竖画的粗细会跟着走。`_gesture` 加在**已经带上笔头**的整条路径上：
+`width_profile`：压力先 `smooth1d`（约 1.5w）再 `p ** 1.1` 乘到半宽 —— 提按是"鼓"，不是台阶。`wobble` 只改很低频的宽度（尺度 `max(6w, 0.3L)`，幅度 0.45·wobble）。`_gesture` 的手势弧尺度 `max(40, L/2)`、幅度 `0.35·wobble·w`：竖画是直中带弧，不再像虫。
 
 | 参数 | 形状 |
 | --- | --- |
-| `entry='cang'` | 起笔沿法向甩出再回到中线；`ecap` 收成钝跟，不是正圆 |
-| `exit='hui'` | 收笔向另一侧回转 |
-| `exit='dun'` | `EXIT['dun']` 把收笔前短促加宽（swell），笔肚偏到一侧 |
-| `exit='tip'` | 外侧毛先离纸，收成参差的尖 |
-| `wobble` | 法向两层 `noise1d`，中锋振幅更大 |
-| `pauses` | 停顿处加宽、积墨、多耗一点墨 |
+| `entry='cang'` | 起笔沿法向回转 0.55·W；笔头每根毛延伸 `√(1−0.75o²)` → 圆钝头 |
+| `exit='hui'` | 收笔向另一侧回转，钝圆尾 |
+| `exit='dun'` | `EXIT['dun']`：收笔前 24% 平缓鼓起到 1.38 倍、末端只提 12%，钝头 |
+| `exit='tip'` | 外缘毛先离纸 (`cut`)，在 2 px 内淡出成尖 |
+| `pauses` | 停顿处加宽、积墨、多耗墨 |
 
-顿笔和藏锋、停顿处的积墨权重 `pl` 会进 `pm`，墨色乘 `(1 + 0.95·pm)`，这一段比笔身更黑。
+**点**（弧长 < `max(2.8w, 16)`）：重建成约 2:1 的一笔按—提，`_dot_profile`：笔尖落纸（宽 0.06）→ 60–70% 处按到最宽（半宽 0.68w）→ 提笔略收；尾端圆帽，路径带一点手腕弧。积墨 `pl` 在肚子处最大。
 
-### 墨沿毛耗尽
+### 墨沿毛耗尽，飞白是丝
 
-`r = load0 · (1 − rate·Kd·cum) ** 0.8`。`cum` 是沿弧长累计的落墨（含压力和停顿），`Kd = 1.6·dry + 1.2·dry⁴ + L/(2w)/(110·load)`。长笔自然写干。`r` 加上 `brush2_ink.noise_rows` 做出的簇噪声后低于 `thr`，这根毛就断，飞白顺着毛的方向裂开。
+`r = load0 · (1 − rate·Kd·cum) ** 0.8`，`Kd = 1.0·dry + 0.6·dry⁴ + 0.30·min(L/(40w), 1.5)/load`（长度项封顶，细长皴线不会写断）。`r` 加簇级低频断墨（60–200 px）低于 `thr` 即断。
 
-### 纸吃边：干擦、湿渗
+纸面接触（第 c 步）：沿**每根毛自己的路径**取纸面高度 `hp = 0.55·fiber + 0.45·gran`，簇内平均后顺笔向平滑 8 px，再加每缕（2 根毛）与单毛 10–45 px 的起伏，得到 `score`；只有墨少的毛（`starve = 1 − r/0.55`）才挑纸：`contact = smoothstep(score + 3.2 − 6.5·starve)`。笔肚的毛加保护项 `1.2·(1−o²)·(1−starve)`。所以飞白只出现在墨少的地方、顺着笔向成长丝，起笔处始终实。细笔（w < 4）的"干"只表现为变淡变细，不断成虚线。擦痕之间用几何足迹 `foot` 补一层只沾纸面高点的淡灰（`(0.08 + 0.4·h²)·dry`）。
 
-`brush2_ink.splat` 把每根毛的采样双线性撒进包围盒，高斯只留得很轻（`σ ≈ 0.30 + 0.008·w + 0.05·wet`），避免再涂成一条矢量边。
+### 湿图 / 墨图 / 扩散 / 水线（`_deposit`）
 
-`_edge_warp` 沿墨芯法线挪轮廓，并且只动外轮廓，芯里的飞白丝不动：
+1. `brush2_ink.splat` 把每根毛的采样双线性撒进局部包围盒：覆盖 C、墨量 Q、含水 Wt（水比墨耗得慢：`(r/load0)^0.4`）、时间 U、积墨 PL、起笔饱和 TS、足迹 F；高斯 σ ≈ 0.55。
+2. 覆盖 `cov = smoothstep(0.12, 0.42, C + 0.12·(h − 0.5))`：平滑抗锯齿边，纸面吸墨差只让轮廓在 1 px 内进出。
+3. 墨图 `Pm = 1.15·ink·paint·(0.52 + 0.48·r̄)·tone·(1 + 0.45·pl)`，`tone` = 起笔饱和 `1 + 0.22·exp(−s/3w)` × 压力；再乘 5% 的低频 `nz_mid`（几十 px 的云状浓淡），颗粒只有 3%·wet。
+4. 湿笔里水把颜料抹匀：`lev = wet·(1 − 0.6·dry)`，用 σ = 0.5 + 0.45·w·lev 的归一化模糊混合 90%·lev —— 淡墨湿笔是平的灰，不是海绵。
+5. 湿图 `Wm = paint·w̄·wet·(1 + 0.6·pl)`；`brush2_ink.diffuse`：湿区前沿每步向外推 1 px，推进量 = 邻域最大含水 × `conductance(fiber, gran)`（纤维脊上高）× `keep`（逐步 ×0.95）；墨随水外流，浓度 = 芯内浓度 × `mob`（0.22–0.4，纸纤维滤掉颜料）。芯内不变，外圈多出一层顺纤维的淡羽晕。步数 ≈ `1 + 10·wet^1.4·min(1, 0.5 + 0.05w)`（`bleed` 可覆盖）。
+6. 水线（Curtis 1997 edge darkening）：`edge_darkening(mask(Wm), σ)` = 湿区内贴边一圈，密度乘 `1 + (0.25 + 0.6·pool)·wet·ed`，约深 10–20%。
 
-- **干**（`dry` 高、`wet` 低）：往 `fiber` 低的纸谷咬进去，边是断续擦痕；外缘再按接触与否乘掉一圈。
-- **湿**：往偏亮的纤维脊探出去，再叠 `Canvas.nz_edge` 的高频齿。
-- 侧锋把位移乘 0.5，笔尖一侧少被咬毛；点用更大的 `fray`。
+结果写入 `Layer.A`、`Layer.Wet`（×0.35·wet，`finalize` 的墨晕仍有效）、`Layer.T`。
 
-墨芯用较陡的 `smoothstep` 收住，齿留在深色边上。芯内乘 `fiber`，以及 `nz_gran` 模糊后的颗粒（淡墨、湿墨的 `gamp` 更大）。`pool·wet` 把 `cov − blur(cov)` 加回轮廓，留下一圈更深的水线。
+### 第二轮评审后的改动 (r6–r7)
 
-`brush2_ink.capillary(wm, fiber, gran, iters, reach)`：湿墨做若干次 3×3 膨胀，传导率只在纤维亮脊上打开（`smoothstep(0.39, 0.52, fiber)`）。渗出去的是丝，不是均匀光晕；丝的外沿再积一条浅水渍。步数大约 `min(8·wet^1.05, 2+0.55·w)`。
+r5 太"矢量干净"，这一轮把结构加回来，仍然不用噪声啃边：
 
-结果写入 `Layer.A`、`Layer.Wet`、`Layer.T`。`Layer.finalize` 的墨晕照旧。
+- **单根毛的飞白丝**：`contact` 的 `score` 里加每根毛自己的 25–80 px 起伏 `hn` 和各自的断点偏移，簇内耗墨率也各不相同（`rate × U(0.72, 1.3)`）→ 墨尽时一根根先后离纸，丝 1–1.5 px，断在不同长度。枯笔剩下的毛仍是浓墨（`base = 0.52 + 0.22·dry`）。
+- **笔向丝理**：每簇/每根毛的墨色乘 `stk`（60–200 px / 30–90 px 的起伏，幅度 `(0.05 + 0.09·dry)·bristle·(1 − 0.6·wet)`）。
+- **笔肚与浓淡**：中锋 `belly = 1 + 0.16·(1−o²)·p^0.8 − 0.06`（芯浓、两侧淡）；压力 `p^0.6` 进墨色；低频斑驳 `nz_mid` 7% + `nz_low` 5%；中间调里透出纸纤维（±16%，浓墨处消失）。
+- **纤维毛边**：轮廓外 2 px 的环 (`dilate 5×5`) 只在纤维脊上吸一点墨（`0.45·fz·dilate(Pm)`，干笔减 70%），2 倍放大可见。
+- **侧锋**：笔根一侧 `jit = 0.02 + 0.45·rough·h³`（笔肚边随簇起伏）、耗墨 `0.75 + 2.6·h^1.8`；受保护的芯在笔尖一侧；`dry > 0.2` 时 22% 的簇在 u≈0.62 后提前离纸 → 收笔前的细裂。
+- **细笔 (w < 4，皴线)**：提按更强更频、随长度的轻微波动（≈ `0.06·wobble·L`）、约 30% 的笔蘸墨少（淡一些）、干时整笔按纸面高低 + 墨尽出现几处软断（外缘毛先断，断口渐细）。`brushlab/tests.py` 的披麻一束改成间距不匀、聚散、长短压力各异。
+- **点**：长短 1.7–2.7·半宽、肚子位置 0.58–0.76、方向 ±0.12 rad、弧度、干湿 ×(0.45–0.8 | 1.0–1.5) → 有的点带晕。
+- **出锋**：圆肩收尖 (`t^0.5`)，最后 `min(0.55L, max(4w, 20))` 内淡 60%（w<2）/35%；极细笔 σ +0.2。
+- 修正：去掉每根毛独立的 `reach`（外缘毛错开 2 px，湿笔边内一条浅缝）；回锋回转 0.5W → 0.15W（不再勾）。
 
-试笔页：`python brushlab/sheet.py`。计时：`python brushlab/bench.py`。
+试笔页：`python brushlab/sheet.py`。计时：`python brushlab/bench.py`（w=20 L=400：中锋 ≈ 18 ms，侧锋枯 ≈ 18 ms，湿 ≈ 20 ms）。对比图：`python brushlab/make_compare.py <sheet.png> [r5_sheet.png]`。
+
+---
+
+## 破墨/积墨
+
+默认笔触不读纸上已有的水。要让后一笔跟先落的墨起反应，用 `Layer.stroke(..., model='bristle', interact=True)`，或 `Canvas.layer(..., interact=True)`。关着的时候不建状态，经典笔触和 `interact=False` 的毛笔输出不变。
+
+状态在 `inkwash/pomo.py` 的 `PaperState`：整幅三张图 `W`（含水量）、`Tw`（这格水是什么时候写下的）、`P`（本层已落的墨量，标量）。干燥是惰性的，`wet_now(sl, t)` 只在新笔的包围盒里算 `W·exp(−(t−Tw)/tau)`，`tau` 默认 1.2 秒。时钟是 `max(t0, clock)`；`Layer.set_time(t)` / `Layer.dry(dt)` 推它。
+
+`brush2._deposit` 在 `interact` 打开时按这个顺序调：
+
+1. `pomo.prepare(layer, sl, t, cond, it, wet, paint)`：读旧湿 `wo` 和已干旧墨 `dryink`。湿处传导率升高、扩散步数加几步（`brush2_ink.diffuse` 走得更远，仍乘纤维 `conductance`）；干墨处传导率乘 `(1 − 0.78·dryink)`，纸被墨上过胶，水渗得少。
+2. `pomo.soften`：新笔落在旧湿区里时，把新墨的边和渗晕按湿度模糊。新墨明显更淡时用更大的 σ，淡破浓才不会留下一条硬边。
+3. `pomo.edge_boost`：干墨上把 Curtis 水线加重；湿处把笔自己的水线压掉（水线留给湿区前沿）。
+4. `pomo.layer_edge`：干墨上再加一条几像素宽的积墨边，叠进 `dens`。一层干透再叠一层，每层的边都在。
+5. 新墨写入 `Layer.A` 之后，`pomo.apply` 改旧墨，`pomo.recolor` 按旧墨颜色写回 `A`。
+
+`apply` 里两件事：
+
+- **淡破浓**：新笔比旧墨淡（`pale`，用新笔芯部密度和旧墨比）时，从旧湿墨里搬走一块，再用宽高斯摊开。摊开的权重在新水芯里低、在纤维脊上高，所以中间变淡，深色往外走成不规则的羽边，不是挖一个硬边的浅坑。
+- **湿破湿**：新墨大约是旧墨的两成到一倍半（`sim`）时不挖浅心，而是把交叠处未干的旧墨沿着纤维推到新笔外沿，交叉处多出一圈软的羽边。
+- **浓破淡**：浓墨点进淡湿纸时 `pale` 接近 0，旧墨不被推走；新墨自己靠升高的传导率和 `soften` 在湿处化开。
+- **积墨**：`t0` 隔开几个 `tau` 之后 `wo≈0`、`dryink` 高，不发生搬运，只留下 `layer_edge` 的层边。
+
+试笔页最后五行（`brushlab/tests.py` 的 `pomo_dan_po_nong`、`pomo_nong_po_dan`、`pomo_shi_po_shi`、`pomo_jimo`、`pomo_control`）两列都是毛笔：左 `interact=off`，右 `interact=on`。图：`brushlab/pomo_rows.jpg`、`brushlab/sheet_full.jpg`。
