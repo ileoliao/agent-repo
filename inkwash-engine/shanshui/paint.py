@@ -54,22 +54,35 @@ def light_mask(h, w, rng):
 def build(scale):
     B.set_scale(scale)
     B.LABELS.clear()
+    B.reset_clock()
+    # 笔毛才跟纸上的水墨起反应。经典笔不登记时钟，染和皴的顺序与原来一致。
+    physics = B.BRUSH == 'bristle'
+    B.set_physics(physics)
     w, h = int(W0 * scale), int(H0 * scale)
     cv = Canvas(w, h, SEED)
     rng = np.random.default_rng(SEED)
-    far = cv.layer('far', halo=0.6)
-    peak = cv.layer('peak', halo=0.9)
-    mid = cv.layer('mid', halo=0.9)
-    near = cv.layer('near', halo=1.0)
+    far = cv.layer('far', halo=0.6, interact=physics)
+    peak = cv.layer('peak', halo=0.9, interact=physics)
+    mid = cv.layer('mid', halo=0.9, interact=physics)
+    near = cv.layer('near', halo=1.0, interact=physics)
+    for L in (far, peak, mid, near):
+        B.track(L)
     t = time.time()
     SB.far(far, rng)
+    B.pause(5.0)          # 远山干了再画主峰
     SB.peak(peak, rng)
     FL.rocks(peak, rng)
+    B.pause(6.0)          # 墨干后再罩浅绛，颜色不把皴冲开
     SB.peak_color(peak, rng)
+    B.pause(4.0)
     SB.mid(mid, rng)
+    B.pause(5.0)          # 中景干了再画近石
     SF.rocks(near, rng)
+    B.pause(6.0)          # 石头干了再勾水纹、写树
     SF.stream_and_lake(near, rng)
+    B.pause(2.0)
     SF.trees(near, rng)
+    B.pause(4.0)          # 树干干了再写亭子和人，线不互相洇
     SF.figures(near, rng)
     print(f'painted in {time.time() - t:.1f}s', flush=True)
     return cv, dict(far=far, peak=peak, mid=mid, near=near)

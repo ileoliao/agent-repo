@@ -39,6 +39,8 @@ class Massif:
     def lobe(self, cx, by, w, h, rng, style='pima', ink=0.5, dens=0.2, line=4.0, skew=0.0, sharp=1.8,
              n_tex=None, moss=0, steps=0.0, fade=0.75, light=-1, round_=0.6, bump=0.07, extend=0.0, gaps=0.12, crest_dark=0.0, passes=2):
         """Paint one lobe behind everything already painted in this massif. Returns the top contour."""
+        if B.PHYSICS:
+            B.pause(2.0)                                 # 下一块石头时，上一块已经干了
         top = lobe_contour(cx, by, w, h, rng, skew, sharp, bump=bump, steps=steps, round_=round_)
         if extend > 0:                                   # flared, ragged body continuing below the frame
             ey = np.linspace(by, by + extend, 6)
@@ -69,7 +71,10 @@ class Massif:
         d = np.clip((yy - ty[None, :]) / max(1.0, h * S), 0, 1.6)
         side = np.clip((X / S - cx) / (w / 2), -1, 1)[None, :] * (-light)
         with R.Clip(L, x0, y0, clipm, feather=0.8) as s:
-            for k in range(passes):                  # 积墨: two layers, second smaller & darker
+            styles = style if isinstance(style, tuple) else (style,)
+            for k in range(passes):                  # 积墨: 每一遍染完等干，下一遍才压上去
+                if k and B.PHYSICS:
+                    B.pause(4.5)
                 n = fbm(hh, ww, max(6, 0.35 * w * S), 3, rng, gain=0.55)
                 g = f * (0.3 + 0.5 * smoothstep(0.05 + 0.15 * k, 0.85, d) + 0.35 * smoothstep(1.0, 1.4, d) + 0.22 * side + 0.28 * n
                          + crest_dark * (1 - smoothstep(0.0, 0.45, d)) * (0.6 + 0.4 * side))
@@ -78,22 +83,20 @@ class Massif:
                 s.wash(x0, y0, np.clip(g, 0, 1.3), self.pig, dens=dens * (1 + 0.3 * k), lo=0.05 + 0.1 * k, hi=0.95,
                        edge=0.3, edge_blur=3 * S + 1, gran=0.45, warp=0.15, seeds=[(cx * S, (by - h) * S)], speed=800)
             nt = n_tex if n_tex is not None else int(w * h / 2500)
-            for st in (style if isinstance(style, tuple) else (style,)):
-                if st == 'pima':
-                    self._pima(s, top, by, h, nt, ink, rng)
-                elif st == 'fupi':
-                    self._fupi(s, top, by + extend * 0.6, h, max(3, nt // 2) if isinstance(style, tuple) else nt, ink,
-                               rng, light)
-                elif st == 'vert':
-                    self._vert(s, top, by, h, int(nt * 1.6), ink, rng)
-                elif st == 'cefeng':
-                    TX.cefeng(s, top, by, h, nt, ink, rng, self.pig, light)
-                elif st == 'wet':
-                    TX.wetfoot(s, top, by, h, max(3, nt // 6), ink, rng, self.pig)
-                elif st == 'bundle':
-                    TX.bundles(s, top, by, h, nt, ink, rng, self.pig, light)
-                elif st == 'pima2':
-                    TX.pima_long(s, top, by, h, nt, ink, rng, self.pig)
+            if B.PHYSICS:
+                # 坡脚趁最后一遍染还湿的时候化开；皴等纸干了再上，边才留得住
+                B.pause(0.4)
+                for st in styles:
+                    if st == 'wet':
+                        self._one_style(s, st, top, by, h, nt, ink, rng, light, extend, style)
+                B.pause(4.5)
+                for st in styles:
+                    if st != 'wet':
+                        self._one_style(s, st, top, by, h, nt, ink, rng, light, extend, style)
+                B.pause(3.0)
+            else:
+                for st in styles:
+                    self._one_style(s, st, top, by, h, nt, ink, rng, light, extend, style)
             R.outline(s, top, rng, w=line, ink=min(1.4, ink + 0.35), dry=0.5, seg=(5, 10), gaps=gaps)
             for sd in sides:                         # 勾 the cliff sides of the body too, drier and broken
                 R.outline(s, sd, rng, w=line * 0.8, ink=min(1.3, ink + 0.25), dry=0.65, seg=(2, 4), gaps=0.2)
@@ -104,6 +107,23 @@ class Massif:
         vis = cv2.GaussianBlur(vis, (0, 0), 2 * S + 0.5)
         self.cov[ya:yb, xa:xb] = np.maximum(self.cov[ya:yb, xa:xb], vis)
         return top
+
+    def _one_style(self, s, st, top, by, h, nt, ink, rng, light, extend, style):
+        if st == 'pima':
+            self._pima(s, top, by, h, nt, ink, rng)
+        elif st == 'fupi':
+            self._fupi(s, top, by + extend * 0.6, h, max(3, nt // 2) if isinstance(style, tuple) else nt, ink,
+                       rng, light)
+        elif st == 'vert':
+            self._vert(s, top, by, h, int(nt * 1.6), ink, rng)
+        elif st == 'cefeng':
+            TX.cefeng(s, top, by, h, nt, ink, rng, self.pig, light)
+        elif st == 'wet':
+            TX.wetfoot(s, top, by, h, max(3, nt // 6), ink, rng, self.pig)
+        elif st == 'bundle':
+            TX.bundles(s, top, by, h, nt, ink, rng, self.pig, light)
+        elif st == 'pima2':
+            TX.pima_long(s, top, by, h, nt, ink, rng, self.pig)
 
     # -------------------------------------------------------------- textures
     def _pima(self, s, top, by, h, n, ink, rng):

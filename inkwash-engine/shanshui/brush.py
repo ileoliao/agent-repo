@@ -15,11 +15,44 @@ from inkwash.core import INK, fbm, smoothstep
 
 S = 1.0          # render scale (set by paint.py)
 BRUSH = os.environ.get('BRUSH', 'classic')   # 'bristle' -> inkwash.brush2 毛笔模型 for 皴/飞白/松针
+# 笔毛山水才走纸面物理：水会干，湿时相破，干后积墨。经典笔触不设这个开关，输出不变。
+PHYSICS = False
+CLOCK = 0.0          # 秒，和 PaperState.tau 同一把尺
+_LAYERS = []
 
 
 def set_brush(name):
     global BRUSH
     BRUSH = name
+
+
+def set_physics(on):
+    """打开后，pause() 会把已登记图层的纸面时钟向前拨。"""
+    global PHYSICS
+    PHYSICS = bool(on)
+
+
+def reset_clock():
+    """一幅画开始：时钟归零，忘掉上一张的图层。"""
+    global CLOCK
+    CLOCK = 0.0
+    _LAYERS.clear()
+
+
+def track(layer):
+    if layer is not None and layer not in _LAYERS:
+        _LAYERS.append(layer)
+
+
+def pause(dt):
+    """让纸晾 dt 秒。没开物理时什么都不做。"""
+    global CLOCK
+    if not PHYSICS or dt <= 0:
+        return
+    CLOCK += float(dt)
+    for layer in _LAYERS:
+        if getattr(layer, 'interact', False):
+            layer.set_time(CLOCK)
 
 
 def bk(**extra):

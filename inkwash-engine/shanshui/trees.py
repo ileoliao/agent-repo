@@ -32,6 +32,8 @@ def trunk(L, x, y, h, w, rng, lean=0.0, ink=0.9, wiggle=0.06):
         edge = c + np.c_[side * w * 0.5 * taper[:, 0], np.zeros(n)] + rng.normal(0, w * 0.06, (n, 2))
         _st(L, edge, w * 0.16 + 1.2, ink * rng.uniform(0.85, 1.05), dry=0.75, bristle=1.8, taper=(0.05, 0.3),
             start_w=1.0, end_w=0.3, **B.bk(entry='cang'))
+    if B.PHYSICS:
+        B.pause(3.5)          # 飞白边干了再填淡墨，淡墨不把边线推开
     _st(L, c, w * 0.75, ink * 0.28, dry=0.85, bristle=2.0, taper=(0.02, 0.2), start_w=1.0, end_w=0.5, wet=0.2)
     return c
 
@@ -67,6 +69,8 @@ def pine(L, x, y, h, rng, lean=0.08, ink=0.95, scale=1.0):
     w = h * 0.07
     c = trunk(L, x, y, h, w, rng, lean=lean, ink=ink, wiggle=0.08)
     roots(L, x, y, w, rng, ink)
+    if B.PHYSICS:
+        B.pause(3.5)                   # 鳞皴落在已干的树干上
     for k in range(int(h / 22)):       # 鳞皴 bark scales
         t = rng.uniform(0.05, 0.85)
         px = np.interp(t, np.linspace(0, 1, len(c)), c[:, 0]) + rng.normal(0, w * 0.2)
@@ -102,8 +106,9 @@ def needle_cluster(L, x, y, r, rng, ink=0.9):
         for i in range(n):
             a = a0 + span * i / (n - 1)
             l = l0 * rng.uniform(0.8, 1.0)
+            # 针叶彼此不洇：一根根是枯笔，打开 interact 会在扇心里互相推开
             _st(L, [(hx, hy), (hx + math.cos(a) * l, hy + math.sin(a) * l)], 1.0, ink * ii,
-                dry=0.15, taper=(0.05, 0.6), start_w=1.0, end_w=0.1, wet=0.2, **B.bk(exit='tip'))
+                dry=0.15, taper=(0.05, 0.6), start_w=1.0, end_w=0.1, wet=0.2, **B.bk(exit='tip', interact=False))
     B.mark('松针', x, y - r * 0.3)
     W, H = int(r * 3.6 * B.S), int(r * 1.3 * B.S)
     if W > 4 and H > 4:

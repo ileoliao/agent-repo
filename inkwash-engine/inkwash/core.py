@@ -357,6 +357,32 @@ class Layer:
         self.Wet[ya:yb, xa:xb] += D * wet
         T = self.T[ya:yb, xa:xb]
         np.copyto(T, np.where(D > 0.004, np.minimum(T, Tp), T).astype(np.float32))
+        if self.interact:
+            self._wash_paper(ya, yb, xa, xb, D, m, float(t0), float(wet), float(dens), pig)
+
+    def _wash_paper(self, ya, yb, xa, xb, D, m, t0, wet, dens, pig):
+        """渲染写入纸面状态。调用前 A 里已经加过最初的 D·颜料。
+        湿纸上把这一笔摊开，并让水推动未干的旧墨；干墨上补一条水线。"""
+        from . import pomo
+        from .brush2_ink import conductance
+
+        sl = (slice(ya, yb), slice(xa, xb))
+        D0 = D
+        paint = np.clip(m, 0, 1).astype(np.float32)
+        fib = self.cv.fiber[ya:yb, xa:xb]
+        cond = conductance(fib, np.full(fib.shape, 0.5, np.float32))
+        t = pomo.now(self, t0)
+        ctx, cond2, _it, _mob = pomo.prepare(self, sl, t, cond, 0, min(wet, 1.2), paint)
+        if float(ctx['wo'].max()) > 0.05:
+            D, _halo = pomo.soften(ctx, D, np.zeros_like(D), 16.0)
+        if float(ctx['dryink'].max()) > 0.05:
+            rim = pomo.layer_edge(ctx, paint, np.clip(D / (dens + 1e-3), 0, 1.2), 24.0)
+            D = D + 0.28 * rim
+        D = np.clip(D, 0, None).astype(np.float32)
+        self.A[sl] += (D - D0)[..., None] * pig
+        Wf = np.clip(paint * np.float32(min(wet, 1.4)) * smoothstep(0.02, 0.25, D), 0, 1.5)
+        dOld = pomo.apply(self, ctx, Wf.astype(np.float32), D, D, cond2, 16.0)
+        pomo.recolor(self, sl, dOld)
 
     # ------------------------------------------------------------------ finalize
     def finalize(self):
