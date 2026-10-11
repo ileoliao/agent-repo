@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Policy, decideCommand, decideWrite, deniedBy } from './policy';
+import { Policy, decideCommand, decideWrite, hardReject } from './policy';
 import { AgentDef } from './team';
 import { WorkItem, enqueue, newId, saveGate } from './queue';
-import { exec } from './exec';
+import { exec, redact } from './exec';
+import { createEditToolDefinition } from './vendor/pi/tools/edit';
+import { createLsToolDefinition } from './vendor/pi/tools/ls';
+import { createReadToolDefinition } from './vendor/pi/tools/read';
+import { createWriteToolDefinition } from './vendor/pi/tools/write';
 
 export interface ToolContext {
   root: string;
@@ -134,42 +138,51 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
 }
 
 export async function runTool(name: string, input: any, ctx: ToolContext): Promise<ToolOutcome> {
+  const outcome = await dispatchTool(name, input, ctx);
+  if (outcome.text) outcome.text = redact(outcome.text, ctx.secrets);
+  return outcome;
+}
+
+async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise<ToolOutcome> {
   switch (name) {
     case 'read_file': {
-      const abs = inside(ctx.root, input.path);
-      const lines = fs.readFileSync(abs, 'utf8').split('\n');
-      const s = Math.max(1, input.startLine ?? 1);
-      const e = Math.min(lines.length, input.endLine ?? lines.length);
-      return { text: lines.slice(s - 1, e).map((l, i) => `${s + i}\t${l}`).join('\n') };
+      const rel = workspaceRel(ctx.root, input.path);
+      const offset = input.startLine as number | undefined;
+      const limit = input.endLine != null ? Math.max(0, input.endLine - (input.startLine ?? 1) + 1) : undefined;
+      const result = await createReadToolDefinition(ctx.root).execute(
+        'read', { path: rel, offset, limit }, abortSignal(ctx)
+      );
+      return { text: toolText(result) };
     }
     case 'list_dir': {
-      const abs = inside(ctx.root, input.path || '.');
-      return {
-        text: fs.readdirSync(abs, { withFileTypes: true })
-          .filter(d => d.name !== '.git' && d.name !== 'node_modules')
-          .map(d => (d.isDirectory() ? d.name + '/' : d.name))
-          .join('\n')
-      };
+      const rel = workspaceRel(ctx.root, input.path || '.');
+      const result = await createLsToolDefinition(ctx.root).execute('ls', { path: rel }, abortSignal(ctx));
+      return { text: toolText(result) };
     }
     case 'write_file':
     case 'edit_file': {
-      const rel = path.relative(ctx.root, inside(ctx.root, input.path)).replace(/\\/g, '/');
+      const rel = workspaceRel(ctx.root, input.path);
       const gate = decideWrite(ctx.policy, rel);
       if (gate.decision !== 'allow') {
         return { text: `REFUSED by policy (${gate.rule}).`, decision: 'deny' };
       }
-      const abs = path.join(ctx.root, rel);
+      const signal = abortSignal(ctx);
       if (name === 'write_file') {
-        fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, input.content, 'utf8');
+        await createWriteToolDefinition(ctx.root).execute('write', { path: rel, content: input.content ?? '' }, signal);
         return { text: `Wrote ${rel}.`, decision: 'allow' };
       }
-      const before = fs.readFileSync(abs, 'utf8');
-      const n = before.split(input.oldText).length - 1;
-      if (n !== 1) {
-        return { text: `edit_file failed: oldText matched ${n} times (need exactly 1).`, decision: 'allow' };
+      const definition = createEditToolDefinition(ctx.root);
+      const prepared = definition.prepareArguments?.({ path: rel, oldText: input.oldText, newText: input.newText })
+        ?? { path: rel, edits: [{ oldText: input.oldText, newText: input.newText }] };
+      try {
+        await definition.execute('edit', prepared, signal);
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        const found = /Found (\d+) occurrences/.exec(msg);
+        if (found) return { text: `edit_file failed: oldText matched ${found[1]} times (need exactly 1).`, decision: 'allow' };
+        if (msg.includes('Could not find')) return { text: 'edit_file failed: oldText matched 0 times (need exactly 1).', decision: 'allow' };
+        throw e;
       }
-      fs.writeFileSync(abs, before.replace(input.oldText, input.newText), 'utf8');
       return { text: `Edited ${rel}.`, decision: 'allow' };
     }
     case 'run_command': {
@@ -193,7 +206,7 @@ export async function runTool(name: string, input: any, ctx: ToolContext): Promi
     case 'request_approval': {
       const isApproval = name === 'request_approval';
       if (isApproval) {
-        const deny = deniedBy(ctx.policy, input.command);
+        const deny = hardReject(ctx.policy, input.command ?? '');
         if (deny) {
           return { text: `REFUSED: command matches deny rule ${deny}; not even a human can approve it here.`, decision: 'deny' };
         }
@@ -248,10 +261,27 @@ export async function runTool(name: string, input: any, ctx: ToolContext): Promi
   }
 }
 
-function inside(root: string, rel: string): string {
+function abortSignal(ctx: ToolContext): AbortSignal {
+  const ac = new AbortController();
+  if (ctx.token.isCancellationRequested) ac.abort();
+  else ctx.token.onCancellationRequested(() => ac.abort());
+  return ac.signal;
+}
+
+function toolText(result: { content?: { type?: string; text?: string }[] }): string {
+  return (result.content ?? []).map(part => part.text ?? '').join('\n');
+}
+
+/** Workspace-relative path, or throw if it escapes the root. pi resolves the path against cwd. */
+function workspaceRel(root: string, rel: string): string {
   const abs = path.resolve(root, rel ?? '.');
   if (abs !== root && !abs.startsWith(root + path.sep)) {
     throw new Error(`Path escapes workspace: ${rel}`);
   }
-  return abs;
+  const relative = path.relative(root, abs);
+  return (relative === '' ? '.' : relative).replace(/\\/g, '/');
+}
+
+function inside(root: string, rel: string): string {
+  return path.resolve(root, workspaceRel(root, rel));
 }

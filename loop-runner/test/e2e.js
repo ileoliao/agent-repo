@@ -29,7 +29,9 @@ const { cronMatches, validateCron } = require(`${OUT}/cron.js`);
 const { loadPolicy, decideCommand, decideWrite, skillScriptRule } = require(`${OUT}/policy.js`);
 const Q = require(`${OUT}/queue.js`);
 const { runItem } = require(`${OUT}/runner.js`);
-const { exec } = require(`${OUT}/exec.js`);
+const { exec, selectShellConfig, POWERSHELL_ARGS, resolveShellConfig } = require(`${OUT}/exec.js`);
+const { runTool } = require(`${OUT}/tools.js`);
+const { spawnSync } = require('child_process');
 const G = require(`${OUT}/gates.js`);
 
 // ---- fixture workspace: the repo's team config plus stub skills ----
@@ -256,10 +258,88 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
   ok(['park', 'gate', 'resume', 'notify'].every(t => types.includes(t)), 'park, gate, resume and notify are audited');
   ok(Q.waiting(W).length === 0 && [...team.keys()].every(a => Q.pending(W, a).length === 0), 'nothing left waiting or queued');
 
+  console.log('regression: command chaining, redirects, secrets, approval, windows shell');
+  {
+    const base = loadPolicy(W, '.loop/policy.json');
+    ok(decideCommand(base, 'git status\nnode -e "process.exit(0)"').decision === 'deny', 'newline does not bypass allow rules');
+    ok(decideCommand(base, 'git status & node -e "process.exit(0)"').decision === 'deny', 'single & does not bypass allow rules');
+    ok(decideCommand(base, 'git status && git diff').decision === 'allow', '&& of two allowed commands still allowed');
+    ok(decideCommand(base, 'git commit -m "fix && ship"').decision === 'allow', 'quoted && is not a command separator');
+    ok(decideCommand(base, 'git status > .env').decision === 'deny', 'redirect to .env is denied');
+    ok(decideCommand(base, 'git diff >> .github/workflows/pwn.yml').decision === 'deny', 'redirect to .github is denied');
+    ok(decideCommand(base, 'git status > src/out.txt').decision === 'allow', 'redirect to a writable path is not a hard reject');
+
+    const redirGate = Q.newId();
+    Q.saveGate(W, {
+      id: redirGate, kind: 'approval', agent: 'support', itemId: 'redir', chainId: 'redir-chain',
+      title: 'write env', body: 'x', files: [], command: 'echo pwned > .env', resume: false, status: 'pending',
+      createdAt: new Date().toISOString()
+    });
+    await assert.rejects(() => G.approveAndRun(W, redirGate, base, {}), /protected path/);
+    ok(!fs.existsSync(path.join(W, '.env')), 'protected redirect was not executed');
+
+    const subGate = Q.newId();
+    Q.saveGate(W, {
+      id: subGate, kind: 'approval', agent: 'support', itemId: 'sub', chainId: 'sub-chain',
+      title: 'sub', body: 'x', files: [], command: 'echo $(touch pwned-sub.txt)', resume: false, status: 'pending',
+      createdAt: new Date().toISOString()
+    });
+    await assert.rejects(() => G.approveAndRun(W, subGate, base, {}), /command substitution/);
+    ok(!fs.existsSync(path.join(W, 'pwned-sub.txt')), '$(...) was not executed on approval');
+    const btGate = Q.newId();
+    Q.saveGate(W, {
+      id: btGate, kind: 'approval', agent: 'support', itemId: 'bt', chainId: 'bt-chain',
+      title: 'bt', body: 'x', files: [], command: 'echo `touch pwned-bt.txt`', resume: false, status: 'pending',
+      createdAt: new Date().toISOString()
+    });
+    await assert.rejects(() => G.approveAndRun(W, btGate, base, {}), /command substitution/);
+    ok(!fs.existsSync(path.join(W, 'pwned-bt.txt')), 'backticks were not executed on approval');
+
+    process.env.LOOP_LEAKED_SECRET = 'leak-value-zz';
+    const leaked = await exec('node -e "process.stdout.write(String(process.env.LOOP_LEAKED_SECRET||\'\'))"', {
+      cwd: W, timeoutSec: 15, maxOutputBytes: 2000, secrets: {}
+    });
+    delete process.env.LOOP_LEAKED_SECRET;
+    ok(!leaked.text.includes('leak-value-zz'), 'parent process.env is not inherited');
+    const short = await exec('node -e "process.stdout.write(process.env.S||\'\')"', {
+      cwd: W, timeoutSec: 15, maxOutputBytes: 2000, secrets: { S: 'xy' }
+    });
+    ok(short.text.includes('***') && !short.text.includes('xy'), 'short secrets are redacted from command output');
+    fs.writeFileSync(path.join(W, 'notes.txt'), 'token=sekret-token-123\n');
+    const rd = await runTool('read_file', { path: 'notes.txt' }, {
+      root: W, secrets: SECRETS, policy: base, extraAllow: [], token,
+      agent: sen, team, item: { id: 'read', hop: 0, chainId: 'read', agent: 'sentinel', task: 't', from: 'user', createdAt: '' },
+      maxHops: 5
+    });
+    ok(rd.text.includes('***') && !rd.text.includes('sekret-token-123'), 'read_file output redacts secrets');
+
+    const pidFile = path.join(W, 'grand.pid');
+    const killed = await exec('sleep 30 & echo $! > grand.pid; wait', { cwd: W, timeoutSec: 1, maxOutputBytes: 2000, secrets: {} });
+    ok(killed.code === null && killed.text.includes('killed'), 'timeout still reports killed');
+    const grandPid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+    let grandAlive = true;
+    try { process.kill(grandPid, 0); } catch { grandAlive = false; }
+    if (grandAlive) { try { process.kill(grandPid, 'SIGKILL'); } catch { /* already gone */ } }
+    ok(!grandAlive, 'timeout kills the child process tree');
+
+    const ps = selectShellConfig('win32', {
+      bash: () => undefined,
+      powershell: () => ({ shell: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', args: [...POWERSHELL_ARGS] })
+    });
+    ok(/powershell/i.test(ps.shell) && ps.args.includes('-NoProfile') && ps.args.includes('-NonInteractive'), 'windows uses pi PowerShell flags when bash is missing');
+    const cmd = selectShellConfig('win32', { bash: () => undefined, powershell: () => undefined, comSpec: 'C:\\Windows\\System32\\cmd.exe' });
+    ok(cmd.shell.endsWith('cmd.exe') && cmd.args.join(' ') === '/d /s /c', 'windows falls back to cmd /d /s /c');
+    const live = resolveShellConfig();
+    ok(live.args.includes('-c') && /bash|sh$/.test(live.shell), 'this host runs commands through pi shell config');
+  }
+
   console.log('smoke workspace (examples/smoke)');
   {
+    const py = pythonBin();
     const S = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-smoke-'));
     fs.cpSync(path.join(__dirname, '..', 'examples', 'smoke'), S, { recursive: true });
+    const agentFile = path.join(S, '.github', 'agents', 'smoke.agent.md');
+    fs.writeFileSync(agentFile, fs.readFileSync(agentFile, 'utf8').replace(/\bpython3?\b/g, py));
     const sTeam = loadAgents(S), sSkills = loadSkills(S), sAll = loadAllAgents(S);
     ok(sTeam.size === 1 && validateTeam(sTeam, sSkills, sAll).length === 0, 'smoke team validates clean');
     const smoke = sTeam.get('smoke');
@@ -272,7 +352,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(!(await checkWake(S, smoke, sPolicy, sAllow, {})).wake, 'consumed trigger does not fire twice');
 
     // Drive the role's steps through the real runner with a scripted model.
-    const sendCmd = 'python .github/skills/smoke-probe/scripts/send.py .loop/outbox/smoke/reply.md';
+    const sendCmd = `${py} .github/skills/smoke-probe/scripts/send.py .loop/outbox/smoke/reply.md`;
     const steps = [
       [['write_file', { path: '.loop/outbox/smoke/reply.md', content: 'Reply: hello from JL' }]],
       [['ask_human', { question: 'Smoke test: which colour should the reply mention?', context: 'smoke', options: ['blue', 'green'] }]],
@@ -309,3 +389,11 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });
+
+function pythonBin() {
+  for (const bin of ['python3', 'python', 'py']) {
+    const r = spawnSync(bin, ['--version'], { stdio: 'ignore' });
+    if (!r.error && r.status === 0) return bin;
+  }
+  return 'python3';
+}

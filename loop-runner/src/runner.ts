@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AgentDef, SkillDef } from './team';
 import { Policy, skillScriptRule } from './policy';
 import { PlainMsg, PlainPart, WorkItem, audit, getGate, loadCheckpoint, saveCheckpoint } from './queue';
+import { redact } from './exec';
 import { buildTools, runTool, ToolOutcome } from './tools';
 
 export interface RunDeps {
@@ -145,7 +146,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
               secrets: deps.secrets, maxHops: deps.maxHops, token: deps.token
             });
           } catch (e: any) {
-            o = { text: `ERROR: ${e?.message ?? String(e)}` };
+            o = { text: redact(`ERROR: ${e?.message ?? String(e)}`, deps.secrets) };
           }
         }
         deps.out.appendLine(`    ${call.name} ${brief(call.input)} → ${o.decision ?? ''} ${(o.park ? `parked on ${o.park}` : o.text).split('\n')[0].slice(0, 100)}`);

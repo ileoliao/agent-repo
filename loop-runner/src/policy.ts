@@ -61,17 +61,114 @@ export function deniedBy(policy: Policy, command: string): string | undefined {
   return policy.denyCommands.find(rule => new RegExp(rule).test(command));
 }
 
-export function decideCommand(policy: Policy, command: string, extraAllow: string[] = []): { decision: Decision; rule?: string } {
+/**
+ * Split a shell command into the pieces that actually run.
+ * Separators: `&&`, `||`, `;`, `|`, a single `&` (bash background and cmd/PowerShell statement
+ * separator), and newlines. Quoted text is not split. `>|` and `>&` stay attached to a redirect.
+ */
+export function commandSegments(command: string): string[] {
+  const parts: string[] = [];
+  let buf = '';
+  let quote: '"' | "'" | null = null;
+  const push = () => {
+    const s = buf.trim();
+    if (s) parts.push(s);
+    buf = '';
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      buf += c;
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; buf += c; continue; }
+    if (c === '\\' && command[i + 1]) { buf += c + command[i + 1]; i++; continue; }
+    if (c === '\n' || c === '\r') { push(); continue; }
+    if (c === '&' && command[i + 1] === '&') { push(); i++; continue; }
+    if (c === '|' && command[i + 1] === '|') { push(); i++; continue; }
+    if ((c === '|' || c === '&') && command[i - 1] === '>') { buf += c; continue; }
+    if (c === '&' || c === '|' || c === ';') { push(); continue; }
+    buf += c;
+  }
+  push();
+  return parts;
+}
+
+/** Paths a command would write via `>`, `>>`, `>|`, `&>`, or `>&file`. Fd dups (`>&1`) are skipped. */
+export function redirectionTargets(command: string): string[] {
+  const targets: string[] = [];
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '\\') { i++; continue; }
+    const startsRedirect = c === '>' || (c === '&' && command[i + 1] === '>');
+    if (!startsRedirect) continue;
+    let j = i;
+    if (command[j] === '&') j++;
+    if (command[j] !== '>') continue;
+    j++;
+    if (command[j] === '>') j++;
+    if (command[j] === '|') j++;
+    if (command[j] === '&') {
+      if (/\d/.test(command[j + 1] ?? '')) { i = j + 1; continue; }
+      j++;
+    }
+    while (command[j] === ' ' || command[j] === '\t') j++;
+    let target = '';
+    if (command[j] === '"' || command[j] === "'") {
+      const q = command[j++];
+      while (j < command.length && command[j] !== q) target += command[j++];
+    } else {
+      while (j < command.length && !/[\s<>|&;]/.test(command[j])) target += command[j++];
+    }
+    if (target && !/^&\d+$/.test(target)) targets.push(target);
+    i = Math.max(i, j - 1);
+  }
+  return targets;
+}
+
+function unsafeRedirect(policy: Policy, target: string): string | undefined {
+  if (path.posix.isAbsolute(target) || path.win32.isAbsolute(target) || target.startsWith('~') || target.split(/[\\/]/).includes('..')) {
+    return `redirect escapes workspace (${target})`;
+  }
+  const rel = target.replace(/\\/g, '/').replace(/^\.\//, '');
+  const gate = decideWrite(policy, rel);
+  if (gate.decision === 'deny' && gate.rule !== 'not in writablePaths') {
+    return `redirect to protected path (${gate.rule})`;
+  }
+  return undefined;
+}
+
+/**
+ * Rejects a human cannot approve away: deny rules, command substitution, and writes
+ * (via redirection) into a protected path or outside the workspace.
+ */
+export function hardReject(policy: Policy, command: string): string | undefined {
   const deny = deniedBy(policy, command);
-  if (deny) {
-    return { decision: 'deny', rule: deny };
+  if (deny) return deny;
+  if (/\$\(|`/.test(command)) return 'command substitution';
+  for (const target of redirectionTargets(command)) {
+    const reason = unsafeRedirect(policy, target);
+    if (reason) return reason;
   }
-  if (/\$\(|`/.test(command)) {
-    return { decision: 'deny', rule: 'command substitution' };
+  for (const part of commandSegments(command)) {
+    const partDeny = deniedBy(policy, part);
+    if (partDeny) return partDeny;
   }
+  return undefined;
+}
+
+export function decideCommand(policy: Policy, command: string, extraAllow: string[] = []): { decision: Decision; rule?: string } {
+  const hard = hardReject(policy, command);
+  if (hard) return { decision: 'deny', rule: hard };
   const rules = [...policy.allowCommands, ...extraAllow];
-  // Compound commands are split; every segment must be allowed.
-  const parts = command.split(/&&|\|\||;|\|/).map(s => s.trim()).filter(Boolean);
+  const parts = commandSegments(command);
   const ok = parts.every(part => rules.some(rule => new RegExp(rule).test(part)));
   return ok ? { decision: 'allow' } : { decision: 'deny', rule: 'no allow rule matched' };
 }

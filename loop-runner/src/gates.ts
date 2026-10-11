@@ -1,5 +1,5 @@
 import { Gate, audit, getGate, saveGate, wake } from './queue';
-import { Policy, deniedBy } from './policy';
+import { Policy, hardReject } from './policy';
 import { exec } from './exec';
 
 /**
@@ -38,10 +38,14 @@ export function rejectApproval(root: string, id: string, feedback?: string) {
     `REJECTED by the human. The command was not run.${fb ? `\nFeedback: ${fb}\nRevise accordingly; request approval again if still appropriate.` : ''}${EDIT_NOTE(g)}`);
 }
 
-/** Runs the approved command. The deny list is re-checked here: policy may have changed since the request. */
+/**
+ * Runs the approved command. Hard rejects are applied again here: deny rules, command
+ * substitution, and redirection onto a protected path. Human approval cannot bypass them,
+ * even if the gate was queued before the policy changed.
+ */
 export async function approveAndRun(root: string, id: string, policy: Policy, secrets: Record<string, string>) {
   const g = pendingGate(root, id, 'approval');
-  const deny = deniedBy(policy, g.command ?? '');
+  const deny = hardReject(policy, g.command ?? '');
   if (deny) { throw new Error(`Blocked by deny rule ${deny}`); }
   const r = await exec(g.command!, { cwd: root, timeoutSec: policy.commandTimeoutSec, maxOutputBytes: policy.maxOutputBytes, secrets });
   const ok = r.code === 0;

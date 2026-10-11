@@ -4,8 +4,9 @@
 
 ## 0. 准备
 
-- 在终端运行 `python --version`。
-  - 如果只有 `py` 能用（Windows 常见），把 `.github/agents/smoke.agent.md` 里出现的 `python` 都改成 `py`。
+- 在终端运行 `python3 --version`（没有的话试 `python --version`）。
+  - 示例里的探测命令写的是 `python`。只有 `python3` 能用时，把 `.github/agents/smoke.agent.md` 里的 `python` 换成 `python3`。自动化测试会在 `python3`、`python`、`py` 里选一个能用的。
+  - 如果只有 `py` 能用（Windows 常见），把同样的 `python` 改成 `py`。
   - Windows 上如果 `python` 打开的是应用商店，说明它是商店的占位程序，用 `py`。
 - 在 VS Code 里**单独打开本文件夹**作为工作区：文件 → 打开文件夹 → `examples/smoke`。
 
