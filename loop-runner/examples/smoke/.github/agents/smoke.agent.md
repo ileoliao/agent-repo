@@ -6,6 +6,7 @@ loop:
   schedule: "* * * * *"
   wakeIf: node .github/skills/smoke-probe/scripts/py.js .github/skills/smoke-probe/scripts/probe.py --exit-code
   task: The probe found a trigger. Run the smoke test exactly as your role describes.
+  model: gpt-4o-mini
   maxSteps: 15
 ---
 You are a smoke test. Follow these steps in order and do nothing else.

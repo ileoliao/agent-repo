@@ -655,6 +655,24 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(rows.every(r => r.name !== undefined && typeof r.file === 'string'), 'every team row has a name and an agent file');
   }
 
+  console.log('console page: model and rendering');
+  {
+    const { consoleModel, stepsOf, renderBody, renderPage } = require(`${OUT}/console.js`);
+    const wRun = require(`${OUT}/runs.js`).recentRuns(W).find(r => r.chainId === 'console-writer-chain');
+    const steps = stepsOf(wRun.file);
+    ok(steps.some(s => s.kind === 'tool' && s.title.startsWith('write_file') && s.title.includes('report.md') && s.ok), 'a run shows its tool steps with what they touched');
+    ok(steps[steps.length - 1].kind === 'end', 'a run ends with its outcome');
+    const m = consoleModel(W, { running: true, active: 'techlead' });
+    ok(m.running && m.active === 'techlead' && m.runs.some(r => r.chainId === 'console-writer-chain' && r.steps.length > 0), 'the model carries state and run steps');
+    const evil = { ...m, pending: [{ id: 'g<1>', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: '<img src=x onerror=alert(1)>', body: '</div><script>x</script>', command: 'rm -rf "<x>"', files: ['a"b.md'], resume: true, status: 'pending', createdAt: new Date().toISOString() }] };
+    const html = renderBody(evil);
+    ok(!html.includes('<img') && !html.includes('<script>x') && html.includes('&lt;img') && html.includes('Approve and run') && html.includes('rm -rf &quot;&lt;x&gt;&quot;'), 'gate text is escaped and the exact command is shown');
+    ok(renderBody({ ...m, pending: [], agents: [], runs: [] }).includes('Nothing is waiting for you'), 'empty states explain themselves');
+    const page = renderPage(m, 'abc123', 'vscode-webview://x');
+    ok(page.includes("script-src 'nonce-abc123'") && page.includes('<script nonce="abc123">') && !/<script(?! nonce)/.test(page), 'only the nonce script may run');
+    ok(stepsOf(os.tmpdir() + '/no-such-run.jsonl').length === 0, 'a missing log gives no steps');
+  }
+
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });
