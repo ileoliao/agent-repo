@@ -159,7 +159,6 @@ document.addEventListener('click', e => {
   else if (d.approve) vs.postMessage({ type:'approve', id:d.approve });
   else if (d.reject) vs.postMessage({ type:'reject', id:d.reject, feedback:val(d.reject) });
 });
-const open = () => [...document.querySelectorAll('details[open]')].map(x => x.dataset.k);
 window.addEventListener('message', ev => {
   if (ev.data.type !== 'body') return;
   // Never overwrite something the user is typing.
