@@ -159,6 +159,8 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 - `Result`：打开最新结果（`.loop/outbox/` 下最近修改的文件）。
 - `☰`：打开完整菜单，包含重新加载、派任务、查看状态，以及设置凭证、列出模型等不常用的操作。这些命令在命令面板里被隐藏，但仍可通过菜单使用。
 
+收件箱底部的 **Recent runs** 列出最近 15 次运行（来自 `.loop/runs/`），每条显示 agent、状态（`done` / `waiting` / `error` / `retry` / `running`）、时间和摘要。点一条即打开它的审计日志（JSONL）。
+
 ## 测试
 
 `npm test`：mock 的 vscode 加脚本化的假模型，跑真实的 runner。覆盖：

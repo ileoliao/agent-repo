@@ -2,10 +2,18 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Gate, listGates } from './queue';
+import { RunSummary, recentRuns } from './runs';
 
-/** Sidebar inbox: what the team needs from you (questions, approvals), then recent history. */
-export class InboxView implements vscode.TreeDataProvider<Gate> {
-  private emitter = new vscode.EventEmitter<Gate | undefined>();
+/** Collapsible root node that holds the audit chains of recent runs. */
+interface RunsGroup { group: 'runs' }
+type Node = Gate | RunsGroup | RunSummary;
+
+const isGroup = (n: Node): n is RunsGroup => (n as RunsGroup).group === 'runs';
+const isRun = (n: Node): n is RunSummary => (n as RunSummary).started !== undefined;
+
+/** Sidebar inbox: what the team needs from you (questions, approvals), then recent history, then recent runs. */
+export class InboxView implements vscode.TreeDataProvider<Node> {
+  private emitter = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
 
   constructor(private root: () => string | undefined) {}
@@ -17,14 +25,31 @@ export class InboxView implements vscode.TreeDataProvider<Gate> {
     return r ? listGates(r).filter(g => g.status === 'pending').length : 0;
   }
 
-  getChildren(): Gate[] {
+  getChildren(element?: Node): Node[] {
     const r = this.root();
     if (!r) { return []; }
+    if (element && isGroup(element)) { return recentRuns(r); }
+    if (element) { return []; }
     const all = listGates(r);
-    return [...all.filter(g => g.status === 'pending'), ...all.filter(g => g.status !== 'pending').slice(0, 15)];
+    return [...all.filter(g => g.status === 'pending'), ...all.filter(g => g.status !== 'pending').slice(0, 15), { group: 'runs' }];
   }
 
-  getTreeItem(g: Gate): vscode.TreeItem {
+  getTreeItem(n: Node): vscode.TreeItem {
+    if (isGroup(n)) {
+      const it = new vscode.TreeItem('Recent runs', vscode.TreeItemCollapsibleState.Collapsed);
+      it.iconPath = new vscode.ThemeIcon('history');
+      return it;
+    }
+    if (isRun(n)) {
+      const it = new vscode.TreeItem(n.agent, vscode.TreeItemCollapsibleState.None);
+      it.description = `${n.status} · ${clock(n.started)}${n.summary ? ` · ${n.summary.slice(0, 60)}` : ''}`;
+      it.tooltip = new vscode.MarkdownString(`**${n.agent}** — ${n.status}\n\n${n.summary}\n\n\`${n.chainId}\``);
+      it.iconPath = new vscode.ThemeIcon(
+        n.status === 'done' ? 'pass' : n.status === 'waiting' ? 'bell-dot' : n.status === 'running' ? 'sync' : 'warning');
+      it.command = { command: 'vscode.open', title: 'Open run log', arguments: [vscode.Uri.file(n.file)] };
+      return it;
+    }
+    const g = n;
     const it = new vscode.TreeItem(g.title, vscode.TreeItemCollapsibleState.None);
     it.description = `${g.agent} · ${g.status === 'pending' ? age(g.createdAt) : g.status}`;
     it.tooltip = new vscode.MarkdownString(`**${g.kind}** from ${g.agent}\n\n${g.body}` + (g.command ? `\n\n\`\`\`\n${g.command}\n\`\`\`` : ''));
@@ -35,6 +60,11 @@ export class InboxView implements vscode.TreeDataProvider<Gate> {
     it.command = { command: 'loopRunner.openGate', title: 'Open', arguments: [g] };
     return it;
   }
+}
+
+function clock(iso: string): string {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 function age(iso: string): string {

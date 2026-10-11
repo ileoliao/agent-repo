@@ -587,6 +587,35 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     fs.rmSync(R, { recursive: true, force: true });
   }
 
+  console.log('recent runs: newest chains from .loop/runs');
+  {
+    const { recentRuns } = require(`${OUT}/runs.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-runs-'));
+    const day = path.join(R, '.loop', 'runs', '2026-10-11');
+    fs.mkdirSync(day, { recursive: true });
+    const line = o => JSON.stringify(o);
+    const doneFile = path.join(day, 'chain-a.jsonl');
+    const parkFile = path.join(day, 'chain-b.jsonl');
+    const wakeFile = path.join(day, 'wake-2026-10-11.jsonl');
+    fs.writeFileSync(doneFile, [
+      line({ ts: '2026-10-11T09:00:00Z', chainId: 'chain-a', agent: 'techlead', type: 'start' }),
+      line({ ts: '2026-10-11T09:00:05Z', chainId: 'chain-a', agent: 'techlead', type: 'end', status: 'done', summary: 'all good' })
+    ].join('\n'));
+    fs.writeFileSync(parkFile, [
+      line({ ts: '2026-10-11T10:00:00Z', chainId: 'chain-b', agent: 'smoke', type: 'start' }),
+      line({ ts: '2026-10-11T10:00:09Z', chainId: 'chain-b', agent: 'smoke', type: 'park', gateId: 'g1' })
+    ].join('\n'));
+    fs.writeFileSync(wakeFile, line({ ts: '2026-10-11T10:00:00Z', chainId: 'wake-2026-10-11', type: 'wake', agent: 'smoke', wake: false }));
+    const past = new Date(Date.now() - 120_000);
+    fs.utimesSync(doneFile, past, past);
+    const runs = recentRuns(R);
+    ok(runs.length === 2 && !runs.some(r => r.chainId.startsWith('wake-')), 'wake checks are not listed as runs');
+    ok(runs[0].chainId === 'chain-b' && runs[0].status === 'waiting' && runs[0].agent === 'smoke', 'newest chain first, parked shows as waiting');
+    ok(runs[1].status === 'done' && runs[1].summary === 'all good', 'a finished chain shows its end status and summary');
+    ok(recentRuns(os.tmpdir() + '/no-such-loop-dir-xyz').length === 0, 'no runs directory gives an empty list');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });
