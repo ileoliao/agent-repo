@@ -1,0 +1,13 @@
+{
+  "allowCommands": [],
+  "denyCommands": [
+    "\\brm\\b",
+    "\\b(del|rmdir|Remove-Item)\\b",
+    "\\b(curl|wget|ssh|scp|nc|Invoke-WebRequest)\\b",
+    "\\bsudo\\b"
+  ],
+  "writablePaths": [],
+  "protectedPaths": [".loop/**", ".github/**"],
+  "commandTimeoutSec": 60,
+  "maxOutputBytes": 8000
+}
