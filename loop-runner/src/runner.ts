@@ -5,6 +5,8 @@ import { PlainMsg, PlainPart, WorkItem, audit, getGate, loadCheckpoint, saveChec
 import { redact } from './exec';
 import { buildTools, runTool, ToolOutcome } from './tools';
 import { outputsFrom } from './runs';
+import type { Agent as PiAgent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
+import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
 
 export interface RunDeps {
   root: string;
@@ -67,7 +69,58 @@ function toVscode(m: PlainMsg): vscode.LanguageModelChatMessage {
     : vscode.LanguageModelChatMessage.Assistant(parts as (vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart)[]);
 }
 
+// ---- plain <-> pi message conversion. The plain form is what checkpoints store (stable, byte-identical replay). ----
+const ZERO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const API = { api: 'vscode-lm', provider: 'copilot' } as const;
+
+function plainToPi(plain: PlainMsg[], modelId: string): AgentMessage[] {
+  const out: any[] = [];
+  const names = new Map<string, string>();
+  const ts = Date.now();
+  for (const m of plain) {
+    if (m.role === 'assistant') {
+      const content: any[] = m.parts.flatMap((p): any[] => p.t === 'text' ? [{ type: 'text', text: p.v }]
+        : p.t === 'call' ? (names.set(p.callId, p.name), [{ type: 'toolCall', id: p.callId, name: p.name, arguments: p.input }]) : []);
+      const calls = m.parts.some(p => p.t === 'call');
+      out.push({ role: 'assistant', content, ...API, model: modelId, usage: ZERO_USAGE, stopReason: calls ? 'toolUse' : 'stop', timestamp: ts });
+      continue;
+    }
+    for (const p of m.parts) {
+      if (p.t === 'result') {
+        out.push({ role: 'toolResult', toolCallId: p.callId, toolName: names.get(p.callId) ?? 'tool', content: [{ type: 'text', text: p.text }], isError: false, timestamp: ts });
+      } else if (p.t === 'text') {
+        out.push({ role: 'user', content: [{ type: 'text', text: p.v }], timestamp: ts });
+      }
+    }
+  }
+  return out;
+}
+
+/** Inverse of plainToPi. Consecutive tool results become one user message, as the model has always seen them. */
+function piToPlain(msgs: readonly (AgentMessage | Message)[]): PlainMsg[] {
+  const out: PlainMsg[] = [];
+  for (const m of msgs as any[]) {
+    if (m.role === 'toolResult') {
+      const text = (m.content ?? []).map((c: any) => c.text ?? '').join('');
+      const last = out[out.length - 1];
+      const part: PlainPart = { t: 'result', callId: m.toolCallId, text };
+      if (last && last.role === 'user' && last.parts.every(p => p.t === 'result')) { last.parts.push(part); } else { out.push({ role: 'user', parts: [part] }); }
+    } else if (m.role === 'assistant') {
+      out.push({ role: 'assistant', parts: (m.content ?? []).flatMap((c: any): PlainPart[] =>
+        c.type === 'text' ? [{ t: 'text', v: c.text }] : c.type === 'toolCall' ? [{ t: 'call', callId: c.id, name: c.name, input: c.arguments }] : []) });
+    } else if (m.role === 'user') {
+      const text = typeof m.content === 'string' ? m.content : (m.content ?? []).map((c: any) => c.text ?? '').join('');
+      out.push({ role: 'user', parts: [{ t: 'text', v: text }] });
+    }
+  }
+  return out;
+}
+
 export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult> {
+  // pi ships as ESM only; a dynamic import works from the compiled CommonJS output and from the esbuild bundle.
+  const { Agent } = await import('@earendil-works/pi-agent-core');
+  const { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai/utils/event-stream');
+
   const agent = deps.team.get(item.agent)!;
   const extraAllow = agent.skills
     .map(s => deps.skills.get(s))
@@ -82,12 +135,14 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
 
   // `limit` is raised on a gate resume so the answer always reaches the model (one more request).
   let limit = maxSteps;
+  let resuming = false;
   const cp = loadCheckpoint(deps.root, item.id);
   if (cp && (item.resumeGate || !cp.parkedCallId)) {
     // Continue the same conversation: after a gate (outcome becomes the parked call's result), or after an
     // interrupted run (end-of-turn checkpoint, nothing to add). Re-running from scratch would repeat side effects.
     transcript = cp.messages;
     step = cp.step;
+    resuming = true;
     if (cp.parkedCallId) {
       const gate = item.resumeGate ? getGate(deps.root, item.resumeGate) : undefined;
       if (!gate || gate.outcome === undefined) {
@@ -113,89 +168,140 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   }
 
   let finished: { status: string; summary: string } | undefined;
-  let nudges = 0;
+  let parked: { gateId: string; callId: string } | undefined;
+  let modelError: any;
+  let hitLimit = false;
   const startedAt = Date.now();
   // The same call with the same result three times in a row means the agent is going in circles.
   let lastSig = '';
   let repeats = 0;
 
-  try {
-    while (!finished && step < limit && !deps.token.isCancellationRequested) {
-      if (deps.maxMs && Date.now() - startedAt > deps.maxMs) {
-        finished = { status: 'stalled', summary: `stopped after ${Math.round(deps.maxMs / 60000)} minutes (wall-clock cap)` };
-        break;
-      }
+  // The model: one request per pi turn, through the Language Model API. Auto, not Required: Copilot rejects
+  // Required with more than one tool, and it does so inside the response stream. A text-only reply is nudged below.
+  const streamFn = (model: any, context: any) => {
+    const stream = createAssistantMessageEventStream();
+    void (async () => {
       step++;
       const t0 = Date.now();
-      // Auto, not Required: Copilot rejects Required with more than one tool, and it does so inside the
-      // response stream, so a sendRequest-level fallback never sees it. A text-only reply is nudged below.
-      const response = await deps.model.sendRequest(transcript.map(toVscode), {
-        tools, toolMode: vscode.LanguageModelChatToolMode.Auto, justification: `Loop Runner: ${agent.name} work item ${item.id}`
-      }, deps.token);
-      const assistant: PlainPart[] = [];
-      const calls: { callId: string; name: string; input: any }[] = [];
-      let text = '';
-      for await (const part of response.stream) {
-        if (part instanceof vscode.LanguageModelTextPart) {
-          text += part.value;
-          assistant.push({ t: 'text', v: part.value });
-        } else if (part instanceof vscode.LanguageModelToolCallPart) {
-          calls.push({ callId: part.callId, name: part.name, input: part.input });
-          assistant.push({ t: 'call', callId: part.callId, name: part.name, input: part.input });
-        }
-      }
-      if (text.trim()) { deps.out.appendLine(`  [${step}] ${text.trim()}`); }
-      log({ type: 'model', step, ms: Date.now() - t0, text, calls: calls.map(c => ({ name: c.name, input: c.input })) });
-      transcript.push({ role: 'assistant', parts: assistant });
-
-      if (calls.length === 0) {
-        if (++nudges > 2) { break; }
-        transcript.push({ role: 'user', parts: [{ t: 'text', v: 'Use a tool, or call finish.' }] });
-        continue;
-      }
-
-      const results: { callId: string; text: string }[] = [];
-      let parked: { gateId: string; callId: string } | undefined;
-      for (const call of calls) {
-        const t1 = Date.now();
-        let o: ToolOutcome;
-        if (parked && (call.name === 'ask_human' || call.name === 'request_approval')) {
-          o = { text: 'Not sent: only one human gate per turn. Ask again after the first is resolved.' };
-        } else {
-          try {
-            o = await runTool(call.name, call.input, {
-              root: deps.root, agent, team: deps.team, item, policy: deps.policy, extraAllow,
-              secrets: deps.secrets, maxHops: deps.maxHops, token: deps.token
-            });
-          } catch (e: any) {
-            o = { text: redact(`ERROR: ${e?.message ?? String(e)}`, deps.secrets) };
+      const base = { role: 'assistant' as const, api: model.api, provider: model.provider, model: model.id, usage: ZERO_USAGE, timestamp: t0 };
+      stream.push({ type: 'start', partial: { ...base, content: [], stopReason: 'stop' } as AssistantMessage });
+      try {
+        const msgs = piToPlain((context.messages as Message[]).filter(m => (m as any).role !== 'system')).map(toVscode);
+        const response = await deps.model.sendRequest(msgs, {
+          tools, toolMode: vscode.LanguageModelChatToolMode.Auto, justification: `Loop Runner: ${agent.name} work item ${item.id}`
+        }, deps.token);
+        const content: any[] = [];
+        let text = '';
+        const calls: { callId: string; name: string; input: any }[] = [];
+        for await (const part of response.stream) {
+          if (part instanceof vscode.LanguageModelTextPart) {
+            text += part.value;
+            content.push({ type: 'text', text: part.value });
+          } else if (part instanceof vscode.LanguageModelToolCallPart) {
+            calls.push({ callId: part.callId, name: part.name, input: part.input });
+            content.push({ type: 'toolCall', id: part.callId, name: part.name, arguments: part.input });
           }
         }
-        deps.out.appendLine(`    ${call.name} ${brief(call.input)} → ${o.decision ?? ''} ${(o.park ? `parked on ${o.park}` : o.text).split('\n')[0].slice(0, 100)}`);
-        log({ type: 'tool', step, name: call.name, input: call.input, decision: o.decision, gateId: o.park, ms: Date.now() - t1, result: o.text.slice(0, 2000) });
-        results.push({ callId: call.callId, text: o.text });
-        const sig = `${call.name}\n${JSON.stringify(call.input)}\n${o.text}`;
-        repeats = sig === lastSig ? repeats + 1 : 1;
-        lastSig = sig;
-        if (repeats >= 3 && !o.park && !o.finished && !finished) {
-          finished = { status: 'stalled', summary: `stopped: ${call.name} gave the same result ${repeats} times in a row` };
-        }
-        if (o.park && !parked) { parked = { gateId: o.park, callId: call.callId }; }
-        if (o.finished) { finished = o.finished; }
+        if (text.trim()) { deps.out.appendLine(`  [${step}] ${text.trim()}`); }
+        log({ type: 'model', step, ms: Date.now() - t0, text, calls: calls.map(c => ({ name: c.name, input: c.input })) });
+        const reason = calls.length ? 'toolUse' : 'stop';
+        stream.push({ type: 'done', reason, message: { ...base, content, stopReason: reason } as AssistantMessage });
+      } catch (e: any) {
+        modelError = e;
+        const reason = deps.token.isCancellationRequested ? 'aborted' : 'error';
+        stream.push({ type: 'error', reason, error: { ...base, content: [], stopReason: reason, errorMessage: String(e?.message ?? e) } as AssistantMessage });
       }
+    })();
+    return stream;
+  };
 
+  let parkedThisTurn = false;
+  const piTools: AgentTool[] = tools.map(t => ({
+    name: t.name,
+    label: t.name,
+    description: t.description,
+    parameters: t.inputSchema as any,
+    executionMode: 'sequential',
+    execute: async (callId: string, input: any) => {
+      const t1 = Date.now();
+      let o: ToolOutcome;
+      if (parkedThisTurn && (t.name === 'ask_human' || t.name === 'request_approval')) {
+        o = { text: 'Not sent: only one human gate per turn. Ask again after the first is resolved.' };
+      } else {
+        try {
+          o = await runTool(t.name, input, {
+            root: deps.root, agent, team: deps.team, item, policy: deps.policy, extraAllow,
+            secrets: deps.secrets, maxHops: deps.maxHops, token: deps.token
+          });
+        } catch (e: any) {
+          o = { text: redact(`ERROR: ${e?.message ?? String(e)}`, deps.secrets) };
+        }
+      }
+      deps.out.appendLine(`    ${t.name} ${brief(input)} → ${o.decision ?? ''} ${(o.park ? `parked on ${o.park}` : o.text).split('\n')[0].slice(0, 100)}`);
+      log({ type: 'tool', step, name: t.name, input, decision: o.decision, gateId: o.park, ms: Date.now() - t1, result: o.text.slice(0, 2000) });
+      if (o.park && !parked) { parked = { gateId: o.park, callId }; parkedThisTurn = true; }
+      if (o.finished) { finished = o.finished; }
+      const sig = `${t.name}\n${JSON.stringify(input)}\n${o.text}`;
+      repeats = sig === lastSig ? repeats + 1 : 1;
+      lastSig = sig;
+      if (repeats >= 3 && !o.park && !o.finished && !finished) {
+        finished = { status: 'stalled', summary: `stopped: ${t.name} gave the same result ${repeats} times in a row` };
+      }
+      return { content: [{ type: 'text' as const, text: o.text }], details: {} };
+    }
+  }));
+
+  const pi: PiAgent = new Agent({
+    initialState: { systemPrompt: '', model: { id: deps.model.id, name: deps.model.family, ...API, contextWindow: 128000, maxTokens: 4096, reasoning: false, input: ['text'], cost: ZERO_USAGE.cost } as any, tools: piTools, messages: resuming ? plainToPi(transcript, deps.model.id) : [] },
+    streamFn: streamFn as any,
+    toolExecution: 'sequential',
+    // Runs after every completed turn, before the next request: where the old loop's bookkeeping lived.
+    finishTurn: async turn => {
+      parkedThisTurn = false;
       if (parked) {
-        // Snapshot the conversation; the gate's outcome becomes this call's result on resume.
-        saveCheckpoint(deps.root, { itemId: item.id, gateId: parked.gateId, messages: transcript, turnResults: results, parkedCallId: parked.callId, step });
+        // Snapshot the conversation up to the assistant message; the gate's outcome becomes the parked call's result on resume.
+        const all = turn.context.messages as any[];
+        const upTo = all.length - turn.toolResults.length;
+        const results = turn.toolResults.map(r => ({ callId: r.toolCallId, text: (r.content as any[]).map(c => c.text ?? '').join('') }));
+        saveCheckpoint(deps.root, { itemId: item.id, gateId: parked.gateId, messages: piToPlain(all.slice(0, upTo)), turnResults: results, parkedCallId: parked.callId, step });
         log({ type: 'park', step, gateId: parked.gateId });
         deps.out.appendLine(`⏸ ${agent.name} waiting on ${parked.gateId}`);
-        return { status: 'waiting', steps: step, gateId: parked.gateId };
+        return { action: 'end' };
       }
-      transcript.push({ role: 'user', parts: results.map(r => ({ t: 'result' as const, callId: r.callId, text: r.text })) });
+      if (finished) { return { action: 'end' }; }
+      if (deps.maxMs && Date.now() - startedAt > deps.maxMs) {
+        finished = { status: 'stalled', summary: `stopped after ${Math.round(deps.maxMs / 60000)} minutes (wall-clock cap)` };
+        return { action: 'end' };
+      }
       // End-of-turn snapshot so an interrupted or rate-limited item continues here instead of starting over.
-      if (!finished) { saveCheckpoint(deps.root, { itemId: item.id, gateId: '', messages: transcript, turnResults: [], parkedCallId: '', step }); }
+      // A text-only turn has no results to snapshot; it is nudged instead.
+      if (turn.toolResults.length) {
+        saveCheckpoint(deps.root, { itemId: item.id, gateId: '', messages: piToPlain(turn.context.messages as any[]), turnResults: [], parkedCallId: '', step });
+      }
+      if (step >= limit) { hitLimit = true; return { action: 'end' }; }
+      return undefined;
+    }
+  });
+  const onCancel = deps.token.onCancellationRequested(() => pi.abort());
+
+  let nudges = 0;
+  try {
+    if (resuming) { await pi.continue(); } else { await pi.prompt(transcript[0].parts[0].t === 'text' ? (transcript[0].parts[0] as any).v : ''); }
+    // A reply with no tool call ends pi's loop; nudge twice, then give up as stalled.
+    while (!finished && !parked && !modelError && !hitLimit && !deps.token.isCancellationRequested && step < limit) {
+      const last: any = pi.state.messages[pi.state.messages.length - 1];
+      if (last?.role !== 'assistant' || last.content.some((c: any) => c.type === 'toolCall')) { break; }
+      if (++nudges > 2) { break; }
+      await pi.prompt('Use a tool, or call finish.');
     }
   } catch (e: any) {
+    modelError = e;
+  } finally {
+    onCancel.dispose();
+  }
+  if (parked) { return { status: 'waiting', steps: step, gateId: (parked as { gateId: string }).gateId }; }
+  if (modelError) {
+    const e = modelError;
     // Copilot names its errors (ChatRateLimited, ChatQuotaExceeded); keep the name so they can be classified.
     const named = e?.name && e.name !== 'Error' && !String(e?.message ?? '').includes(e.name);
     const msg = e instanceof vscode.LanguageModelError ? `${e.code}: ${e.message}` : `${named ? `${e.name}: ` : ''}${e?.message ?? String(e)}`;
@@ -209,12 +315,14 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
     return { status: 'error', summary: msg, steps: step };
   }
 
-  const status = finished?.status ?? (deps.token.isCancellationRequested ? 'cancelled' : step >= limit ? 'max_steps' : 'stalled');
+  const status = (finished as { status: string } | undefined)?.status ?? (deps.token.isCancellationRequested ? 'cancelled' : step >= limit ? 'max_steps' : 'stalled');
   // Every successful write in the transcript, including turns before a resume.
-  const results = transcript.flatMap(m => m.parts.flatMap(p => (p.t === 'result' ? [p.text] : [])));
-  log({ type: 'end', step, status, summary: finished?.summary, outputs: outputsFrom(results) });
-  deps.out.appendLine(`■ ${agent.name}: ${status}${finished ? ` — ${finished.summary}` : ''}`);
-  return { status, summary: finished?.summary, steps: step };
+  const transcriptNow = piToPlain(pi.state.messages as any[]);
+  const results = transcriptNow.flatMap(m => m.parts.flatMap(p => (p.t === 'result' ? [p.text] : [])));
+  const done = finished as { status: string; summary: string } | undefined;
+  log({ type: 'end', step, status, summary: done?.summary, outputs: outputsFrom(results) });
+  deps.out.appendLine(`■ ${agent.name}: ${status}${done ? ` — ${done.summary}` : ''}`);
+  return { status, summary: done?.summary, steps: step };
 }
 
 function brief(input: unknown): string {
