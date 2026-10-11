@@ -693,10 +693,11 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(slow.status === 'stalled' && slow.summary.includes('wall-clock') && slow.steps < 3, 'a run past its wall-clock cap ends as stalled');
 
     const today = new Date();
+    const capBase = Q.scheduledToday(W, 'sentinel', today);
     for (let i = 0; i < 2; i++) { Q.enqueue(W, { id: `cap-${i}`, agent: 'sentinel', task: 't', from: 'schedule', chainId: `cap-c${i}`, hop: 0, createdAt: today.toISOString() }); }
     Q.enqueue(W, { id: 'cap-old', agent: 'sentinel', task: 't', from: 'schedule', chainId: 'cap-co', hop: 0, createdAt: new Date(today.getTime() - 3 * 86400000).toISOString() });
     Q.enqueue(W, { id: 'cap-user', agent: 'sentinel', task: 't', from: 'user', chainId: 'cap-cu', hop: 0, createdAt: today.toISOString() });
-    ok(Q.scheduledToday(W, 'sentinel', today) === 2, 'only today\'s scheduled items count toward the daily cap');
+    ok(Q.scheduledToday(W, 'sentinel', today) === capBase + 2, 'only today\'s scheduled items count toward the daily cap');
     for (const f of ['cap-0', 'cap-1', 'cap-old', 'cap-user']) { fs.rmSync(path.join(W, '.loop', 'queue', 'sentinel', `${f}.json`), { force: true }); }
     const capAgent = { ...team.get('sentinel'), maxRunsPerDay: 0 };
     ok(validateTeam(new Map([['sentinel', capAgent]]), skills, all).some(e => e.includes('maxRunsPerDay')), 'a daily cap below 1 is a config error');
