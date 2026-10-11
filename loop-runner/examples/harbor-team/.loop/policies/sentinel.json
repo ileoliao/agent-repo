@@ -1,5 +1,7 @@
 {
-  "allowCommands": [],
+  "allowCommands": [
+    "^date( \\+[%A-Za-z0-9:_-]+)?$"
+  ],
   "denyCommands": [
     "\\brm\\b",
     "\\bgit (push|reset --hard|clean)\\b",

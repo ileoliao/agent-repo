@@ -5,7 +5,8 @@
     "^git -C repos/[\\w.-]+ (status|log|show|diff|blame|grep|ls-files|ls-tree|rev-parse|branch|tag|describe|shortlog|fetch|cat-file)\\b",
     "^git -C repos/[\\w.-]+ pull --ff-only$",
     "^gh (search (code|issues|prs|repos)|repo (view|list)|pr (list|view|diff|checks)|issue (list|view)|release (list|view)|run (list|view)|browse)\\b",
-    "^gh api (-H [\\w:.\\/+ -]+ )?(repos|search|orgs)/[\\w./?=&%:+,@-]+$"
+    "^gh api (-H [\\w:.\\/+ -]+ )?(repos|search|orgs)/[\\w./?=&%:+,@-]+$",
+    "^date( \\+[%A-Za-z0-9:_-]+)?$"
   ],
   "denyCommands": [
     "\\brm\\b",
