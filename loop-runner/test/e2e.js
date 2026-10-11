@@ -769,6 +769,50 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(events.includes('REFUSED') && !events.includes(PLANTED), 'refusals are recorded and the audit holds no secret');
   }
 
+  console.log('conversation changes: schedule, role edits, memory');
+  {
+    const M = require(`${OUT}/manage.js`);
+    const { buildPrompt } = require(`${OUT}/runner.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-manage-'));
+    fs.mkdirSync(path.join(R, '.github', 'agents'), { recursive: true });
+    const agentFile = path.join(R, '.github', 'agents', 'sentinel.agent.md');
+    const original = '---\nname: sentinel\ndescription: watches things\nloop:\n  skills: [probe]\n  schedule: "*/15 9-21 * * 1-5"\n  task: Check the dashboard.\n  maxSteps: 15\n---\nYou watch the dashboard.\nBe brief.\n';
+    fs.writeFileSync(agentFile, original);
+    const sched = M.proposeSchedule(R, 'sentinel', { schedule: '0 9 * * 1-5' });
+    ok(sched.change && sched.change.after.includes('  schedule: "0 9 * * 1-5"') && sched.change.after.includes('  maxSteps: 15') && sched.change.after.endsWith('Be brief.\n'), 'a new schedule changes one line and leaves the rest of the file alone');
+    ok(M.diffOf(sched.change).includes('-  schedule: "*/15 9-21 * * 1-5"') && M.diffOf(sched.change).includes('+  schedule: "0 9 * * 1-5"'), 'the proposal shows a diff');
+    ok(fs.readFileSync(agentFile, 'utf8') === original, 'proposing writes nothing');
+    ok(M.proposeSchedule(R, 'sentinel', { schedule: '61 * * * *' }).error, 'an invalid cron is rejected before any file is touched');
+    ok(M.proposeSchedule(R, 'nobody', { schedule: '0 9 * * *' }).error.includes('No agent named'), 'an unknown agent is rejected');
+    const off = M.proposeSchedule(R, 'sentinel', { schedule: null });
+    ok(off.change && !off.change.after.includes('schedule:'), 'scheduling can be turned off');
+    const multi = M.proposeSchedule(R, 'sentinel', { task: 'Line one.\nHe said "go" and \'stop\'.' });
+    ok(multi.change && require(`${OUT}/frontmatter.js`).parseFrontmatter(multi.change.after).meta.loop.task === 'Line one.\nHe said "go" and \'stop\'.', 'a task with both quote kinds and a newline round-trips through a block scalar');
+    M.applyChange(R, sched.change);
+    ok(loadAgents(R).get('sentinel').schedule === '0 9 * * 1-5', 'applying the change is read back by the team loader');
+    let stale = false; try { M.applyChange(R, off.change); } catch (e) { stale = /changed since/.test(e.message); }
+    ok(stale, 'a proposal built on an older file is refused');
+    const role = M.proposeRoleEdit(R, 'sentinel', 'Be brief.', 'Be brief. Answer in Chinese.');
+    ok(role.change && role.change.after.includes('Be brief. Answer in Chinese.') && role.change.after.startsWith('---\nname: sentinel'), 'a role edit touches only the body');
+    ok(M.proposeRoleEdit(R, 'sentinel', 'name: sentinel', 'x').error, 'the frontmatter cannot be edited through a role edit');
+    ok(M.proposeRoleEdit(R, 'sentinel', 'e', 'x').error.includes('times'), 'an ambiguous role edit asks for more context');
+
+    const rem = M.proposeRemember(R, 'sentinel', 'Reports go to the ops channel');
+    ok(rem.change && rem.change.before === null && /^- \d{4}-\d{2}-\d{2}: Reports go to the ops channel\n$/.test(rem.change.after), 'a remembered note is a dated line in .loop/memory/<agent>.md');
+    M.applyChange(R, rem.change);
+    M.applyChange(R, M.proposeRemember(R, 'all', 'Never email customers directly').change);
+    ok(M.memoryFor(R, 'sentinel').split('\n').length === 2 && M.memoryFor(R, 'sentinel').startsWith('- ') && M.memoryFor(R, 'other').includes('Never email'), 'a run is told everyone\'s notes and its own');
+    ok(M.proposeRemember(R, 'sentinel', 'Reports go to the ops channel').error.includes('already'), 'a duplicate note is not added twice');
+    const forget = M.proposeForget(R, 'sentinel', 'ops channel');
+    M.applyChange(R, forget.change);
+    ok(M.readMemory(R, 'sentinel') === '' && !fs.existsSync(path.join(R, '.loop', 'memory', 'sentinel.md')), 'forgetting the last note removes the file');
+    const a = loadAgents(R).get('sentinel');
+    const prompt = buildPrompt(a, { id: 'i1', task: 'do', from: 'user', chainId: 'c', hop: 0 }, { team: new Map(), skills: new Map() }, M.memoryFor(R, 'sentinel'));
+    ok(prompt.indexOf('# Standing instructions') > prompt.indexOf('# Your role') && prompt.indexOf('# Standing instructions') < prompt.indexOf('# Work item'), 'standing instructions sit after the role and before the work item');
+    ok(!buildPrompt(a, { id: 'i1', task: 'do', from: 'user', chainId: 'c', hop: 0 }, { team: new Map(), skills: new Map() }, '').includes('Standing instructions'), 'no notes means no section');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });
