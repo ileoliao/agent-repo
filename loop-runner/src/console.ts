@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { Gate, listGates } from './queue';
-import { fileSha256 } from './gates';
+import { sha256Of } from './gates';
 import * as path from 'path';
 import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
@@ -23,9 +23,12 @@ export interface GateView extends Gate { previews: { path: string; text: string;
 const PREVIEW_CHARS = 6000;
 function previewsOf(root: string, g: Gate): GateView['previews'] {
   return g.files.map(f => {
-    let text = '';
-    try { text = fs.readFileSync(path.join(root, f), 'utf8'); } catch { text = '(file is missing)'; }
-    return { path: f, text: text.slice(0, PREVIEW_CHARS), sha256: fileSha256(root, f), truncated: text.length > PREVIEW_CHARS };
+    // One read: the text shown and the hash the approval is bound to come from the same bytes.
+    try {
+      const buf = fs.readFileSync(path.join(root, f));
+      const text = buf.toString('utf8');
+      return { path: f, text: text.slice(0, PREVIEW_CHARS), sha256: sha256Of(buf), truncated: text.length > PREVIEW_CHARS };
+    } catch { return { path: f, text: '(file is missing)', sha256: 'missing', truncated: false }; }
   });
 }
 
@@ -36,6 +39,10 @@ export interface ConsoleModel {
   pending: GateView[];
   agents: AgentRow[];
   runs: ConsoleRun[];
+  /** ISO time this view was built. */
+  updatedAt: string;
+  /** Page-level message: no workspace, or the data could not be read. */
+  note?: { tone: 'bad' | 'info'; text: string };
 }
 
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
@@ -82,12 +89,33 @@ export function consoleModel(root: string, state: { running: boolean; active?: s
     next: nw ? { agent: nw.agent, at: nw.at.toISOString() } : undefined,
     pending: listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) })),
     agents,
-    runs: recentRuns(root, runLimit).map(r => ({ ...r, steps: stepsOf(r.file) }))
+    // A run whose last event says "running" but that no live worker owns (team stopped, or another agent is active)
+    // was cut off, for example when VS Code closed. Say so instead of showing it as running forever.
+    runs: recentRuns(root, runLimit).map(r => ({
+      ...r,
+      status: r.status === 'running' && !(state.running && state.active === r.agent) ? 'interrupted' : r.status,
+      steps: stepsOf(r.file)
+    })),
+    updatedAt: now.toISOString()
   };
 }
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const time = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
+/** hh:mm today; with the weekday and date otherwise (a wake tomorrow must not look like one today). */
+const when = (iso: string) => {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) { return ''; }
+  return d.toDateString() === new Date().toDateString() ? time(iso) : `${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${time(iso)}`;
+};
+/** A time with its exact value on hover. */
+const stamp = (iso: string, text: string) => `<time datetime="${esc(iso)}" title="${esc(new Date(iso).toLocaleString())}">${esc(text)}</time>`;
+const span = (a: string, b: string) => {
+  const ms = Date.parse(b) - Date.parse(a);
+  if (!(ms >= 0)) { return ''; }
+  const sec = Math.round(ms / 1000);
+  return sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+};
 const ago = (iso: string) => {
   const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
   return isNaN(m) ? '' : m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
@@ -108,6 +136,7 @@ const ICONS: Record<string, string> = {
   bot: 'M4 6h8v6H4V6zM8 6V3.5M6.2 8.8v.4M9.8 8.8v.4',
   chevron: 'M6 4l4 4-4 4',
   send: 'M2.5 8l11-5-4 10-2.5-4L2.5 8z',
+  copy: 'M5.5 5.5h7v8h-7v-8zM3.5 10.5v-8h7',
   dot: 'M8 6a2 2 0 100 4 2 2 0 000-4z'
 };
 const icon = (name: string, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICONS[name] ?? ICONS.dot}"/></svg>`;
@@ -117,162 +146,230 @@ const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
   waiting: { label: 'Waiting for you', tone: 'warn', ic: 'bell' }, error: { label: 'Error', tone: 'bad', ic: 'x' },
   retry: { label: 'Will retry', tone: 'warn', ic: 'clock' }, blocked: { label: 'Blocked', tone: 'warn', ic: 'alert' },
   max_steps: { label: 'Step limit', tone: 'warn', ic: 'alert' }, stalled: { label: 'Stalled', tone: 'bad', ic: 'alert' },
+  interrupted: { label: 'Interrupted', tone: 'warn', ic: 'alert' },
   nothing_to_do: { label: 'Nothing to do', tone: 'mute', ic: 'check' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
 };
+/** Statuses the "Problems" filter shows. */
+const PROBLEMS = new Set(['error', 'stalled', 'blocked', 'max_steps', 'interrupted', 'retry']);
 const chip = (status: string) => { const s = STATUS[status] ?? { label: status, tone: 'mute', ic: 'dot' }; return `<span class="chip ${s.tone}">${icon(s.ic)}<span>${esc(s.label)}</span></span>`; };
 const btn = (label: string, attrs: string, kind = '', ic = '') => `<button class="btn ${kind}" ${attrs}>${ic ? icon(ic) : ''}<span>${esc(label)}</span></button>`;
+const copy = (text: string, label: string) => `<button class="btn ghost" data-copy="${esc(text)}" aria-label="Copy ${esc(label)}" title="Copy ${esc(label)}">${icon('copy')}</button>`;
 
 function gateCard(g: GateView): string {
   const isQ = g.kind === 'question';
   const head = `<div class="card-head">${icon(isQ ? 'help' : 'bell', 'lead warn')}<div class="grow"><div class="card-title">${esc(g.title)}</div>
-    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${esc(ago(g.createdAt))}</span></div></div></div>`;
+    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span></div></div></div>`;
   const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
-  const files = (g.previews ?? []).map(p => `<details class="file" open data-k="f-${esc(g.id)}-${esc(p.path)}"><summary>${icon('chevron', 'chev')}${icon('file')}<span class="mono grow">${esc(p.path)}</span>${p.truncated ? '<span class="muted">first part shown</span>' : ''}</summary>
-    <pre class="code" data-hash-for="${esc(p.path)}" data-hash="${esc(p.sha256)}">${esc(p.text)}</pre></details>`).join('')
-    + (g.files.length && !(g.previews ?? []).length ? g.files.map(f => `<a class="filechip" href="#" data-open="${esc(f)}">${icon('file')}${esc(f)}</a>`).join('') : '');
+  const previews = g.previews ?? [];
+  const missing = previews.filter(p => p.sha256 === 'missing').map(p => p.path);
+  const files = previews.map(p => `<details class="file" open data-k="f-${esc(g.id)}-${esc(p.path)}"><summary>${icon('chevron', 'chev')}${icon('file')}<span class="mono grow">${esc(p.path)}</span>${p.truncated ? '<span class="muted">first part shown</span>' : ''}</summary>
+    <pre class="code" tabindex="0" data-hash-for="${esc(p.path)}" data-hash="${esc(p.sha256)}">${esc(p.text)}</pre>
+    <div class="row wrap"><a class="filechip" href="#" data-open="${esc(p.path)}">${icon('file')}${p.truncated ? 'Open full file' : 'Open to edit'}</a></div></details>`).join('')
+    + (g.files.length && !previews.length ? g.files.map(f => `<a class="filechip" href="#" data-open="${esc(f)}">${icon('file')}${esc(f)}</a>`).join('') : '');
   if (isQ) {
-    const opts = (g.options ?? []).map(o => btn(o, `data-answer="${esc(g.id)}" data-text="${esc(o)}"`, 'secondary')).join('');
+    const opts = (g.options ?? []).map(o => btn(o, `data-pick="${esc(g.id)}" data-text="${esc(o)}"`, 'secondary')).join('');
     return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Question from ${esc(g.agent)}">${head}${body}${files}
-      ${opts ? `<div class="row wrap">${opts}</div>` : ''}
+      ${opts ? `<div class="label">Suggested answers (pick one, then send)</div><div class="row wrap">${opts}</div>` : ''}
       <div class="row"><textarea rows="2" placeholder="Type an answer…" aria-label="Your answer" data-input="${esc(g.id)}"></textarea>${btn('Send answer', `data-send="${esc(g.id)}"`, 'primary', 'send')}</div></section>`;
   }
+  const truncated = previews.some(p => p.truncated);
+  const notes = [
+    missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '',
+    previews.length && !missing.length ? `<div class="note">Your approval covers ${truncated ? 'the whole of each file (only the first part of a long one is shown above; open it to read the rest)' : 'the file contents shown above'}. If a file changes before it runs, nothing runs and you review again.</div>` : '',
+    '<div class="note">Runs in the workspace folder, not in a sandbox.</div>'
+  ].join('');
   return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${body}
-    <div class="label">This exact command runs when you approve</div><pre class="code cmd">${esc(g.command ?? '')}</pre>${files}
-    ${(g.previews ?? []).length ? '<div class="note">Your approval covers the file contents shown above. If a file changes before it runs, nothing runs and you review again.</div>' : ''}
+    <div class="label">This exact command runs when you approve</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${files}${notes}
     <div class="row"><textarea rows="1" placeholder="Reason, if you reject (optional)" aria-label="Feedback for the agent" data-input="${esc(g.id)}"></textarea>
-    ${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"`, 'primary', 'check')}</div></section>`;
+    ${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div></section>`;
 }
 
 function runCard(r: ConsoleRun): string {
-  const steps = r.steps.map(s => `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.kind === 'end' ? 'check' : s.ok ? 'dot' : 'x')}</span>
-    <div class="grow"><div class="step-title"><span class="kind">${esc(s.kind)}</span>${s.step ? `<span class="muted">#${s.step}</span>` : ''}<span class="${s.kind === 'tool' || s.kind === 'gate' ? 'mono' : ''}">${esc(s.title)}</span></div>${s.detail ? `<div class="muted wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`).join('');
+  const shown = r.steps.map(s => {
+    const quiet = s.ok && (s.kind === 'tool' || s.kind === 'gate') && /^(\[exit 0\]|ok)$/.test(s.detail ?? '');
+    return `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.kind === 'end' ? 'check' : s.ok ? 'dot' : 'x')}</span>
+    <div class="grow"><div class="step-title"><span class="kind">${esc(s.kind)}</span>${s.step ? `<span class="muted">#${s.step}</span>` : ''}<span class="${s.kind === 'tool' || s.kind === 'gate' ? 'mono' : ''}">${esc(s.title)}</span></div>${s.detail && !quiet ? `<div class="${s.ok ? 'muted' : 'result-bad'} wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`;
+  }).join('');
   const outs = r.outputs.map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
-  return `<details class="run" data-k="r-${esc(r.chainId)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
-    <span class="grow run-sum">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'} · ${esc(ago(r.started))}</span></summary>
-    <div class="run-body">${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
-    <div class="label">What happened</div><ol class="timeline">${steps || '<li class="muted">No steps recorded.</li>'}</ol>
-    <a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a></div></details>`;
+  const dur = r.status === 'running' ? span(r.started, new Date().toISOString()) : span(r.started, r.updated);
+  const live = r.status === 'running';
+  return `<details class="run" ${live ? 'open' : ''} data-k="r-${esc(r.chainId)}" data-status="${esc(r.status)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
+    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span></summary>
+    <div class="run-body">${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
+    <div class="label">What happened</div><ol class="timeline">${shown || '<li class="muted">No steps recorded.</li>'}</ol>
+    <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
 
 function agentRow(a: AgentRow): string {
-  const state = a.state === 'running' ? 'running' : a.state === 'waiting' ? 'waiting' : 'nothing_to_do';
   const label = a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
-  const s = STATUS[state];
+  const tone = a.state === 'running' ? 'info' : a.state === 'waiting' ? 'warn' : 'mute';
+  const lw = a.lastWake;
+  const last = !lw ? '<span class="muted">none yet</span>'
+    : lw.capped !== undefined ? `daily cap reached (${lw.capped}) <span class="muted">${stamp(lw.at, ago(lw.at))}</span>`
+    : `${lw.wake ? 'found work' : 'nothing to do'} <span class="muted">${stamp(lw.at, ago(lw.at))}</span>`;
   return `<div class="agent"><div class="agent-top">${icon('bot', 'lead')}<a class="agent-name" href="#" data-open="${esc(a.file)}">${esc(a.name)}</a>
-    <span class="chip ${a.state === 'idle' ? 'mute' : s.tone}">${icon(a.state === 'idle' ? 'dot' : s.ic)}<span>${label}</span></span></div>
+    <span class="chip ${tone}">${icon(a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
     <dl class="kv"><dt>Model</dt><dd class="mono">${esc(a.model ?? 'default')}</dd>
-    <dt>Next wake</dt><dd>${a.next ? esc(time(a.next.toISOString())) : '<span class="muted">manual only</span>'}</dd>
-    <dt>Last check</dt><dd>${a.lastWake ? `${a.lastWake.wake ? 'found work' : 'nothing to do'} <span class="muted">${esc(ago(a.lastWake.at))}</span>` : '<span class="muted">none yet</span>'}</dd></dl></div>`;
+    <dt>Next wake</dt><dd>${a.next ? stamp(a.next.toISOString(), when(a.next.toISOString())) : '<span class="muted">manual only</span>'}</dd>
+    <dt>Last check</dt><dd>${last}</dd></dl></div>`;
 }
 
+/** `hint` is trusted markup: callers pass only fixed strings. */
 const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
 
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
   const live = m.runs.find(r => r.status === 'running' && r.agent === m.active);
-  const state = !m.running ? `<span class="state off">${icon('stop')}Stopped</span>`
+  const state = !m.running ? `<span class="state off">${icon('stop')}Team stopped</span>`
     : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc(m.active)}${live ? ` · step ${live.step}` : ''}</span>`
-    : `<span class="state idle">${icon('clock')}Idle${m.next ? ` · next wake ${esc(time(m.next.at))}` : ''}</span>`;
-  const actions = (m.running ? btn('Stop', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
+    : `<span class="state idle">${icon('clock')}Team on · idle${m.next ? ` · next wake ${esc(when(m.next.at))}` : ''}</span>`;
+  const actions = (m.running ? btn('Stop team', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
     + btn('Give a task', 'data-cmd="runAgent"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult"', 'secondary', 'file');
   const last = m.runs.find(r => r.status !== 'running');
   const tiles = [
     { k: 'Needs you', v: String(m.pending.length), tone: m.pending.length ? 'warn' : '', sub: m.pending.length ? 'waiting for your decision' : 'all clear' },
     { k: 'Agents', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
     { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}` : 'no runs yet' },
-    { k: 'Next wake', v: m.next ? time(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
+    { k: 'Next wake', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
   ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
   const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
-  const runs = m.runs.length ? m.runs.map(runCard).join('') : empty('clock', 'No runs yet', 'Press Start team, or use “Give a task” to run an agent now.');
+  const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
+  const filter = m.runs.length ? `<label class="filter"><span class="muted">Show</span><select data-filter aria-label="Filter runs"><option value="all">All runs (${m.runs.length})</option><option value="problems">Problems (${problems})</option><option value="done">Done</option></select></label>` : '';
+  const runs = m.runs.length ? `<div class="runs">${m.runs.map(runCard).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
+    : empty('clock', 'No runs yet', 'Press Start team, or use “Give a task” to run an agent now.');
   const agents = m.agents.length ? m.agents.map(agentRow).join('')
     : empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.');
-  return `<header class="bar"><div class="brand">Loop Console</div>${state}<span class="grow"></span><div class="row">${actions}</div></header>
-    <div class="tiles">${tiles}</div>
+  const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
+  return `<header class="bar"><div class="brand">Loop Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
+    ${note}<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
-    <h2>Recent runs</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`;
+    <h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`;
 }
 
 const STYLE = `
-:root{--gap:12px;--r:6px}
+:root{--gap:12px;--r:6px;--ok:var(--vscode-testing-iconPassed,var(--vscode-charts-green));--bad:var(--vscode-errorForeground,var(--vscode-charts-red));--warn:var(--vscode-editorWarning-foreground,var(--vscode-charts-orange));--info:var(--vscode-charts-blue);--cb:var(--vscode-contrastBorder,transparent);--cab:var(--vscode-contrastActiveBorder,var(--vscode-focusBorder))}
 *{box-sizing:border-box}
 body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);line-height:1.45}
 .mono,code,pre{font-family:var(--vscode-editor-font-family,monospace);font-size:.92em}
-.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}
+.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none}
 .ic{flex:none}.big{width:28px;height:28px}.lead{width:18px;height:18px;margin-top:2px}.spin{animation:sp 1.2s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;padding:12px 0;margin-bottom:4px;background:var(--vscode-editor-background);border-bottom:1px solid var(--vscode-panel-border)}
-.brand{font-size:1.25em;font-weight:600;margin-right:4px}
+.brand{font-size:1.25em;font-weight:600;margin-right:4px}.updated{font-size:.85em}
 .state{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-weight:600;font-size:.92em;border:1px solid var(--vscode-panel-border)}
-.state.on{color:var(--vscode-charts-green);border-color:var(--vscode-charts-green)}.state.idle{color:var(--vscode-foreground)}.state.off{color:var(--vscode-descriptionForeground)}
-.row{display:flex;gap:8px;align-items:flex-start}.row.wrap{flex-wrap:wrap}.row>textarea{flex:1}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:5px 12px;border:1px solid transparent;border-radius:2px;font:inherit;cursor:pointer;white-space:nowrap}
-.btn.primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.btn.primary:hover{background:var(--vscode-button-hoverBackground)}
-.btn.secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}.btn.secondary:hover{background:var(--vscode-button-secondaryHoverBackground)}
-.btn:focus-visible,a:focus-visible,summary:focus-visible,textarea:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
-textarea{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:2px;padding:6px 8px;font:inherit;resize:vertical;min-width:0}
+.state.on{color:var(--ok);border-color:currentColor}.state.off{color:var(--vscode-descriptionForeground)}
+.row{display:flex;gap:8px;align-items:flex-start}.row.wrap{flex-wrap:wrap;align-items:center}.row>textarea{flex:1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:5px 12px;border:1px solid var(--cb);border-radius:2px;font:inherit;cursor:pointer;white-space:nowrap}
+.btn.primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.btn.primary:hover:not(:disabled){background:var(--vscode-button-hoverBackground)}
+.btn.secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}.btn.secondary:hover:not(:disabled){background:var(--vscode-button-secondaryHoverBackground)}
+.btn.ghost{background:transparent;color:var(--vscode-descriptionForeground);padding:3px 6px}.btn.ghost:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}
+.btn:disabled{opacity:.5;cursor:not-allowed}.btn.picked{outline:2px solid var(--cab);outline-offset:0}
+.btn:focus-visible,a:focus-visible,summary:focus-visible,textarea:focus-visible,select:focus-visible,pre:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+textarea,select{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:2px;padding:6px 8px;font:inherit;min-width:0}textarea{resize:vertical}select{padding:3px 6px}
+.filter{display:inline-flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--gap);margin:16px 0 8px}
 .tile{padding:10px 12px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background,transparent)}
 .tile-k{font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground)}.tile-v{font-size:1.5em;font-weight:600;margin:2px 0}
-.tile.warn{border-color:var(--vscode-charts-orange)}.tile.warn .tile-v{color:var(--vscode-charts-orange)}.tile.ok .tile-v{color:var(--vscode-charts-green)}.tile.bad .tile-v{color:var(--vscode-charts-red)}.tile.info .tile-v{color:var(--vscode-charts-blue)}
+.tile.warn{border-color:var(--warn)}.tile.warn .tile-v{color:var(--warn)}.tile.ok .tile-v{color:var(--ok)}.tile.bad .tile-v{color:var(--bad)}.tile.info .tile-v{color:var(--info)}
 .cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}
 @media (max-width:820px){.cols{grid-template-columns:1fr}}
 h2{display:flex;align-items:center;gap:8px;margin:22px 0 10px;font-size:.82em;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--vscode-descriptionForeground)}
-.count{padding:0 7px;border-radius:999px;font-size:.95em;color:var(--vscode-badge-foreground);background:var(--vscode-badge-background)}.count.warn{background:var(--vscode-charts-orange);color:#000}
+.count{padding:0 7px;border-radius:999px;font-size:.95em;color:var(--vscode-badge-foreground);background:var(--vscode-badge-background)}.count.warn{background:var(--warn);color:var(--vscode-editor-background)}
 .card{border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:14px;margin-bottom:var(--gap);background:var(--vscode-sideBar-background,transparent)}
-.card.attention{border-left:3px solid var(--vscode-charts-orange)}
-.card-head{display:flex;gap:10px}.card-title{font-weight:600;font-size:1.05em}.lead.warn{color:var(--vscode-charts-orange)}
+.card.attention{border-left:3px solid var(--warn)}
+.card-head{display:flex;gap:10px}.card-title{font-weight:600;font-size:1.05em;overflow-wrap:anywhere}.lead.warn{color:var(--warn)}
 .meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:.88em;color:var(--vscode-descriptionForeground)}.meta>*+*::before{content:"·";margin-right:8px}
 .tag{padding:0 6px;border-radius:3px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}.meta .tag::before{content:none;margin:0}
-.body{margin:10px 0;white-space:pre-wrap}.label{margin:12px 0 4px;font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground)}
+.body{margin:10px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:9em;overflow:auto}.label{margin:12px 0 4px;font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground)}
 .note{margin:8px 0;font-size:.9em;color:var(--vscode-descriptionForeground)}
-.code{margin:0 0 6px;padding:10px;border-radius:4px;background:var(--vscode-textCodeBlock-background);white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}.code.cmd{border-left:3px solid var(--vscode-charts-blue)}
+.alert{display:flex;gap:8px;align-items:flex-start;margin:8px 0;padding:8px 10px;border-radius:4px;border:1px solid currentColor}.alert.bad{color:var(--bad)}.alert.info,.alert.warn{color:var(--warn)}.alert>span{color:var(--vscode-foreground)}
+.code{margin:0 0 6px;padding:10px;border-radius:4px;background:var(--vscode-textCodeBlock-background);white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}.code.cmd{border-left:3px solid var(--info);flex:1}
+.cmdrow{display:flex;gap:6px;align-items:flex-start}
 details>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;border-radius:4px}details>summary::-webkit-details-marker{display:none}
 .chev{transition:transform .12s}details[open]>summary>.chev{transform:rotate(90deg)}
 .file{margin:8px 0}.file>summary{padding:4px 0;color:var(--vscode-descriptionForeground)}
 .filechip{display:inline-flex;align-items:center;gap:6px;margin:2px 6px 2px 0;padding:2px 8px;border:1px solid var(--vscode-panel-border);border-radius:999px;color:var(--vscode-textLink-foreground);text-decoration:none;overflow-wrap:anywhere}.filechip:hover{background:var(--vscode-list-hoverBackground)}
 a{color:var(--vscode-textLink-foreground)}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;font-size:.88em;font-weight:600;white-space:nowrap;border:1px solid currentColor}
-.chip.ok{color:var(--vscode-charts-green)}.chip.bad{color:var(--vscode-charts-red)}.chip.warn{color:var(--vscode-charts-orange)}.chip.info{color:var(--vscode-charts-blue)}.chip.mute{color:var(--vscode-descriptionForeground)}
+.chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}.chip.warn{color:var(--warn)}.chip.info{color:var(--info)}.chip.mute{color:var(--vscode-descriptionForeground)}
 .run{border:1px solid var(--vscode-panel-border);border-radius:var(--r);margin-bottom:8px;background:var(--vscode-sideBar-background,transparent)}
 .run>summary{padding:10px 12px}.run>summary:hover{background:var(--vscode-list-hoverBackground)}.run-agent{font-weight:600}.run-sum{color:var(--vscode-descriptionForeground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .run-body{padding:0 14px 12px 36px}
 .timeline{list-style:none;margin:6px 0 10px;padding:0}
 .step{display:flex;gap:10px;padding:5px 0;position:relative}.step:not(:last-child)::before{content:"";position:absolute;left:7px;top:22px;bottom:-4px;width:1px;background:var(--vscode-panel-border)}
-.node{color:var(--vscode-descriptionForeground);margin-top:1px}.step.bad .node{color:var(--vscode-charts-red)}.step-title{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;overflow-wrap:anywhere}
+.node{color:var(--vscode-descriptionForeground);margin-top:1px}.step.bad .node{color:var(--bad)}.result-bad{color:var(--bad)}.step-title{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;overflow-wrap:anywhere}
 .kind{font-size:.75em;text-transform:uppercase;letter-spacing:.05em;color:var(--vscode-descriptionForeground)}
 .agent{border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:12px;margin-bottom:8px;background:var(--vscode-sideBar-background,transparent)}
 .agent-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.agent-name{font-weight:600;flex:1;text-decoration:none}.agent-name:hover{text-decoration:underline}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0 0;font-size:.92em}.kv dt{color:var(--vscode-descriptionForeground)}.kv dd{margin:0;overflow-wrap:anywhere}
 .empty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 12px;text-align:center;border:1px dashed var(--vscode-panel-border);border-radius:var(--r);color:var(--vscode-descriptionForeground)}.empty-title{color:var(--vscode-foreground);font-weight:600}
-.link{font-size:.9em}`;
+.stale{margin:8px 0}.link{font-size:.9em}`;
 
 const SCRIPT = `
 const vs = acquireVsCodeApi(); const app = document.getElementById('app');
-const val = id => (document.querySelector('[data-input="'+id+'"]')||{}).value || '';
+const q = id => '[data-gate="' + CSS.escape(id) + '"]';
+const val = id => (document.querySelector('[data-input="' + CSS.escape(id) + '"]') || {}).value || '';
+const busy = new Set();      // approvals whose command is running: a second click must not run it again
+const reviewed = {};         // gate id -> { path: hash } the reader has been shown and accepted
+let filter = 'all';
+const hashes = id => { const h = {}; document.querySelectorAll(q(id) + ' [data-hash-for]').forEach(x => h[x.dataset.hashFor] = x.dataset.hash); return h; };
+const same = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(k => a[k] === b[k]);
+// A draft that changes while the card is open must be read again before it can be approved.
+function scan() {
+  document.querySelectorAll('[data-gate]').forEach(card => {
+    const id = card.dataset.gate; const now = hashes(id); const ap = card.querySelector('[data-approve]');
+    if (!ap) return;
+    if (!reviewed[id]) reviewed[id] = now;
+    const changed = !same(reviewed[id], now);
+    card.querySelectorAll('.stale').forEach(x => x.remove());
+    if (changed) {
+      const d = document.createElement('div'); d.className = 'alert warn stale'; d.setAttribute('role', 'alert');
+      d.innerHTML = '<span>The draft changed after you opened this card. Read it again, then confirm.</span>';
+      const b = document.createElement('button'); b.className = 'btn secondary'; b.dataset.ack = id; b.textContent = 'I have reviewed the new version'; d.appendChild(b);
+      ap.closest('.row').before(d);
+    }
+    const missing = Object.values(now).includes('missing');
+    ap.disabled = missing || changed || busy.has(id);
+    ap.setAttribute('aria-busy', busy.has(id) ? 'true' : 'false');
+    const label = ap.querySelector('span'); if (label) label.textContent = busy.has(id) ? 'Running…' : 'Approve and run';
+  });
+  document.querySelectorAll('details.run').forEach(d => { d.classList.toggle('hidden', !(filter === 'all' || (filter === 'done' ? d.dataset.status === 'done' : !['done','running','waiting','nothing_to_do','cancelled'].includes(d.dataset.status)))); });
+  const empty = document.querySelector('[data-filter-empty]');
+  if (empty) empty.classList.toggle('hidden', !document.querySelectorAll('details.run').length || [...document.querySelectorAll('details.run')].some(d => !d.classList.contains('hidden')));
+  const sel = document.querySelector('[data-filter]'); if (sel) sel.value = filter;
+}
+document.addEventListener('change', e => { if (e.target.matches('[data-filter]')) { filter = e.target.value; scan(); } });
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-answer],[data-send],[data-approve],[data-reject]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy]'); if (!t) return;
   e.preventDefault(); const d = t.dataset;
   if (d.open) vs.postMessage({ type:'open', path:d.open });
   else if (d.openAbs) vs.postMessage({ type:'openAbs', path:d.openAbs });
   else if (d.cmd) vs.postMessage({ type:'cmd', name:d.cmd });
-  else if (d.answer) vs.postMessage({ type:'answer', id:d.answer, text:d.text });
+  else if (d.pick) { const ta = document.querySelector('[data-input="' + CSS.escape(d.pick) + '"]'); if (ta) { ta.value = d.text; ta.focus(); } document.querySelectorAll(q(d.pick) + ' [data-pick]').forEach(b => b.classList.toggle('picked', b === t)); }
   else if (d.send) { const text = val(d.send).trim(); if (text) vs.postMessage({ type:'answer', id:d.send, text }); }
-  else if (d.approve) { const seen = {}; document.querySelectorAll('[data-gate="'+d.approve+'"] [data-hash-for]').forEach(x => seen[x.dataset.hashFor] = x.dataset.hash); vs.postMessage({ type:'approve', id:d.approve, seen }); }
+  else if (d.approve) { if (busy.has(d.approve) || t.disabled) return; busy.add(d.approve); scan(); vs.postMessage({ type:'approve', id:d.approve, seen:hashes(d.approve) }); }
   else if (d.reject) vs.postMessage({ type:'reject', id:d.reject, feedback:val(d.reject) });
+  else if (d.ack) { reviewed[d.ack] = hashes(d.ack); scan(); }
+  else if (d.copy != null) { const done = () => { t.classList.add('picked'); setTimeout(() => t.classList.remove('picked'), 900); }; try { navigator.clipboard.writeText(d.copy).then(done, () => {}); } catch (_) {} }
 });
-// Re-render without losing what the user is doing: open sections, typed text, focus and scroll.
+// Re-render without losing what the user is doing: open sections, typed text, focus, filter.
 window.addEventListener('message', ev => {
+  if (ev.data.type === 'idle') { busy.delete(ev.data.id); scan(); return; }
   if (ev.data.type !== 'body') return;
   const open = new Set([...document.querySelectorAll('details[open]')].map(d => d.dataset.k));
   const closed = new Set([...document.querySelectorAll('details:not([open])')].map(d => d.dataset.k));
   const typed = {}; document.querySelectorAll('textarea[data-input]').forEach(t => { typed[t.dataset.input] = t.value; });
-  const f = document.activeElement; const focus = f && f.dataset && f.dataset.input;
+  const f = document.activeElement; const fk = f && f.dataset ? Object.entries(f.dataset).find(([k]) => /^(input|approve|reject|send|cmd|pick|open|ack|copy)$/.test(k)) : undefined;
   const sel = f && f.selectionStart;
+  const y = window.scrollY;
   app.innerHTML = ev.data.html;
-  document.querySelectorAll('details').forEach(d => { if (closed.has(d.dataset.k)) d.open = false; else if (open.has(d.dataset.k)) d.open = true; });
+  document.querySelectorAll('details[data-k]').forEach(d => { if (closed.has(d.dataset.k)) d.open = false; else if (open.has(d.dataset.k)) d.open = true; });
   document.querySelectorAll('textarea[data-input]').forEach(t => { if (typed[t.dataset.input]) t.value = typed[t.dataset.input]; });
-  if (focus) { const t = document.querySelector('[data-input="'+focus+'"]'); if (t) { t.focus(); if (sel != null) t.setSelectionRange(sel, sel); } }
+  scan();
+  if (fk) { const t = document.querySelector('[data-' + fk[0].replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + '="' + CSS.escape(fk[1]) + '"]'); if (t) { t.focus(); if (sel != null && t.setSelectionRange) t.setSelectionRange(sel, sel); } }
+  window.scrollTo(0, y);
 });
+scan();
 vs.postMessage({ type:'ready' });`;
 
 /** Full page. The script is the only inline code and carries the nonce; everything shown is escaped. */

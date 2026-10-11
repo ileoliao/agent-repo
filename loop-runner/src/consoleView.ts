@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as path from 'path';
-import { consoleModel, renderBody, renderPage } from './console';
+import { ConsoleModel, consoleModel, renderBody, renderPage } from './console';
 
 /** What the console can ask the extension to do. Each action reuses an existing code path. */
 export interface ConsoleActions {
@@ -22,37 +22,71 @@ const COMMANDS: Record<string, string> = {
 /** Webview console: one page with what needs you, the agents, and what each run did. */
 export class ConsolePanel {
   private panel?: vscode.WebviewPanel;
+  /** Gates whose approved command is running now: a second click must not run it again. */
+  private inFlight = new Set<string>();
+  private lastHtml = '';
 
   constructor(private a: ConsoleActions) {}
 
   show(): void {
-    if (this.panel) { this.panel.reveal(); this.refresh(); return; }
+    if (this.panel) { this.panel.reveal(); this.refresh(true); return; }
     const panel = vscode.window.createWebviewPanel('loopRunner.console', 'Loop Console', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
     this.panel = panel;
-    panel.onDidDispose(() => { this.panel = undefined; });
-    panel.webview.html = renderPage(this.model(), crypto.randomBytes(16).toString('hex'), panel.webview.cspSource);
+    this.lastHtml = '';
+    panel.onDidDispose(() => { this.panel = undefined; this.lastHtml = ''; });
+    panel.onDidChangeViewState(() => { if (panel.visible) { this.refresh(true); } });
+    const model = this.model();
+    panel.webview.html = renderPage(model, crypto.randomBytes(16).toString('hex'), panel.webview.cspSource);
+    this.title(model.pending.length);
     panel.webview.onDidReceiveMessage(m => void this.handle(m));
   }
 
-  /** Push fresh data into an open console. No-op when it is closed. */
-  refresh(): void {
-    if (this.panel) { void this.panel.webview.postMessage({ type: 'body', html: renderBody(this.model()) }); }
+  /** Push fresh data into an open console. Skipped while hidden and when nothing changed. */
+  refresh(force = false): void {
+    if (!this.panel || (!this.panel.visible && !force)) { return; }
+    const model = this.model();
+    const html = renderBody(model);
+    this.title(model.pending.length);
+    // updatedAt changes every time; compare without it so an idle console does not redraw (and lose focus) every 5 s.
+    const key = html.replace(/<time[^>]*data-updated[^>]*>[^<]*<\/time>/, '');
+    if (key === this.lastHtml && !force) { return; }
+    this.lastHtml = key;
+    void this.panel.webview.postMessage({ type: 'body', html });
   }
 
-  private model() {
+  private title(pending: number): void {
+    if (this.panel) { this.panel.title = pending ? `Loop Console (${pending})` : 'Loop Console'; }
+  }
+
+  private model(): ConsoleModel {
     const r = this.a.root();
-    return consoleModel(r ?? '', this.a.state());
+    if (!r) {
+      return { running: false, next: undefined, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
+        note: { tone: 'info', text: 'Open a folder in VS Code to use Loop Runner.' } };
+    }
+    try {
+      return consoleModel(r, this.a.state());
+    } catch (e: any) {
+      return { running: this.a.state().running, active: this.a.state().active, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
+        note: { tone: 'bad', text: `Could not read .loop data: ${e?.message ?? e}. Showing nothing rather than something stale.` } };
+    }
   }
 
   private async handle(m: any): Promise<void> {
     const r = this.a.root();
-    if (!r) { return; }
+    if (!r) { void vscode.window.showWarningMessage('Loop Runner: open a folder first.'); return; }
     try {
       switch (m?.type) {
-        case 'ready': this.refresh(); break;
+        case 'ready': this.refresh(true); return;
         case 'cmd': if (COMMANDS[m.name]) { await vscode.commands.executeCommand(COMMANDS[m.name]); } break;
         case 'answer': this.a.answer(String(m.id), String(m.text)); break;
-        case 'approve': await this.a.approve(String(m.id), m.seen && typeof m.seen === 'object' ? m.seen : {}); break;
+        case 'approve': {
+          const id = String(m.id);
+          if (this.inFlight.has(id)) { return; }
+          this.inFlight.add(id);
+          try { await this.a.approve(id, m.seen && typeof m.seen === 'object' ? m.seen : {}); } finally { this.inFlight.delete(id); void this.panel?.webview.postMessage({ type: 'idle', id }); }
+          break;
+        }
         case 'reject': this.a.reject(String(m.id), String(m.feedback ?? '')); break;
         case 'open': case 'openAbs': {
           // Only files inside the workspace; the page cannot ask for anything else.
@@ -65,6 +99,6 @@ export class ConsolePanel {
     } catch (e: any) {
       vscode.window.showWarningMessage(`Loop Runner: ${e?.message ?? e}`);
     }
-    this.refresh();
+    this.refresh(true);
   }
 }

@@ -15,6 +15,8 @@ export interface RunSummary {
   outputs: string[];
   /** Highest step reached. */
   step: number;
+  /** ISO time of the chain's last event. */
+  updated: string;
 }
 
 /**
@@ -69,11 +71,13 @@ export function recentRuns(root: string, limit = 15): RunSummary[] {
     });
     if (events.length === 0) { continue; }
     const first = events[0];
-    const last = [...events].reverse().find(e => ['end', 'error', 'park', 'retry'].includes(e.type));
+    // A resume or a (re)start after a park means the run is moving again, so they count as the latest state too.
+    const last = [...events].reverse().find(e => ['end', 'error', 'park', 'retry', 'resume', 'start'].includes(e.type));
     const status = !last ? 'running'
       : last.type === 'end' ? String(last.status ?? 'done')
       : last.type === 'park' ? 'waiting'
-      : last.type === 'retry' ? 'retry' : 'error';
+      : last.type === 'retry' ? 'retry'
+      : last.type === 'resume' || last.type === 'start' ? 'running' : 'error';
     out.push({
       chainId: String(first.chainId ?? path.basename(file, '.jsonl')),
       agent: String(events.find(e => e.agent)?.agent ?? '?'),
@@ -82,7 +86,8 @@ export function recentRuns(root: string, limit = 15): RunSummary[] {
       started: String(first.ts ?? ''),
       file,
       outputs: Array.isArray(last?.type === 'end' ? last.outputs : undefined) ? last.outputs.map(String) : [],
-      step: Math.max(0, ...events.map(e => Number(e.step) || 0))
+      step: Math.max(0, ...events.map(e => Number(e.step) || 0)),
+      updated: String(events[events.length - 1].ts ?? first.ts ?? '')
     });
   }
   return out;

@@ -30,8 +30,9 @@ function pendingGate(root: string, id: string, kind: Gate['kind']): Gate {
 }
 
 /** sha256 of a workspace file's bytes, or 'missing'. What the reviewer saw is compared against this at execution time. */
+export const sha256Of = (buf: Buffer): string => crypto.createHash('sha256').update(buf).digest('hex');
 export function fileSha256(root: string, rel: string): string {
-  try { return crypto.createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex'); } catch { return 'missing'; }
+  try { return sha256Of(fs.readFileSync(path.join(root, rel))); } catch { return 'missing'; }
 }
 
 export function answerQuestion(root: string, id: string, answer: string) {
@@ -56,7 +57,7 @@ export async function approveAndRun(root: string, id: string, policy: Policy, se
   // When the reviewer approved from a view that showed file contents, run only what they saw: a file that
   // changed since (or a file they were never shown) means the approval no longer matches, so ask again.
   if (seen) {
-    const changed = g.files.filter(f => seen[f] === undefined || seen[f] !== fileSha256(root, f));
+    const changed = g.files.filter(f => { const now = fileSha256(root, f); return seen[f] === undefined || now === 'missing' || seen[f] !== now; });
     if (changed.length) { throw new Error(`Not run: ${changed.join(', ')} changed after you reviewed it. Review again, then approve.`); }
   }
   const deny = hardReject(policy, g.command ?? '');
