@@ -99,7 +99,7 @@ function gateCard(g: GateView): string {
   const head = `<div class="card-head"><b>${g.kind === 'question' ? '❓' : '✅'} ${esc(g.title)}</b><span class="muted">${esc(g.agent)} · ${esc(ago(g.createdAt))}</span></div>`;
   const body = g.body ? `<div class="body">${esc(g.body)}</div>` : '';
   const filesRow = (files ? `<div class="muted">Drafts: ${files}</div>` : '') +
-    g.previews.map(p => `<details open><summary class="muted">${esc(p.path)}${p.truncated ? ' (first part shown)' : ''}</summary><pre data-hash-for="${esc(p.path)}" data-hash="${esc(p.sha256)}">${esc(p.text)}</pre></details>`).join('');
+    (g.previews ?? []).map(p => `<details open><summary class="muted">${esc(p.path)}${p.truncated ? ' (first part shown)' : ''}</summary><pre data-hash-for="${esc(p.path)}" data-hash="${esc(p.sha256)}">${esc(p.text)}</pre></details>`).join('');
   if (g.kind === 'question') {
     const opts = (g.options ?? []).map(o => `<button class="secondary" data-answer="${esc(g.id)}" data-text="${esc(o)}">${esc(o)}</button>`).join('');
     return `<div class="card attention" data-gate="${esc(g.id)}">${head}${body}${filesRow}
