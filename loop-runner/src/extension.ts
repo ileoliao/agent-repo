@@ -1,0 +1,332 @@
+import * as vscode from 'vscode';
+import { AgentDef, SkillDef, loadAllAgents, loadSkills, pickModel, validateTeam } from './team';
+import { cronMatches } from './cron';
+import { Gate, WorkItem, audit, complete, enqueue, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
+import { loadPolicy, skillScriptRule } from './policy';
+import { checkWake } from './wake';
+import { runItem } from './runner';
+import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
+import { InboxView, showGate } from './inbox';
+
+const SECRET_INDEX = 'loopRunner.secretNames';
+const NEEDS_YOU = new Set(['blocked', 'error', 'max_steps', 'stalled']);
+
+class TeamService {
+  team = new Map<string, AgentDef>();
+  skills = new Map<string, SkillDef>();
+  running = false;
+  activeAgent?: string;
+  private timer?: NodeJS.Timeout;
+  private busy = false;
+  private scheduling = false;
+  private current?: vscode.CancellationTokenSource;
+  private lastFired = new Map<string, string>();
+  /** Per agent: the model resolved at start. */
+  private models = new Map<string, vscode.LanguageModelChat>();
+  /** Per agent: last wakeIf error already alerted, so a broken probe alerts once, not every tick. */
+  private wakeErrors = new Map<string, string>();
+
+  constructor(
+    private ctx: vscode.ExtensionContext,
+    private out: vscode.OutputChannel,
+    private changed: () => void,
+    private openGate: (g: Gate) => void
+  ) {}
+
+  root(): string | undefined { return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath; }
+  cfg() { return vscode.workspace.getConfiguration('loopRunner'); }
+
+  reload(): string[] {
+    const root = this.root();
+    if (!root) { return ['Open a folder first.']; }
+    const all = loadAllAgents(root);
+    this.team = new Map([...all].filter(([, a]) => a.inLoop));
+    this.skills = loadSkills(root);
+    const errors = validateTeam(this.team, this.skills, all);
+    if (this.team.size === 0) { errors.push('No team members: add a loop: block to agents in .github/agents/*.agent.md'); }
+    return errors;
+  }
+
+  /** Must run inside a user-initiated command: the first call shows Copilot's consent dialog. */
+  private async resolveModels(): Promise<string[]> {
+    const problems: string[] = [];
+    const available = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+    const fallback = this.cfg().get<string>('modelFamily', '');
+    this.models.clear();
+    for (const a of this.team.values()) {
+      const m = pickModel(available, a, fallback);
+      if (m) { this.models.set(a.name, m); }
+      else { problems.push(`${a.name}: no Copilot model matches ${a.modelFamily ? `loop.model "${a.modelFamily}"` : 'its model setting'}`); }
+    }
+    return problems;
+  }
+
+  async start(): Promise<void> {
+    const errors = this.reload();
+    errors.push(...await this.resolveModels());
+    this.out.show(true);
+    if (errors.length) {
+      this.out.appendLine('Team config problems:\n  ' + errors.join('\n  '));
+      vscode.window.showErrorMessage(`Loop Runner: ${errors.length} config problem(s). See output.`);
+      return;
+    }
+    this.running = true;
+    this.out.appendLine(`Team started: ${[...this.team.values()].map(a => `${a.name} [${this.models.get(a.name)?.name}]` + (a.schedule ? ` (${a.schedule}${a.wakeIf ? ', wakeIf' : ''})` : '')).join(', ')}`);
+    this.timer = setInterval(() => this.tick(), 20_000);
+    this.tick();
+    // Anything still waiting on you from before a restart deserves a reminder.
+    void this.notifyPendingGates();
+  }
+
+  stop(): void {
+    this.running = false;
+    if (this.timer) { clearInterval(this.timer); }
+    this.current?.cancel();
+    this.out.appendLine('Team stopped.');
+    this.changed();
+  }
+
+  submit(agent: string, task: string, from = 'user', context?: string): void {
+    enqueue(this.root()!, { id: newId(), agent, task, context, from, chainId: newId(), hop: 0, createdAt: new Date().toISOString() });
+    this.tick();
+  }
+
+  tick(): void {
+    const root = this.root();
+    if (!this.running || !root) { this.changed(); return; }
+    void this.schedule(root).then(() => {
+      if (!this.busy) { void this.work(root); }
+      this.changed();
+    });
+  }
+
+  /** Due schedules: run the zero-token wakeIf check first; only enqueue model work if it says so. */
+  private async schedule(root: string): Promise<void> {
+    if (this.scheduling) { return; }
+    this.scheduling = true;
+    try {
+      const now = new Date();
+      const minute = now.toISOString().slice(0, 16);
+      for (const a of this.team.values()) {
+        if (!a.schedule || !a.task || this.lastFired.get(a.name) === minute || !cronMatches(a.schedule, now)) { continue; }
+        this.lastFired.set(a.name, minute);
+        if (pending(root, a.name).some(i => i.from === 'schedule')) { continue; }
+        const policy = loadPolicy(root, a.policy ?? this.cfg().get<string>('policyFile', '.loop/policy.json'));
+        const extraAllow = a.skills.map(s => this.skills.get(s)).filter((s): s is SkillDef => !!s).map(s => skillScriptRule(s.relDir));
+        const w = await checkWake(root, a, policy, extraAllow, await this.secrets());
+        audit(root, `wake-${now.toISOString().slice(0, 10)}`, { type: 'wake', agent: a.name, wake: w.wake, error: w.error });
+        if (w.error) {
+          if (this.wakeErrors.get(a.name) !== w.error) {
+            this.wakeErrors.set(a.name, w.error);
+            await this.alert({ kind: 'error', agent: a.name, title: `${a.name}: wakeIf check is failing`, detail: w.error });
+          }
+          continue;
+        }
+        if (this.wakeErrors.delete(a.name)) { this.out.appendLine(`${a.name}: wakeIf recovered.`); }
+        if (!w.wake) { continue; }
+        enqueue(root, { id: newId(), agent: a.name, task: a.task, context: w.context, from: 'schedule', chainId: newId(), hop: 0, createdAt: now.toISOString() });
+      }
+    } finally {
+      this.scheduling = false;
+    }
+  }
+
+  private async work(root: string): Promise<void> {
+    this.busy = true;
+    try {
+      let item: WorkItem | undefined;
+      while (this.running && (item = nextItem(root, [...this.team.keys()]))) {
+        const agent = this.team.get(item.agent);
+        if (!agent) { complete(root, item, 'error', 'unknown agent'); continue; }
+        const model = this.models.get(agent.name);
+        if (!model) { complete(root, item, 'error', `no model resolved for ${agent.name}`); continue; }
+        this.current = new vscode.CancellationTokenSource();
+        this.activeAgent = agent.name;
+        this.changed();
+        const r = await runItem(item, {
+          root, team: this.team, skills: this.skills,
+          policy: loadPolicy(root, agent.policy ?? this.cfg().get<string>('policyFile', '.loop/policy.json')),
+          model, secrets: await this.secrets(),
+          maxSteps: this.cfg().get<number>('maxSteps', 40),
+          maxHops: this.cfg().get<number>('maxHops', 5),
+          out: this.out, token: this.current.token
+        });
+        complete(root, item, r.status, r.summary);
+        this.current.dispose();
+        this.current = undefined;
+        this.activeAgent = undefined;
+        await this.notifyPendingGates();
+        if (NEEDS_YOU.has(r.status)) {
+          await this.alert({ kind: r.status as LoopEvent['kind'], agent: agent.name, title: `${agent.name}: ${r.status}`, detail: r.summary, itemId: item.id, chainId: item.chainId });
+        }
+        this.changed();
+        if (r.status === 'error' && /quota|rate|limit/i.test(r.summary ?? '')) {
+          this.out.appendLine('Model quota/rate limit hit: pausing the worker for 10 minutes.');
+          await new Promise(res => setTimeout(res, 10 * 60_000));
+        }
+      }
+    } finally {
+      this.busy = false;
+      this.changed();
+    }
+  }
+
+  /** Every new pending gate reaches you exactly once: in VS Code and through the notify skill. */
+  async notifyPendingGates(): Promise<void> {
+    const root = this.root();
+    if (!root) { return; }
+    for (const g of listGates(root).filter(x => x.status === 'pending' && !x.notifiedAt)) {
+      g.notifiedAt = new Date().toISOString();
+      saveGate(root, g);
+      await this.alert({ kind: g.kind, agent: g.agent, title: g.title, detail: g.body, gateId: g.id, itemId: g.itemId, chainId: g.chainId }, g);
+    }
+  }
+
+  private async alert(ev: LoopEvent, gate?: Gate): Promise<void> {
+    const label = ev.kind === 'question' ? `${ev.agent} asks: ${ev.title}`
+      : ev.kind === 'approval' ? `${ev.agent} needs approval: ${ev.title}`
+        : `${ev.title}${ev.detail ? ` — ${ev.detail}` : ''}`;
+    void vscode.window.showInformationMessage(`Loop Runner · ${label}`, ...(gate ? ['Open'] : [])).then(pick => {
+      if (pick === 'Open' && gate) { this.openGate(gate); }
+    });
+    try {
+      const r = await notify(this.root()!, this.cfg().get<string>('notifyCommand') || undefined, ev, await this.secrets());
+      if (r && r.code !== 0) { this.out.appendLine(`notify failed: ${r.text}`); }
+    } catch (e: any) {
+      this.out.appendLine(`notify failed: ${e?.message ?? e}`);
+    }
+  }
+
+  async secrets(): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const n of this.ctx.globalState.get<string[]>(SECRET_INDEX, [])) {
+      const v = await this.ctx.secrets.get(`loopRunner.secret.${n}`);
+      if (v) { out[n] = v; }
+    }
+    return out;
+  }
+
+  async setSecret(name: string, value: string): Promise<void> {
+    await this.ctx.secrets.store(`loopRunner.secret.${name}`, value);
+    const names = new Set(this.ctx.globalState.get<string[]>(SECRET_INDEX, []));
+    names.add(name);
+    await this.ctx.globalState.update(SECRET_INDEX, [...names]);
+  }
+
+  status(): string {
+    const root = this.root();
+    if (!root) { return 'no folder'; }
+    const lines = [`running: ${this.running}${this.activeAgent ? ` | active: ${this.activeAgent}` : ''} | waiting on you: ${waiting(root).length} item(s)`];
+    for (const a of this.team.values()) {
+      lines.push(`- ${a.name}: queue ${pending(root, a.name).length} | skills [${a.skills.join(', ')}] | handoffs [${a.handoffs.join(', ')}]${a.schedule ? ` | ${a.schedule}` : ''}`);
+    }
+    return lines.join('\n');
+  }
+}
+
+export function activate(ctx: vscode.ExtensionContext) {
+  const out = vscode.window.createOutputChannel('Loop Runner');
+  const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  bar.command = 'loopRunner.focusInbox';
+  const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
+  const svc: TeamService = new TeamService(ctx, out, () => {
+    inbox.refresh();
+    const n = inbox.pendingCount();
+    bar.text = `$(${svc.running ? 'sync' : 'debug-pause'}) Loop${svc.activeAgent ? `: ${svc.activeAgent}` : ''}${n ? ` · $(bell-dot) ${n}` : ''}`;
+    bar.tooltip = n ? `${n} item(s) need you` : 'Loop Runner';
+    bar.show();
+  }, g => void showGate(root(), g));
+  svc.reload();
+
+  const root = () => {
+    const r = svc.root();
+    if (!r) { throw new Error('Open a folder first.'); }
+    return r;
+  };
+  // A resolved gate may have woken a parked item; tick so the worker picks it up right away.
+  const after = (_woke: boolean) => { svc.tick(); inbox.refresh(); };
+  const policyFor = (g: Gate) => loadPolicy(root(), svc.team.get(g.agent)?.policy ?? svc.cfg().get<string>('policyFile', '.loop/policy.json'));
+
+  ctx.subscriptions.push(
+    out, bar,
+    vscode.window.registerTreeDataProvider('loopRunner.inbox', inbox),
+    vscode.commands.registerCommand('loopRunner.startTeam', () => svc.start()),
+    vscode.commands.registerCommand('loopRunner.stopTeam', () => svc.stop()),
+    vscode.commands.registerCommand('loopRunner.reloadTeam', () => {
+      const errs = svc.reload();
+      out.show(true);
+      out.appendLine(errs.length ? 'Team config problems:\n  ' + errs.join('\n  ') : 'Team reloaded OK.\n' + svc.status());
+    }),
+    vscode.commands.registerCommand('loopRunner.status', () => { out.show(true); out.appendLine(svc.status()); }),
+    vscode.commands.registerCommand('loopRunner.focusInbox', () => vscode.commands.executeCommand('loopRunner.inbox.focus')),
+    vscode.commands.registerCommand('loopRunner.runAgent', async () => {
+      if (!svc.running) { vscode.window.showWarningMessage('Start the team first (Loop Runner: Start Team).'); return; }
+      const pick = await vscode.window.showQuickPick(
+        [...svc.team.values()].map(a => ({ label: a.name, description: a.description })), { placeHolder: 'Which agent?' });
+      if (!pick) { return; }
+      const task = await vscode.window.showInputBox({ prompt: `Task for ${pick.label}`, ignoreFocusOut: true });
+      if (task) { svc.submit(pick.label, task); }
+    }),
+    vscode.commands.registerCommand('loopRunner.setSecret', async () => {
+      const name = await vscode.window.showInputBox({ prompt: 'Env var name (e.g. HARBOR_PAT, JIRA_TOKEN)', ignoreFocusOut: true });
+      if (!name || !/^[A-Z_][A-Z0-9_]*$/.test(name)) { return; }
+      const value = await vscode.window.showInputBox({ prompt: `Value for ${name}`, password: true, ignoreFocusOut: true });
+      if (value) { await svc.setSecret(name, value); vscode.window.showInformationMessage(`Stored ${name}.`); }
+    }),
+    vscode.commands.registerCommand('loopRunner.testNotify', async () => {
+      const cmd = svc.cfg().get<string>('notifyCommand');
+      if (!cmd) { vscode.window.showWarningMessage('Set loopRunner.notifyCommand in your user settings first.'); return; }
+      const r = await notify(root(), cmd, { kind: 'question', agent: 'loop-runner', title: 'Test notification' }, await svc.secrets());
+      out.show(true);
+      out.appendLine(`notify test: ${r?.text}`);
+    }),
+    vscode.commands.registerCommand('loopRunner.listModels', async () => {
+      const ms = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+      out.show(true);
+      out.appendLine('Copilot models:\n' + ms.map(m => `  family=${m.family}  id=${m.id}  maxInputTokens=${m.maxInputTokens}`).join('\n'));
+    }),
+    vscode.commands.registerCommand('loopRunner.openGate', (g: Gate) => showGate(root(), g)),
+    vscode.commands.registerCommand('loopRunner.answer', async (g: Gate) => {
+      await showGate(root(), g);
+      const TYPE = '$(edit) Type an answer…';
+      let answer: string | undefined;
+      if (g.options?.length) {
+        const pick = await vscode.window.showQuickPick([...g.options, TYPE], { placeHolder: g.title, ignoreFocusOut: true });
+        if (!pick) { return; }
+        answer = pick === TYPE ? undefined : pick;
+      }
+      answer ??= await vscode.window.showInputBox({ prompt: g.title, ignoreFocusOut: true });
+      if (!answer) { return; }
+      try { after(answerQuestion(root(), g.id, answer).woke); } catch (e: any) { vscode.window.showWarningMessage(e.message); }
+    }),
+    vscode.commands.registerCommand('loopRunner.approve', async (g: Gate) => {
+      const ok = await vscode.window.showWarningMessage(`Run for "${g.title}"?`, { modal: true, detail: g.command }, 'Run');
+      if (ok !== 'Run') { return; }
+      try {
+        const r = await approveAndRun(root(), g.id, policyFor(g), await svc.secrets());
+        out.appendLine(`✔ ${g.title}: ${r.ok ? 'executed' : 'FAILED'}\n${r.text}`);
+        vscode.window.showInformationMessage(`Loop Runner: "${g.title}" ${r.ok ? 'executed' : 'failed'}.`);
+        after(r.woke);
+      } catch (e: any) { vscode.window.showErrorMessage(e.message); }
+    }),
+    vscode.commands.registerCommand('loopRunner.reject', async (g: Gate) => {
+      const fb = await vscode.window.showInputBox({ prompt: 'Feedback for the agent (optional)', ignoreFocusOut: true });
+      if (fb === undefined) { return; }
+      try { after(rejectApproval(root(), g.id, fb).woke); } catch (e: any) { vscode.window.showWarningMessage(e.message); }
+    }),
+    vscode.commands.registerCommand('loopRunner.refreshInbox', () => inbox.refresh()),
+    { dispose: () => svc.stop() }
+  );
+
+  const r = svc.root();
+  if (r) {
+    const w = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(r, '.loop/gates/*.json'));
+    w.onDidChange(() => inbox.refresh());
+    w.onDidCreate(() => inbox.refresh());
+    ctx.subscriptions.push(w);
+  }
+  bar.text = '$(debug-pause) Loop';
+  bar.show();
+}
+
+export function deactivate() {}

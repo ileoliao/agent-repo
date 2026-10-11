@@ -1,0 +1,16 @@
+{
+  "allowCommands": [
+    "^(ls|cat|head|tail|wc|grep|rg|jq)\\b"
+  ],
+  "denyCommands": [
+    "\\brm\\b",
+    "\\bgit\\b",
+    "\\b(curl|wget|ssh|scp|nc)\\b",
+    "\\bsudo\\b",
+    ">\\s*/"
+  ],
+  "writablePaths": [],
+  "protectedPaths": [".loop/**", "**/*.env"],
+  "commandTimeoutSec": 120,
+  "maxOutputBytes": 16000
+}

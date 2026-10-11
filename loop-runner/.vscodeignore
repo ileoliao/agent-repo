@@ -1,0 +1,9 @@
+node_modules/**
+src/**
+test/**
+tsconfig.json
+**/*.map
+.loop/**
+.github/**
+AGENTS.md
+examples/**
