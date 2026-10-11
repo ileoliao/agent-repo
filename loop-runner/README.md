@@ -153,6 +153,20 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
    - 没有在角色里指定模型时，用 Copilot 列表里的第一个，顺序不固定。建议先设置 `loopRunner.modelFamily`（`List Available Models` 能看到可用的 family）
 6. 可选：配置 `loopRunner.notifyCommand`，用 `Send a Test Notification` 测试
 
+**日常使用**：状态栏左侧有几个按钮，一点即可：
+- `Loop`：显示团队状态和待处理数量，点击打开收件箱。
+- `Start` / `Stop`：启动或停止团队，按钮文字随状态切换。
+- `Result`：打开最新结果（`.loop/outbox/` 下最近修改的文件）。
+- `☰`：打开完整菜单，包含重新加载、派任务、查看状态，以及设置凭证、列出模型等不常用的操作。这些命令在命令面板里被隐藏，但仍可通过菜单使用。
+
+收件箱（侧边栏 Loop Inbox）从上到下：
+
+- **待你处理**：问题和审批，可直接回答、批准或拒绝。
+- **Agents**：团队里每个 agent 的状态（running / waiting / idle）、下次运行时间和上次唤醒检查的结果。点一行打开 agent 文件。
+- **Recent runs**：最近 15 次运行，显示 agent、状态、步数、时间和摘要。展开一条可以看到它写过的文件，点文件直接打开；点运行本身打开审计日志（JSONL）。
+
+状态栏会显示当前在做什么：`Loop: <agent> · step N`，空闲时显示 `Loop · idle · next HH:MM`。`Result` 按钮打开最近一次运行写出的文件，并说明是哪个 agent、哪次运行产生的。
+
 ## 测试
 
 `npm test`：mock 的 vscode 加脚本化的假模型，跑真实的 runner。覆盖：

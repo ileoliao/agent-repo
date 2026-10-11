@@ -35,6 +35,16 @@
         "category": "Loop Runner"
       },
       {
+        "command": "loopRunner.menu",
+        "title": "Menu",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.openLatestResult",
+        "title": "Open Latest Result",
+        "category": "Loop Runner"
+      },
+      {
         "command": "loopRunner.status",
         "title": "Show Team Status",
         "category": "Loop Runner"
@@ -128,6 +138,18 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "loopRunner.setSecret",
+          "when": "false"
+        },
+        {
+          "command": "loopRunner.listModels",
+          "when": "false"
+        },
+        {
+          "command": "loopRunner.testNotify",
+          "when": "false"
+        },
         {
           "command": "loopRunner.openGate",
           "when": "false"

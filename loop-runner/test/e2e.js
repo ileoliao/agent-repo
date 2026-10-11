@@ -570,6 +570,91 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     fs.rmSync(S, { recursive: true, force: true });
   }
 
+  console.log('latest result: newest file under .loop/outbox');
+  {
+    const { latestOutput } = require(`${OUT}/outbox.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-outbox-'));
+    ok(latestOutput(R) === undefined, 'no outbox means no latest result');
+    const older = path.join(R, '.loop', 'outbox', 'techlead', 'old.md');
+    const newer = path.join(R, '.loop', 'outbox', 'sentinel', 'report.md');
+    fs.mkdirSync(path.dirname(older), { recursive: true });
+    fs.mkdirSync(path.dirname(newer), { recursive: true });
+    fs.writeFileSync(older, 'old');
+    fs.writeFileSync(newer, 'new');
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(older, past, past);
+    ok(latestOutput(R) === newer, 'picks the newest file across agent folders');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
+  console.log('recent runs: newest chains from .loop/runs');
+  {
+    const { recentRuns } = require(`${OUT}/runs.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-runs-'));
+    const day = path.join(R, '.loop', 'runs', '2026-10-11');
+    fs.mkdirSync(day, { recursive: true });
+    const line = o => JSON.stringify(o);
+    const doneFile = path.join(day, 'chain-a.jsonl');
+    const parkFile = path.join(day, 'chain-b.jsonl');
+    const wakeFile = path.join(day, 'wake-2026-10-11.jsonl');
+    fs.writeFileSync(doneFile, [
+      line({ ts: '2026-10-11T09:00:00Z', chainId: 'chain-a', agent: 'techlead', type: 'start' }),
+      line({ ts: '2026-10-11T09:00:05Z', chainId: 'chain-a', agent: 'techlead', type: 'end', status: 'done', summary: 'all good' })
+    ].join('\n'));
+    fs.writeFileSync(parkFile, [
+      line({ ts: '2026-10-11T10:00:00Z', chainId: 'chain-b', agent: 'smoke', type: 'start' }),
+      line({ ts: '2026-10-11T10:00:09Z', chainId: 'chain-b', agent: 'smoke', type: 'park', gateId: 'g1' })
+    ].join('\n'));
+    fs.writeFileSync(wakeFile, line({ ts: '2026-10-11T10:00:00Z', chainId: 'wake-2026-10-11', type: 'wake', agent: 'smoke', wake: false }));
+    const past = new Date(Date.now() - 120_000);
+    fs.utimesSync(doneFile, past, past);
+    const runs = recentRuns(R);
+    ok(runs.length === 2 && !runs.some(r => r.chainId.startsWith('wake-')), 'wake checks are not listed as runs');
+    ok(runs[0].chainId === 'chain-b' && runs[0].status === 'waiting' && runs[0].agent === 'smoke', 'newest chain first, parked shows as waiting');
+    ok(runs[1].status === 'done' && runs[1].summary === 'all good', 'a finished chain shows its end status and summary');
+    ok(recentRuns(os.tmpdir() + '/no-such-loop-dir-xyz').length === 0, 'no runs directory gives an empty list');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
+  console.log('console: next wake, run outputs, agent rows');
+  {
+    const { nextMatch, cronMatches } = require(`${OUT}/cron.js`);
+    const { outputsFrom, recentRuns } = require(`${OUT}/runs.js`);
+    const { agentRows } = require(`${OUT}/status.js`);
+    const from = new Date(2026, 9, 10, 17, 30);
+    const nm = nextMatch('0 9 * * 1-5', from);
+    ok(nm && cronMatches('0 9 * * 1-5', nm) && nm.getTime() > from.getTime(), 'next weekday 09:00 is found after the given time');
+    let skipped = false;
+    for (let t = from.getTime() + 60_000; nm && t < nm.getTime(); t += 60_000) { if (cronMatches('0 9 * * 1-5', new Date(t))) skipped = true; }
+    ok(nm && !skipped, 'no earlier matching minute is skipped');
+    ok(nextMatch('0 0 31 2 *', from, 2) === undefined, 'a schedule that never matches in the window gives no next run');
+    ok(JSON.stringify(outputsFrom(['Wrote a/b.md.', 'REFUSED by policy (x).', 'Edited c.md.', 'Wrote a/b.md.', 'edit_file failed: oldText matched 0 times (need exactly 1).'])) === '["a/b.md","c.md"]', 'only successful writes count, each file once');
+
+    const writer = [
+      [['write_file', { path: '.loop/outbox/console-check/report.md', content: 'hello' }]],
+      [['finish', { status: 'done', summary: 'wrote it' }]]
+    ];
+    let turn = 0;
+    const writeModel = {
+      family: 'fake', id: 'writer',
+      async sendRequest() {
+        const t = writer[turn++];
+        return { stream: (async function* () { yield* t.map(([n, i], k) => new ToolCallPart(`cw-${turn}-${k}`, n, i)); })() };
+      }
+    };
+    const wItem = { id: 'console-writer', agent: 'techlead', task: 't', from: 'user', chainId: 'console-writer-chain', hop: 0, createdAt: new Date().toISOString() };
+    const wRes = await runItem(wItem, { root: W, team, skills, model: writeModel, secrets: {}, policy: loadPolicy(W, '.loop/policy.json'), maxSteps: 5, maxHops: 5, out, token });
+    ok(wRes.status === 'done', 'writer run finishes');
+    const wRun = recentRuns(W).find(r => r.chainId === 'console-writer-chain');
+    ok(wRun && JSON.stringify(wRun.outputs) === JSON.stringify(['.loop/outbox/console-check/report.md']), 'the end event records the file the run wrote');
+    ok(wRun && wRun.step === 2, 'the run reports the highest step it reached');
+
+    const rows = agentRows(W, 'techlead');
+    const tl = rows.find(r => r.name === 'techlead');
+    ok(tl && tl.state === 'running', 'the active agent is shown as running');
+    ok(rows.every(r => r.name !== undefined && typeof r.file === 'string'), 'every team row has a name and an agent file');
+  }
+
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });

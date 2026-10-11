@@ -24,6 +24,8 @@ Do not add features. In particular, do not add:
 
 Bug fixes, security fixes and test improvements are welcome. If a change seems to need a new feature, stop and ask the human.
 
+**Approved additions (2026-10-11): the console.** The owner approved a native console on top of the existing surfaces: the status bar line (running agent, step, next wake), the sidebar "Agents" group (state, next run, last wake check, opens the agent file), "Recent runs" with the files each run wrote, and "Open Latest Result" reading `end.outputs`. It stays native (no webview, no chat, no notifications). The one data addition is the optional `outputs` field on the `end` audit event. Setup checks and a sample-agent command are not approved yet.
+
 ## Division of labour (the core design rule)
 
 - **Capabilities live in Skills** (`.github/skills/<name>/SKILL.md` plus `scripts/`). The runtime never knows about HarborSense, Jira, Git hosting, or any business system.
@@ -48,6 +50,9 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `tools.ts` | Generic tool schemas and `runTool` | types only (elided) |
 | `runner.ts` | The agent loop for one work item: run, park, resume | yes |
 | `inbox.ts` | Sidebar tree view and gate rendering | yes |
+| `outbox.ts` | `latestOutput`: newest file under `.loop/outbox/` (fallback for Open Latest Result). Pure, no `vscode` | no |
+| `runs.ts` | `recentRuns` and `outputsFrom`: read-only summaries of `.loop/runs/*.jsonl`. Pure, no `vscode` | no |
+| `status.ts` | `agentRows` and `nextWake`: team state, next scheduled wake, last wake check. Pure, no `vscode` | no |
 | `extension.ts` | Glue: `TeamService` (tick, schedule, single worker), commands, notifications, secrets | yes |
 
 **Rule:** keep `vscode` out of every module marked "no". The test suite loads those modules without VS Code; `runner.ts` is tested through a mock `vscode` module.
@@ -120,6 +125,8 @@ Model resolution order: `loop.model` (by family, no fallback) → native `model`
 - `outbox/`: drafts written by agents and editable by the human
 
 Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`, `retry`. Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
+
+`end` may carry `outputs: string[]`: the workspace-relative files that `write_file` or `edit_file` wrote successfully, from the transcript's tool results (so it holds after a resume). Older chains have no `outputs`; readers fall back to file modification time.
 
 `retry` means the item was left in `queue/<agent>/` instead of `_done`. Reasons: `cancelled` (Stop Team, or the run was cancelled as VS Code closed) and `rate-limit`. The rate-limit path alerts once, pauses the worker, then runs that same item again. Only temporary errors qualify (rate limit, quota, exhausted credits, too many requests, temporarily blocked). `Message exceeds token limit.` is permanent for the item and ends it as `error`. A successful Start Team sets workspaceState `loopRunner.teamStarted` (per workspace, so one workspace's flag never starts or stops another). The next activation starts the team on its own and drains the queue before scheduling. The first start stays a user command so Copilot's consent dialog has a user gesture: the Start Team command itself sends a one-token request with a `justification` to every resolved model that `canSendRequest` does not yet allow, so the consent dialog appears while a person is present (auto-start never does this). If Copilot returns no models yet, start waits up to 2 minutes for `onDidChangeChatModels` once. Reload on a running team re-resolves models. A schedule slot missed while VS Code stayed open (sleep) is caught up once on the next tick. A scheduled wake is skipped while a scheduled item for that agent is queued or parked in `_waiting`. Stop Team clears the flag. Pending gates are announced again on every start, including ones that already have `notifiedAt`.
 

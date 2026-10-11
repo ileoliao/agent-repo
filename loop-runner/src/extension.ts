@@ -9,6 +9,11 @@ import { checkWake } from './wake';
 import { runItem } from './runner';
 import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
 import { InboxView, showGate } from './inbox';
+import { latestOutput } from './outbox';
+import { recentRuns } from './runs';
+import { agentRows, nextWake } from './status';
+
+const hhmm = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 import { createSimModel, simEnabled, simNow, simPauseMs, simTrace } from './sim-model';
 import { runSim } from './sim-drive';
 
@@ -430,15 +435,38 @@ class TeamService {
 
 export function activate(ctx: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Loop Runner');
+  // Status bar: one click per common action. A status bar item cannot host a dropdown, and a QuickPick always opens at the top of the window.
   const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   bar.command = 'loopRunner.focusInbox';
-  const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
+  const toggle = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
+  const result = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 48);
+  result.text = '$(file-text) Result';
+  result.tooltip = 'Open the latest agent output';
+  result.command = 'loopRunner.openLatestResult';
+  result.show();
+  const menu = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 47);
+  menu.text = '$(menu)';
+  menu.tooltip = 'Loop Runner: all commands';
+  menu.command = 'loopRunner.menu';
+  menu.show();
+  const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, () => svc.activeAgent);
   const refresh = () => {
     inbox.refresh();
     const n = inbox.pendingCount();
-    bar.text = `$(${svc.running ? 'sync' : 'debug-pause'}) Loop${svc.activeAgent ? `: ${svc.activeAgent}` : ''}${n ? ` · $(bell-dot) ${n}` : ''}`;
-    bar.tooltip = n ? `${n} item(s) need you` : 'Loop Runner';
+    // Live state in one line: what is running (and which step), or when the next wake is due.
+    const r = svc.root();
+    const nw = r ? nextWake(agentRows(r, svc.activeAgent)) : undefined;
+    const current = r && svc.activeAgent ? recentRuns(r, 5).find(x => x.status === 'running' && x.agent === svc.activeAgent) : undefined;
+    const state = !svc.running ? '$(debug-stop) Loop · stopped'
+      : svc.activeAgent ? `$(sync~spin) Loop: ${svc.activeAgent}${current ? ` · step ${current.step}` : ''}`
+      : `$(debug-pause) Loop · idle${nw ? ` · next ${hhmm(nw.at)}` : ''}`;
+    bar.text = `${state}${n ? ` · $(bell-dot) ${n}` : ''}`;
+    bar.tooltip = n ? `${n} item(s) need you: click to open the inbox` : 'Loop Runner: click to open the inbox';
     bar.show();
+    toggle.text = svc.running ? '$(debug-stop) Stop' : '$(play) Start';
+    toggle.tooltip = svc.running ? 'Stop the Loop Runner team' : 'Start the Loop Runner team';
+    toggle.command = svc.running ? 'loopRunner.stopTeam' : 'loopRunner.startTeam';
+    toggle.show();
     if (simEnabled()) {
       const folder = svc.root();
       if (folder) {
@@ -462,7 +490,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   const policyFor = (g: Gate) => loadPolicy(root(), svc.team.get(g.agent)?.policy ?? svc.cfg().get<string>('policyFile', '.loop/policy.json'));
 
   ctx.subscriptions.push(
-    out, bar,
+    out, bar, toggle, result, menu,
     vscode.window.registerTreeDataProvider('loopRunner.inbox', inbox),
     vscode.commands.registerCommand('loopRunner.startTeam', () => svc.start(true)),
     vscode.commands.registerCommand('loopRunner.stopTeam', () => svc.stop(true)),
@@ -473,6 +501,34 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('loopRunner.status', () => { out.show(true); out.appendLine(svc.status()); }),
     vscode.commands.registerCommand('loopRunner.focusInbox', () => vscode.commands.executeCommand('loopRunner.inbox.focus')),
+    vscode.commands.registerCommand('loopRunner.openLatestResult', async () => {
+      // The newest run that recorded its outputs is authoritative; file modification time is only the fallback.
+      const r = root();
+      const run = recentRuns(r).find(x => x.outputs.length > 0);
+      const file = run ? path.join(r, run.outputs[run.outputs.length - 1]) : latestOutput(r);
+      if (!file) { vscode.window.showInformationMessage('Loop Runner: no agent output yet.'); return; }
+      if (run) { vscode.window.setStatusBarMessage(`Loop Runner: ${run.agent} wrote this (run ${run.chainId})`, 6000); }
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file), { preview: false });
+    }),
+    // One entry point for the status bar: the commands people reach for, without hunting in the palette.
+    vscode.commands.registerCommand('loopRunner.menu', async () => {
+      const run = (command: string) => () => vscode.commands.executeCommand(command);
+      const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
+        svc.running
+          ? { label: '$(debug-stop) Stop Team', run: run('loopRunner.stopTeam') }
+          : { label: '$(play) Start Team', run: run('loopRunner.startTeam') },
+        { label: '$(inbox) Open Inbox', description: inbox.pendingCount() ? `${inbox.pendingCount()} need you` : undefined, run: run('loopRunner.focusInbox') },
+        { label: '$(file-text) Open Latest Result', run: run('loopRunner.openLatestResult') },
+        { label: '$(sync) Reload & Validate Team', run: run('loopRunner.reloadTeam') },
+        { label: '$(send) Give an Agent a Task', run: run('loopRunner.runAgent') },
+        { label: '$(info) Show Team Status', run: run('loopRunner.status') },
+        { label: '$(key) Set Secret', run: run('loopRunner.setSecret') },
+        { label: '$(list-unordered) List Available Models', run: run('loopRunner.listModels') },
+        { label: '$(bell) Send a Test Notification', run: run('loopRunner.testNotify') }
+      ];
+      const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Loop Runner' });
+      await pick?.run();
+    }),
     vscode.commands.registerCommand('loopRunner.runAgent', async () => {
       if (!svc.running) { vscode.window.showWarningMessage('Start the team first (Loop Runner: Start Team).'); return; }
       const pick = await vscode.window.showQuickPick(
