@@ -10,6 +10,7 @@ import { runItem } from './runner';
 import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
 import { InboxView, showGate } from './inbox';
 import { ConsolePanel } from './consoleView';
+import { registerLoopChat } from './chat';
 import { latestOutput } from './outbox';
 import { recentRuns } from './runs';
 import { agentRows, nextWake } from './status';
@@ -509,6 +510,17 @@ export function activate(ctx: vscode.ExtensionContext) {
     answer: (id, text) => after(answerQuestion(root(), id, text).woke),
     approve: approveGate,
     reject: (id, fb) => after(rejectApproval(root(), id, fb).woke)
+  });
+  registerLoopChat(ctx, () => {
+    const r = svc.root();
+    return r ? {
+      root: r,
+      state: () => ({ running: svc.running, active: svc.activeAgent }),
+      submit: (agent, task) => svc.submit(agent, task),
+      answer: (id, text) => after(answerQuestion(r, id, text).woke),
+      power: async on => { if (on) { await svc.start(true); } else { svc.stop(true); } refresh(); },
+      reload: async () => { const errs = await svc.reloadAll(); refresh(); return errs; }
+    } : undefined;
   });
   const panelTimer = setInterval(() => consolePanel?.refresh(), 5000);
 

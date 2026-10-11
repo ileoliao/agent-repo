@@ -107,6 +107,16 @@
         "title": "Refresh",
         "category": "Loop Runner",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "loopRunner.chat.apply",
+        "title": "Apply proposal",
+        "category": "Loop Runner"
+      },
+      {
+        "command": "loopRunner.chat.dismiss",
+        "title": "Dismiss proposal",
+        "category": "Loop Runner"
       }
     ],
     "views": {
@@ -170,6 +180,14 @@
         {
           "command": "loopRunner.reject",
           "when": "false"
+        },
+        {
+          "command": "loopRunner.chat.apply",
+          "when": "false"
+        },
+        {
+          "command": "loopRunner.chat.dismiss",
+          "when": "false"
         }
       ]
     },
@@ -208,7 +226,26 @@
           "description": "Command run whenever the team needs you (question, approval, blocked, error). Receives the event as JSON in LOOP_EVENT, plus LOOP_EVENT_KIND and LOOP_EVENT_TITLE; secrets are injected. Typically a notify skill script, e.g. \"python3 .github/skills/notify-wecom/scripts/send.py\". User settings only, so a repository cannot set it."
         }
       }
-    }
+    },
+    "chatParticipants": [
+      {
+        "id": "loopRunner.loop",
+        "name": "loop",
+        "fullName": "Loop Runner",
+        "description": "Talk to your agents: see what they are doing, give tasks, change schedules, leave standing notes",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "status",
+            "description": "Team, schedules and what needs you"
+          },
+          {
+            "name": "pending",
+            "description": "Questions and approvals waiting for you"
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",
