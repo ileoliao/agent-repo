@@ -8,7 +8,14 @@
     ">\\s*/"
   ],
   "writablePaths": [],
-  "protectedPaths": [".loop/**", ".git/**", ".github/**", ".vscode/**", "**/*.env", "**/secrets/**"],
+  "protectedPaths": [
+    ".loop/**",
+    ".git/**",
+    ".github/**",
+    ".vscode/**",
+    "**/*.env",
+    "**/secrets/**"
+  ],
   "onUnmatched": "deny",
   "commandTimeoutSec": 120,
   "maxOutputBytes": 16000

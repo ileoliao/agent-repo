@@ -1,13 +1,24 @@
 {
   "allowCommands": [
-    "^(ls|cat|head|tail|wc|grep|jq)\\b"
+    "^(ls|cat|head|tail|wc|grep|rg|jq)\\b",
+    "^find [\\w./-]+( -(name|iname|type|maxdepth|path) [^;&|`$()<>]+)*$",
+    "^git -C repos/[\\w.-]+ (status|log|show|diff|blame|grep|ls-files|ls-tree|rev-parse|branch|tag|describe|shortlog|fetch|cat-file)\\b",
+    "^git -C repos/[\\w.-]+ pull --ff-only$",
+    "^gh (search (code|issues|prs|repos)|repo (view|list)|pr (list|view|diff|checks)|issue (list|view)|release (list|view)|run (list|view)|browse)\\b",
+    "^gh api (-H [\\w:.\\/+ -]+ )?(repos|search|orgs)/[\\w./?=&%:+,@-]+$"
   ],
   "denyCommands": [
     "\\brm\\b",
     "\\bgit (push|reset --hard|clean)\\b",
     "\\b(curl|wget|ssh|scp|nc|Invoke-WebRequest)\\b",
     "\\bsudo\\b",
-    ">\\s*/"
+    ">\\s*/",
+    "\\bgit\\b.*\\b(push|commit|merge|rebase|reset|clean|checkout|switch|restore|stash|cherry-pick|revert|apply|am|remote (add|set-url)|config)\\b",
+    "\\bgh\\b.*\\b(create|edit|close|reopen|comment|merge|delete|review|ready|lock|unlock|transfer|archive|fork|clone|login|logout|auth|secret|variable|workflow run|run (rerun|cancel))\\b",
+    "\\bgh api\\b.*(-X|--method|-f\\b|-F\\b|--field|--raw-field|--input)",
+    "\\bfind\\b.*(-delete|-exec|-ok|-fprint)",
+    "(^|\\s)(/|~)\\S*",
+    "(^|[\\s/])\\.\\.(/|\\s|$)"
   ],
   "writablePaths": [],
   "protectedPaths": [
