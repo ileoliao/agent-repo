@@ -372,18 +372,31 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(keepQueued('error', 'Blocked: rate limit exceeded'), 'rate limit stays queued');
     ok(keepQueued('error', 'quota exceeded'), 'quota stays queued');
     ok(!keepQueued('error', 'boom') && !keepQueued('done', 'ok'), 'other results still complete');
+    // Gap 2: classification
+    ok(!keepQueued('error', 'Message exceeds token limit.'), "'Message exceeds token limit.' is a permanent error, not a rate limit");
+    ok(keepQueued('error', 'Sorry, you have been temporarily blocked due to too many requests'), "'temporarily blocked due to too many requests' is transient");
+    ok(keepQueued('error', 'You have exhausted your credits'), "'exhausted your credits' is transient");
+    ok(keepQueued('error', 'ChatRateLimited: slow down') && keepQueued('error', 'ChatQuotaExceeded: out'), 'Copilot error names ChatRateLimited / ChatQuotaExceeded are transient');
+    ok(!keepQueued('error', 'Failed to generate a response') && !keepQueued('error', 'cannot generate output'), "'generate' is not mistaken for 'rate'");
+
+    // Gap 1: Copilot rejects Required inside the response stream, after sendRequest() has succeeded.
     const modeSeen = [];
     const modeModel = {
       family: 'fake', id: 'mode',
       async sendRequest(_messages, options) {
-        modeSeen.push(options.toolMode);
-        if (options.toolMode === vscodeMock.LanguageModelChatToolMode.Required) throw new Error('tool mode Required is not supported');
-        return { stream: (async function* () { yield new ToolCallPart('mode-1', 'finish', { status: 'done', summary: 'mode ok' }); })() };
+        modeSeen.push(options);
+        const required = options.toolMode === vscodeMock.LanguageModelChatToolMode.Required;
+        return { stream: (async function* () {
+          if (required) throw new Error('LanguageModelChatToolMode.Required is not supported with more than one tool');
+          yield new ToolCallPart('mode-1', 'finish', { status: 'done', summary: 'mode ok' });
+        })() };
       }
     };
     const modeItem = { id: 'mode-item', agent: 'techlead', task: 't', from: 'user', chainId: 'mode-chain', hop: 0, createdAt: new Date().toISOString() };
     const modeResult = await runItem(modeItem, { root: W, team, skills, model: modeModel, secrets: {}, policy: loadPolicy(W, '.loop/policy.json'), maxSteps: 5, maxHops: 5, out, token });
-    ok(modeResult.status === 'done' && modeSeen[0] === vscodeMock.LanguageModelChatToolMode.Required && modeSeen[1] === vscodeMock.LanguageModelChatToolMode.Auto, 'Required is retried once as Auto');
+    ok(modeResult.status === 'done' && modeResult.steps === 1, 'a stream-time Required rejection does not error the item at step 1');
+    ok(modeSeen.length === 1 && modeSeen[0].toolMode === vscodeMock.LanguageModelChatToolMode.Auto, 'requests use Auto, never a wasted Required attempt');
+    ok(typeof modeSeen[0].justification === 'string' && modeSeen[0].justification.includes('techlead'), 'requests carry a justification');
     const cancelToken = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
     const cancelModel = {
       family: 'fake', id: 'cancel',
@@ -395,6 +408,115 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     const cancelItem = { id: 'cancel-item', agent: 'techlead', task: 't', from: 'user', chainId: 'cancel-chain', hop: 0, createdAt: new Date().toISOString() };
     const cancelResult = await runItem(cancelItem, { root: W, team, skills, model: cancelModel, secrets: {}, policy: loadPolicy(W, '.loop/policy.json'), maxSteps: 5, maxHops: 5, out, token: cancelToken });
     ok(cancelResult.status === 'cancelled' && keepQueued(cancelResult.status, cancelResult.summary), 'a cancelled request is not a finished error');
+  }
+
+  console.log('review fixes: restart, gates, exec, schedule');
+  {
+    const { keepQueued, selectModelsWhenReady, ensureConsent } = require(`${OUT}/extension.js`);
+    const base = loadPolicy(W, '.loop/policy.json');
+    const mkItem = (id, agent = 'techlead') => ({ id, agent, task: 't', from: 'user', chainId: `${id}-chain`, hop: 0, createdAt: new Date().toISOString() });
+    const run = (item, model, extra = {}) => runItem(item, { root: W, team, skills, model, secrets: {}, policy: base, maxSteps: 5, maxHops: 5, out, token, ...extra });
+    const scriptedModel = (turns, log = []) => ({
+      family: 'fake', id: 'scripted',
+      async sendRequest(messages) {
+        const turn = messages.filter(m => m.role === 'assistant').length;
+        log.push({ turn, messages: messages.length });
+        const t = turns[turn];
+        if (t instanceof Error) throw t;
+        return { stream: (async function* () { yield* t.map(([n, i], k) => new ToolCallPart(`sm-${turn}-${k}`, n, i)); })() };
+      }
+    });
+
+    // Gap 7: an interrupted item continues from its last completed turn; the handoff is not repeated.
+    const rl = mkItem('resume-item', 'sentinel');
+    const hand = [['handoff', { to: 'techlead', task: 'dup check', context: 'c' }]];
+    let r1 = await run(rl, scriptedModel([hand, new Error('ChatRateLimited: slow down')]));
+    ok(r1.status === 'error' && keepQueued(r1.status, r1.summary), 'rate limit after a handoff is a retryable error');
+    ok(Q.loadCheckpoint(W, rl.id)?.parkedCallId === '' && Q.loadCheckpoint(W, rl.id).step === 1, 'each finished turn leaves a checkpoint');
+    const retryLog = [];
+    r1 = await run(rl, scriptedModel([hand, [['finish', { status: 'done', summary: 'ok' }]]], retryLog), {});
+    ok(retryLog.length === 1 && retryLog[0].turn === 1, 'retry continues at turn 1 instead of replaying turn 0');
+    ok(r1.status === 'done' && Q.pending(W, 'techlead').filter(i => i.task === 'dup check').length === 1, 'the handoff was enqueued exactly once');
+    Q.complete(W, rl, 'done', 'ok');
+    ok(!Q.loadCheckpoint(W, rl.id), 'completing the item removes the checkpoint');
+    for (const i of Q.pending(W, 'techlead')) Q.complete(W, i, 'done', 'cleanup');
+
+    // Gap 6: gate answered while the turn was still running.
+    const race = mkItem('race-item');
+    const rr = await run(race, scriptedModel([[['ask_human', { question: 'q?', context: 'c' }], ['run_command', { command: 'ls' }]]]));
+    ok(rr.status === 'waiting', 'ask_human plus another call parks');
+    ok(G.answerQuestion(W, rr.gateId, 'now').woke === false, 'answering before the item reached _waiting wakes nothing');
+    Q.complete(W, race, rr.status, rr.summary, rr.gateId);
+    ok(Q.pending(W, 'techlead').some(i => i.id === race.id && i.resumeGate === rr.gateId) && !Q.waiting(W).some(i => i.id === race.id), 'complete() wakes an item whose gate is already resolved');
+    const gl = [];
+    const rr2 = await run(Q.pending(W, 'techlead').find(i => i.id === race.id), scriptedModel([[], [['finish', { status: 'done', summary: 'x' }]]].map((t, k) => k === 0 ? [['ask_human', { question: 'q?', context: 'c' }]] : t), gl));
+    ok(rr2.status === 'done', 'the answered item resumes and finishes');
+    Q.complete(W, race, 'done');
+    const open = mkItem('open-item');
+    const rr3 = await run(open, scriptedModel([[['ask_human', { question: 'still open?', context: 'c' }]]]));
+    Q.complete(W, open, rr3.status, rr3.summary, rr3.gateId);
+    ok(Q.waiting(W).some(i => i.id === open.id), 'a pending gate keeps the item in _waiting');
+
+    // Minor: scheduled-item dedupe also sees parked items.
+    Q.enqueue(W, { ...mkItem('sched-item', 'sentinel'), from: 'schedule' });
+    ok(Q.hasOpenScheduled(W, 'sentinel'), 'queued scheduled item counts as open');
+    const sch = Q.pending(W, 'sentinel').find(i => i.id === 'sched-item');
+    Q.complete(W, sch, 'waiting', undefined, undefined);
+    ok(Q.pending(W, 'sentinel').length === 0 && Q.hasOpenScheduled(W, 'sentinel'), 'a scheduled item parked in _waiting still blocks a duplicate wake');
+    fs.rmSync(path.join(W, '.loop/queue/_waiting', 'sched-item.json'));
+    ok(!Q.hasOpenScheduled(W, 'sentinel'), 'nothing open once it is gone');
+
+    // Gap 10: parked on the last step, the answer still reaches the model.
+    const last = mkItem('laststep-item');
+    const lastLog = [];
+    const lm = scriptedModel([[['ask_human', { question: 'last?', context: 'c' }]], [['finish', { status: 'done', summary: 'answered' }]]], lastLog);
+    const l1 = await run(last, lm, { maxSteps: 1 });
+    Q.complete(W, last, l1.status, l1.summary, l1.gateId);
+    G.answerQuestion(W, l1.gateId, 'yes');
+    const l2 = await run(Q.pending(W, 'techlead').find(i => i.id === last.id), lm, { maxSteps: 1 });
+    ok(l2.status === 'done' && lastLog.length === 2, 'maxSteps=1: resume still sends one request instead of ending as max_steps');
+    Q.complete(W, last, 'done');
+    for (const g of Q.listGates(W).filter(g => g.itemId === 'open-item')) { g.status = 'rejected'; Q.saveGate(W, g); }
+    fs.rmSync(path.join(W, '.loop/queue/_waiting', 'open-item.json'), { force: true });
+
+    // Gap 9: the tail of a long output survives.
+    const longOut = await exec('seq 1 200000', { cwd: W, timeoutSec: 30, maxOutputBytes: 16000, secrets: {} });
+    ok(longOut.text.includes('\n200000') && longOut.text.includes('[truncated]') && longOut.text.includes('\n1\n2\n'), 'long output keeps the real head and the real tail');
+    ok(longOut.text.length < 16100, 'long output stays within the cap');
+    const shortOut = await exec('seq 1 5', { cwd: W, timeoutSec: 30, maxOutputBytes: 16000, secrets: {} });
+    ok(!shortOut.text.includes('truncated') && shortOut.text.includes('\n5'), 'short output is untouched');
+
+    // Gap 8: environment plumbing passes, tokens do not.
+    Object.assign(process.env, { SSH_AUTH_SOCK: '/tmp/ssh-x', HTTPS_PROXY: 'http://proxy:3128', NODE_EXTRA_CA_CERTS: '/tmp/ca.pem', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/x', GH_TOKEN: 'ghp_leak', GITHUB_TOKEN: 'ghp_leak2' });
+    const envOut = await exec('env', { cwd: W, timeoutSec: 15, maxOutputBytes: 20000, secrets: {} });
+    for (const k of ['SSH_AUTH_SOCK', 'HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS', 'DBUS_SESSION_BUS_ADDRESS']) delete process.env[k];
+    delete process.env.GH_TOKEN; delete process.env.GITHUB_TOKEN;
+    ok(/SSH_AUTH_SOCK=\/tmp\/ssh-x/.test(envOut.text) && /HTTPS_PROXY=http:\/\/proxy:3128/.test(envOut.text) && /NODE_EXTRA_CA_CERTS=/.test(envOut.text) && /DBUS_SESSION_BUS_ADDRESS=/.test(envOut.text), 'ssh-agent, DBus, proxy and CA variables reach the child');
+    ok(!/GH_TOKEN|GITHUB_TOKEN|ghp_leak/.test(envOut.text), 'GH_TOKEN / GITHUB_TOKEN are still not inherited');
+
+    // Gap 11: a missed slot while running is caught up once.
+    const hourly = '0 * * * *';
+    const t0 = new Date(2026, 9, 12, 8, 0, 0), t1 = new Date(2026, 9, 12, 11, 17, 0);
+    ok(!cronMatches(hourly, t1) && missedSince(hourly, minuteKey(t0), t1), 'a non-matching minute after a long gap is a catch-up');
+    ok(!missedSince(hourly, minuteKey(new Date(2026, 9, 12, 11, 0, 0)), t1), 'no catch-up between slots after a normal fire');
+
+    // Gap 3: empty model list waits for Copilot once.
+    let calls = 0, listener;
+    const lists = [[], ['m']];
+    const got = await selectModelsWhenReady(async () => lists[calls++], cb => { listener = cb; setTimeout(cb, 5); return { dispose() {} }; }, 1000);
+    ok(got.length === 1 && calls === 2 && typeof listener === 'function', 'empty model list waits for onDidChangeChatModels, then selects again');
+    calls = 0;
+    const timedOut = await selectModelsWhenReady(async () => { calls++; return []; }, () => ({ dispose() {} }), 20);
+    ok(timedOut.length === 0 && calls === 2, 'gives up after the timeout');
+    calls = 0;
+    ok((await selectModelsWhenReady(async () => { calls++; return ['a']; }, () => { throw new Error('must not wait'); }, 20)).length === 1 && calls === 1, 'a ready list returns at once');
+
+    // Gap 4: consent is requested for models without access, and only those.
+    const asked = [];
+    const cm = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, { id: 'b', name: 'B' }, { id: 'c', name: 'C' }];
+    const probs = await ensureConsent(cm, m => (m.id === 'a' ? true : m.id === 'c' ? undefined : false), async m => { asked.push(m.id); if (m.id === 'c') throw new Error('NoPermissions'); });
+    ok(asked.join() === 'b,c', 'consent request only for models that cannot send yet (once per model)');
+    ok(probs.length === 1 && probs[0].startsWith('C:') && probs[0].includes('NoPermissions'), 'a denied consent is reported as a start problem');
   }
 
   console.log('smoke workspace (examples/smoke)');

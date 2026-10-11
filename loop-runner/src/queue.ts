@@ -107,7 +107,16 @@ export function nextItem(root: string, agents: string[]): WorkItem | undefined {
   return best;
 }
 
-export function complete(root: string, item: WorkItem, status: string, summary?: string): void {
+/** A scheduled item for this agent is still queued or parked on a gate; a new wake would duplicate it. */
+export function hasOpenScheduled(root: string, agent: string): boolean {
+  return pending(root, agent).some(i => i.from === 'schedule') || waiting(root).some(i => i.agent === agent && i.from === 'schedule');
+}
+
+/**
+ * `gateId` is the gate a `waiting` item parked on. The human may have resolved it while the turn was still
+ * running, before the item reached `_waiting`; that answer's wake() found nothing, so wake it here.
+ */
+export function complete(root: string, item: WorkItem, status: string, summary?: string, gateId?: string): void {
   const src = L(root, 'queue', item.agent, `${item.id}.json`);
   const done: WorkItem = { ...item, resumeGate: undefined, status, summary, finishedAt: new Date().toISOString() };
   if (status === 'waiting') {
@@ -118,6 +127,7 @@ export function complete(root: string, item: WorkItem, status: string, summary?:
     if (fs.existsSync(cp)) { fs.unlinkSync(cp); }
   }
   if (fs.existsSync(src)) { fs.unlinkSync(src); }
+  if (status === 'waiting' && gateId && getGate(root, gateId)?.status !== 'pending') { wake(root, item.id, gateId); }
 }
 
 /** Move a parked item back to its agent's queue so the runner resumes it from the checkpoint. */

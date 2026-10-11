@@ -40,7 +40,7 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `cron.ts` | 5-field cron matcher (local time; DOM/DOW OR semantics) | no |
 | `team.ts` | Load agents and skills, `validateTeam`, `pickModel` | no |
 | `policy.ts` | Allow/deny decisions for commands and writes; hard rejects (substitution, redirection, chaining); `skillScriptRule` | no |
-| `exec.ts` | Loop Runner shell wrapper: allowlisted env, secret injection, redaction, output cap. Process spawn/kill is pi's | no |
+| `exec.ts` | Loop Runner shell wrapper: allowlisted env, secret injection, redaction, output cap (keeps the first and the real last `cap/2` chars). Process spawn/kill is pi's | no |
 | `vendor/pi/` | Vendored pi tool implementations (bash, read, write, edit, ls, find, grep). No TUI | no |
 | `queue.ts` | File-backed state: work items, gates, checkpoints, audit | no |
 | `wake.ts` | `checkWake`: runs `loop.wakeIf` and interprets its exit code | no |
@@ -56,7 +56,7 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 
 1. **Trigger.** Every 20 s `TeamService.tick()` checks `loop.schedule`. When due, `checkWake` runs `loop.wakeIf`. Exit 0 enqueues an item whose context is the probe's stdout. Exit 1 does nothing (no model call). Any other exit is alerted once, until it recovers. A manual task from the "Give an Agent a Task" command is enqueued directly.
 2. **Queue.** `nextItem` picks the oldest runnable item across agents. There is exactly one worker, FIFO.
-3. **Run.** `runItem` builds the prompt, or rebuilds it from a checkpoint, and loops: `sendRequest(toolMode=Required)`, then execute tool calls in order, then feed results back. It stops on `finish`, `maxSteps`, cancellation, model error, or a gate.
+3. **Run.** `runItem` builds the prompt, or rebuilds it from a checkpoint, and loops: `sendRequest(toolMode=Auto)` (Copilot rejects Required with more than one tool, inside the response stream, so there is no Required attempt and no fallback), then execute tool calls in order, then feed results back. It stops on `finish`, `maxSteps`, cancellation, model error, or a gate.
 4. **Outcomes.**
    - `handoff` enqueues an item for a teammate with the same `chainId` and `hop+1`.
    - A gate saves a checkpoint and returns `waiting`; the item moves to `queue/_waiting`.
@@ -71,7 +71,7 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 3. **Deny wins.** Deny rules are checked before allow rules, at `request_approval` time **and again** at execution time. Human approval cannot bypass a deny rule.
 4. **Compound commands are checked per segment** (split on `&&`, `||`, `;`, `|`, a single `&`, and newlines; quotes are respected). Command substitution (`$(` and backticks) is always denied. Shell redirection into a protected path, or out of the workspace, is always denied. These hard rejects are applied at `request_approval` and again in `approveAndRun`.
 5. **Agents cannot edit their own definitions or the runtime's state.** `.loop/**`, `.github/**` and `.git/**` are protected by default. `.loop/outbox/**` is the only always-writable carve-out, used for drafts.
-6. **Secrets never reach the model.** They are injected as env vars at exec time and redacted from every tool result, including `read_file` and values shorter than 4 characters. The child environment is an allowlist plus those secrets, not a copy of `process.env`. Only their names appear in prompts.
+6. **Secrets never reach the model.** They are injected as env vars at exec time and redacted from every tool result, including `read_file` and values shorter than 4 characters. The child environment is an allowlist plus those secrets, not a copy of `process.env`. The allowlist includes non-secret plumbing (`SSH_AUTH_SOCK`, DBus/XDG runtime, proxy and CA variables) but never tokens such as `GH_TOKEN`; give those to the runtime with Set Secret. Only their names appear in prompts.
 7. **The transcript is plain data.** `runner.ts` keeps `PlainMsg[]` as the single source of truth and converts to `vscode` classes only per request. Checkpoints must replay byte-identically, which keeps the prompt-cache prefix stable.
 8. **Prompt order is static-first.** Order: runtime rules, then role, then skills, then teammates, then the work item. Do not put timestamps or per-run data earlier in the prompt; it breaks prompt caching, which matters under token-based Copilot billing.
 9. **One gate per turn.** A second gate call in the same turn returns `Not sent: ...` and creates nothing.
@@ -114,14 +114,14 @@ Model resolution order: `loop.model` (by family, no fallback) → native `model`
 
 - `queue/<agent>/<id>.json`, `queue/_waiting/`, `queue/_done/`: `WorkItem` (see `queue.ts`)
 - `gates/<id>.json`: `Gate` with `kind` (`question` | `approval`), `status`, `resume`, `outcome`, `itemId`
-- `checkpoints/<itemId>.json`: `Checkpoint` with `messages`, `turnResults`, `parkedCallId`, `step`
+- `checkpoints/<itemId>.json`: `Checkpoint` with `messages`, `turnResults`, `parkedCallId`, `step`. Written when a gate parks the item, and also at the end of every completed turn with `parkedCallId: ''` and `gateId: ''` (no gate result to add). A queued item that has a checkpoint continues from it, so an interrupted or rate-limited run does not repeat its handoffs and writes. `complete()` removes it
 - `runs/<date>/<chainId>.jsonl`: audit events; `wake-<date>.jsonl` records wake checks
 - `schedule-state.json`: `{ [agent]: "YYYY-MM-DDTHH:MM" }` UTC minute of the last schedule slot that role already handled. Used to catch up one missed `wakeIf` on start
 - `outbox/`: drafts written by agents and editable by the human
 
 Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`, `retry`. Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
 
-`retry` means the item was left in `queue/<agent>/` instead of `_done`. Reasons: `cancelled` (Stop Team, or the run was cancelled as VS Code closed) and `rate-limit`. The rate-limit path pauses the worker, then runs that same item again. A successful Start Team sets globalState `loopRunner.teamStarted`. The next activation starts the team on its own and drains the queue before scheduling. The first start stays a user command so Copilot's consent dialog has a user gesture. Stop Team clears the flag. Pending gates are announced again on every start, including ones that already have `notifiedAt`.
+`retry` means the item was left in `queue/<agent>/` instead of `_done`. Reasons: `cancelled` (Stop Team, or the run was cancelled as VS Code closed) and `rate-limit`. The rate-limit path alerts once, pauses the worker, then runs that same item again. Only temporary errors qualify (rate limit, quota, exhausted credits, too many requests, temporarily blocked). `Message exceeds token limit.` is permanent for the item and ends it as `error`. A successful Start Team sets workspaceState `loopRunner.teamStarted` (per workspace, so one workspace's flag never starts or stops another). The next activation starts the team on its own and drains the queue before scheduling. The first start stays a user command so Copilot's consent dialog has a user gesture: the Start Team command itself sends a one-token request with a `justification` to every resolved model that `canSendRequest` does not yet allow, so the consent dialog appears while a person is present (auto-start never does this). If Copilot returns no models yet, start waits up to 2 minutes for `onDidChangeChatModels` once. Reload on a running team re-resolves models. A schedule slot missed while VS Code stayed open (sleep) is caught up once on the next tick. A scheduled wake is skipped while a scheduled item for that agent is queued or parked in `_waiting`. Stop Team clears the flag. Pending gates are announced again on every start, including ones that already have `notifiedAt`.
 
 ### Notify
 

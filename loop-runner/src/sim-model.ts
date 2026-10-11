@@ -14,7 +14,7 @@ export interface SimTurn {
   error?: string;
   /** Block until the cancellation token fires. The turn is left in the script for the retry. */
   hold?: boolean;
-  /** Throw when toolMode is Required, so the runner can retry with Auto. */
+  /** Like Copilot: fail inside the response stream (not in sendRequest) when toolMode is Required. */
   rejectRequired?: boolean;
 }
 
@@ -77,10 +77,8 @@ export function createSimModel(root: string, agent: string): vscode.LanguageMode
     sendRequest: async (_messages: vscode.LanguageModelChatMessage[], options?: vscode.LanguageModelChatRequestOptions, token?: vscode.CancellationToken) => {
       const turn = peek(root, agent);
       if (!turn) throw new Error(`sim model: no scripted turn left for ${agent}`);
-      if (turn.rejectRequired && options?.toolMode === vscode.LanguageModelChatToolMode.Required) {
-        simTrace(root, { event: 'tool-mode-required-rejected', agent });
-        throw new Error('tool mode Required is not supported');
-      }
+      const rejectRequired = !!turn.rejectRequired && options?.toolMode === vscode.LanguageModelChatToolMode.Required;
+      if (rejectRequired) { simTrace(root, { event: 'tool-mode-required-rejected', agent }); }
       if (options?.toolMode === vscode.LanguageModelChatToolMode.Auto) {
         simTrace(root, { event: 'tool-mode-auto-accepted', agent });
       }
@@ -113,7 +111,10 @@ export function createSimModel(root: string, agent: string): vscode.LanguageMode
       const calls = (turn.calls ?? []).map((c, i) =>
         new vscode.LanguageModelToolCallPart(`sim-${agent}-${Date.now()}-${i}`, c.name, (c.input ?? {}) as object));
       return {
-        stream: (async function* () { yield* calls; })(),
+        stream: (async function* () {
+          if (rejectRequired) throw new Error('LanguageModelChatToolMode.Required is not supported with more than one tool');
+          yield* calls;
+        })(),
         text: (async function* () { /* tool-only turn */ })()
       };
     }

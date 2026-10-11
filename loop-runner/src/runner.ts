@@ -77,21 +77,32 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   let transcript: PlainMsg[];
   let step = 0;
 
-  if (item.resumeGate) {
-    // Resume exactly where we parked: same conversation, plus the gate's outcome as the tool result.
-    const cp = loadCheckpoint(deps.root, item.id);
-    const gate = getGate(deps.root, item.resumeGate);
-    if (!cp || !gate || gate.outcome === undefined) {
-      return { status: 'error', summary: `cannot resume: checkpoint or gate outcome missing (${item.resumeGate})`, steps: 0 };
-    }
+  // `limit` is raised on a gate resume so the answer always reaches the model (one more request).
+  let limit = maxSteps;
+  const cp = loadCheckpoint(deps.root, item.id);
+  if (cp && (item.resumeGate || !cp.parkedCallId)) {
+    // Continue the same conversation: after a gate (outcome becomes the parked call's result), or after an
+    // interrupted run (end-of-turn checkpoint, nothing to add). Re-running from scratch would repeat side effects.
     transcript = cp.messages;
     step = cp.step;
-    transcript.push({
-      role: 'user',
-      parts: cp.turnResults.map(r => ({ t: 'result', callId: r.callId, text: r.callId === cp.parkedCallId ? gate.outcome! : r.text }))
-    });
-    deps.out.appendLine(`\n▶ ${agent.name} resumes ${item.id} after ${gate.kind} ${gate.id}`);
-    log({ type: 'resume', gateId: gate.id, kind: gate.kind, outcome: gate.outcome.slice(0, 2000) });
+    if (cp.parkedCallId) {
+      const gate = item.resumeGate ? getGate(deps.root, item.resumeGate) : undefined;
+      if (!gate || gate.outcome === undefined) {
+        return { status: 'error', summary: `cannot resume: checkpoint or gate outcome missing (${item.resumeGate})`, steps: 0 };
+      }
+      transcript.push({
+        role: 'user',
+        parts: cp.turnResults.map(r => ({ t: 'result', callId: r.callId, text: r.callId === cp.parkedCallId ? gate.outcome! : r.text }))
+      });
+      limit = Math.max(maxSteps, step + 1);
+      deps.out.appendLine(`\n▶ ${agent.name} resumes ${item.id} after ${gate.kind} ${gate.id}`);
+      log({ type: 'resume', gateId: gate.id, kind: gate.kind, outcome: gate.outcome.slice(0, 2000) });
+    } else {
+      deps.out.appendLine(`\n▶ ${agent.name} continues ${item.id} from its last completed step (${step})`);
+      log({ type: 'resume', from: 'checkpoint', step });
+    }
+  } else if (item.resumeGate) {
+    return { status: 'error', summary: `cannot resume: checkpoint or gate outcome missing (${item.resumeGate})`, steps: 0 };
   } else {
     transcript = [{ role: 'user', parts: [{ t: 'text', v: buildPrompt(agent, item, deps) }] }];
     deps.out.appendLine(`\n▶ ${agent.name} ← ${item.from} | ${item.id} | ${deps.model.family}`);
@@ -102,10 +113,14 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   let nudges = 0;
 
   try {
-    while (!finished && step < maxSteps && !deps.token.isCancellationRequested) {
+    while (!finished && step < limit && !deps.token.isCancellationRequested) {
       step++;
       const t0 = Date.now();
-      const response = await sendWithToolMode(deps, transcript.map(toVscode), tools);
+      // Auto, not Required: Copilot rejects Required with more than one tool, and it does so inside the
+      // response stream, so a sendRequest-level fallback never sees it. A text-only reply is nudged below.
+      const response = await deps.model.sendRequest(transcript.map(toVscode), {
+        tools, toolMode: vscode.LanguageModelChatToolMode.Auto, justification: `Loop Runner: ${agent.name} work item ${item.id}`
+      }, deps.token);
       const assistant: PlainPart[] = [];
       const calls: { callId: string; name: string; input: any }[] = [];
       let text = '';
@@ -160,9 +175,13 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
         return { status: 'waiting', steps: step, gateId: parked.gateId };
       }
       transcript.push({ role: 'user', parts: results.map(r => ({ t: 'result' as const, callId: r.callId, text: r.text })) });
+      // End-of-turn snapshot so an interrupted or rate-limited item continues here instead of starting over.
+      if (!finished) { saveCheckpoint(deps.root, { itemId: item.id, gateId: '', messages: transcript, turnResults: [], parkedCallId: '', step }); }
     }
   } catch (e: any) {
-    const msg = e instanceof vscode.LanguageModelError ? `${e.code}: ${e.message}` : e?.message ?? String(e);
+    // Copilot names its errors (ChatRateLimited, ChatQuotaExceeded); keep the name so they can be classified.
+    const named = e?.name && e.name !== 'Error' && !String(e?.message ?? '').includes(e.name);
+    const msg = e instanceof vscode.LanguageModelError ? `${e.code}: ${e.message}` : `${named ? `${e.name}: ` : ''}${e?.message ?? String(e)}`;
     if (deps.token.isCancellationRequested) {
       deps.out.appendLine(`  !! cancelled: ${msg}`);
       log({ type: 'error', step, message: msg, cancelled: true });
@@ -173,40 +192,10 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
     return { status: 'error', summary: msg, steps: step };
   }
 
-  const status = finished?.status ?? (deps.token.isCancellationRequested ? 'cancelled' : step >= maxSteps ? 'max_steps' : 'stalled');
+  const status = finished?.status ?? (deps.token.isCancellationRequested ? 'cancelled' : step >= limit ? 'max_steps' : 'stalled');
   log({ type: 'end', step, status, summary: finished?.summary });
   deps.out.appendLine(`■ ${agent.name}: ${status}${finished ? ` — ${finished.summary}` : ''}`);
   return { status, summary: finished?.summary, steps: step };
-}
-
-/**
- * Some models reject `Required` when many tools are registered (the API notes that a few
- * only allow a single tool in that mode). Fall back to `Auto` once on that error.
- */
-async function sendWithToolMode(
-  deps: RunDeps,
-  messages: vscode.LanguageModelChatMessage[],
-  tools: vscode.LanguageModelChatTool[]
-): Promise<vscode.LanguageModelChatResponse> {
-  const required = vscode.LanguageModelChatToolMode?.Required;
-  const auto = vscode.LanguageModelChatToolMode?.Auto;
-  const first = required ?? auto;
-  try {
-    return await deps.model.sendRequest(messages, { tools, toolMode: first }, deps.token);
-  } catch (e) {
-    if (deps.token.isCancellationRequested || required == null || auto == null || !isToolModeError(e)) {
-      throw e;
-    }
-    deps.out.appendLine('  model rejected tool mode Required; retrying with Auto.');
-    return await deps.model.sendRequest(messages, { tools, toolMode: auto }, deps.token);
-  }
-}
-
-function isToolModeError(e: unknown): boolean {
-  const err = e as { code?: string; message?: string };
-  const msg = `${err?.code ?? ''} ${err?.message ?? e}`.toLowerCase();
-  if (/quota|rate/.test(msg)) return false;
-  return /tool.?mode|too many tools|single tool/.test(msg) || (/required/.test(msg) && /tool/.test(msg));
 }
 
 function brief(input: unknown): string {

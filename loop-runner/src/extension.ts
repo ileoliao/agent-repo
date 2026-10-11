@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { AgentDef, SkillDef, loadAllAgents, loadSkills, pickModel, validateTeam } from './team';
 import { cronMatches, minuteKey, missedSince } from './cron';
-import { Gate, WorkItem, audit, complete, enqueue, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
+import { Gate, WorkItem, audit, complete, enqueue, hasOpenScheduled, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
 import { loadPolicy, skillScriptRule } from './policy';
 import { checkWake } from './wake';
 import { runItem } from './runner';
@@ -17,9 +17,51 @@ const STARTED_KEY = 'loopRunner.teamStarted';
 const NEEDS_YOU = new Set(['blocked', 'error', 'max_steps', 'stalled']);
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/** Cancelled work and quota/rate-limit errors stay in the agent queue so the next start retries them. */
+const TRANSIENT = /rate.?limit|quota|exhausted|too many requests|temporarily blocked/i;
+
+/**
+ * Cancelled work and temporary quota/rate-limit errors stay in the agent queue so the next start retries them.
+ * A context overflow ("Message exceeds token limit.") is permanent for that item: retrying it would loop forever.
+ */
 export function keepQueued(status: string, summary?: string): boolean {
-  return status === 'cancelled' || (status === 'error' && /quota|rate|limit/i.test(summary ?? ''));
+  const s = summary ?? '';
+  return status === 'cancelled' || (status === 'error' && TRANSIENT.test(s) && !/token limit/i.test(s));
+}
+
+/** Models for a start. An empty list means Copilot is not ready yet (no sign-in or network): wait for it once. */
+export async function selectModelsWhenReady<T>(
+  select: () => Thenable<T[]>,
+  onChange: (cb: () => void) => { dispose(): void },
+  timeoutMs: number
+): Promise<T[]> {
+  const first = await select();
+  if (first.length > 0) return first;
+  await new Promise<void>(resolve => {
+    let sub: { dispose(): void } | undefined;
+    const done = () => { clearTimeout(timer); sub?.dispose(); resolve(); };
+    const timer = setTimeout(done, timeoutMs);
+    sub = onChange(done);
+  });
+  return select();
+}
+
+/**
+ * Copilot asks the user for consent on a model's first request, in a modal. Do that now, while a person is
+ * at the keyboard, rather than at the first unattended wake. Returns one problem per model that failed.
+ */
+export async function ensureConsent<M extends { id: string; name: string }>(
+  models: M[],
+  canSend: (m: M) => boolean | undefined,
+  ask: (m: M) => Promise<void>
+): Promise<string[]> {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const m of models) {
+    if (seen.has(m.id) || canSend(m) === true) continue;
+    seen.add(m.id);
+    try { await ask(m); } catch (e: any) { problems.push(`${m.name}: Copilot access was not granted (${e?.message ?? e})`); }
+  }
+  return problems;
 }
 
 class TeamService {
@@ -36,6 +78,9 @@ class TeamService {
   private models = new Map<string, vscode.LanguageModelChat>();
   /** Per agent: last wakeIf error already alerted, so a broken probe alerts once, not every tick. */
   private wakeErrors = new Map<string, string>();
+  /** True once a rate-limit pause has been announced; cleared when an item finishes normally. */
+  private rateAlerted = false;
+  private starting = false;
 
   constructor(
     private ctx: vscode.ExtensionContext,
@@ -62,29 +107,64 @@ class TeamService {
    * The first Start Team is user-initiated, which is what shows Copilot's consent dialog.
    * Later activations only reach this after that start succeeded.
    */
-  private async resolveModels(): Promise<string[]> {
+  async resolveModels(): Promise<string[]> {
     const problems: string[] = [];
-    this.models.clear();
+    // Built aside and swapped in only when complete, so a failed Reload keeps the models of a running team.
+    const next = new Map<string, vscode.LanguageModelChat>();
     if (simEnabled()) {
       const root = this.root();
       if (!root) return ['Open a folder first.'];
-      for (const a of this.team.values()) this.models.set(a.name, createSimModel(root, a.name));
+      for (const a of this.team.values()) next.set(a.name, createSimModel(root, a.name));
+      this.models = next;
       return [];
     }
-    const available = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+    const available = await selectModelsWhenReady(
+      () => vscode.lm.selectChatModels({ vendor: 'copilot' }), cb => vscode.lm.onDidChangeChatModels(cb), 2 * 60_000);
     const fallback = this.cfg().get<string>('modelFamily', '');
     for (const a of this.team.values()) {
       const m = pickModel(available, a, fallback);
-      if (m) { this.models.set(a.name, m); }
-      else { problems.push(`${a.name}: no Copilot model matches ${a.modelFamily ? `loop.model "${a.modelFamily}"` : 'its model setting'}`); }
+      if (m) { next.set(a.name, m); }
+      else {
+        problems.push(available.length === 0
+          ? `${a.name}: Copilot returned no models (not signed in, still starting, or blocked by policy). Fix that, then run Start Team again.`
+          : `${a.name}: no Copilot model matches ${a.modelFamily ? `loop.model "${a.modelFamily}"` : 'its model setting'}`);
+      }
     }
+    if (problems.length === 0) this.models = next;
     return problems;
   }
 
-  async start(): Promise<void> {
-    if (this.running) return;
+  /** Reload command: re-read agents and, on a running team, re-resolve models too. */
+  async reloadAll(): Promise<string[]> {
+    const errors = this.reload();
+    if (this.running && errors.length === 0) errors.push(...await this.resolveModels());
+    return errors;
+  }
+
+  private async grantAccess(): Promise<string[]> {
+    if (simEnabled()) return [];
+    return ensureConsent([...this.models.values()], m => this.ctx.languageModelAccessInformation.canSendRequest(m), async m => {
+      const r = await m.sendRequest([vscode.LanguageModelChatMessage.User('Reply with OK.')],
+        { justification: 'Loop Runner runs your custom agents unattended with this model.' });
+      for await (const _ of r.stream) { /* drain */ }
+    });
+  }
+
+  /** `user` is true for the Start Team command; only then may Copilot's consent dialog be raised. */
+  async start(user = false): Promise<void> {
+    if (this.running || this.starting) return;
+    this.starting = true;
+    try {
+      await this.startInner(user);
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  private async startInner(user: boolean): Promise<void> {
     const errors = this.reload();
     errors.push(...await this.resolveModels());
+    if (user && errors.length === 0) errors.push(...await this.grantAccess());
     this.out.show(true);
     if (errors.length) {
       this.out.appendLine('Team config problems:\n  ' + errors.join('\n  '));
@@ -93,10 +173,10 @@ class TeamService {
       return;
     }
     this.running = true;
-    await this.ctx.globalState.update(STARTED_KEY, true);
+    await this.ctx.workspaceState.update(STARTED_KEY, true);
     if (!this.running) {
       // Stop Team won the race while the flag was being written.
-      await this.ctx.globalState.update(STARTED_KEY, false);
+      await this.ctx.workspaceState.update(STARTED_KEY, false);
       return;
     }
     this.out.appendLine(`Team started: ${[...this.team.values()].map(a => `${a.name} [${this.models.get(a.name)?.name}]` + (a.schedule ? ` (${a.schedule}${a.wakeIf ? ', wakeIf' : ''})` : '')).join(', ')}`);
@@ -113,7 +193,7 @@ class TeamService {
     this.running = false;
     if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
     this.current?.cancel();
-    if (user) void this.ctx.globalState.update(STARTED_KEY, false);
+    if (user) void this.ctx.workspaceState.update(STARTED_KEY, false);
     this.out.appendLine('Team stopped.');
     this.changed();
   }
@@ -183,7 +263,12 @@ class TeamService {
       const now = this.now();
       const minute = minuteKey(now);
       for (const a of this.team.values()) {
-        if (!a.schedule || !a.task || this.lastFired.get(a.name) === minute || !cronMatches(a.schedule, now)) { continue; }
+        if (!a.schedule || !a.task || this.lastFired.get(a.name) === minute) { continue; }
+        // Also covers slots missed while the machine slept with VS Code open (one catch-up wake, not one per slot).
+        if (!cronMatches(a.schedule, now)) {
+          if (!missedSince(a.schedule, this.lastFired.get(a.name), now)) { continue; }
+          this.out.appendLine(`${a.name}: missed a scheduled wake; catching up once.`);
+        }
         await this.fireSchedule(root, a, now);
       }
     } finally {
@@ -196,7 +281,7 @@ class TeamService {
     if (!task) return;
     this.lastFired.set(a.name, minuteKey(now));
     this.saveFired(root);
-    if (pending(root, a.name).some(i => i.from === 'schedule')) return;
+    if (hasOpenScheduled(root, a.name)) return;
     const policy = loadPolicy(root, a.policy ?? this.cfg().get<string>('policyFile', '.loop/policy.json'));
     const extraAllow = a.skills.map(s => this.skills.get(s)).filter((s): s is SkillDef => !!s).map(s => skillScriptRule(s.relDir));
     const w = await checkWake(root, a, policy, extraAllow, await this.secrets());
@@ -262,6 +347,10 @@ class TeamService {
           this.out.appendLine(`${agent.name} ${item.id} stays queued (${reason}).`);
           this.changed();
           if (reason === 'rate-limit' && this.running) {
+            if (!this.rateAlerted) {
+              this.rateAlerted = true;
+              await this.alert({ kind: 'error', agent: agent.name, title: `${agent.name}: model rate limit or quota hit, worker paused`, detail: r.summary, itemId: item.id, chainId: item.chainId });
+            }
             const ms = this.ratePauseMs();
             this.out.appendLine(`Model quota/rate limit hit: pausing the worker for ${ms === 10 * 60_000 ? '10 minutes' : `${ms} ms`}. The item stays queued and will be retried.`);
             await sleep(ms);
@@ -269,7 +358,8 @@ class TeamService {
           }
           break;
         }
-        complete(root, item, r.status, r.summary);
+        this.rateAlerted = false;
+        complete(root, item, r.status, r.summary, r.gateId);
         await this.notifyPendingGates();
         if (NEEDS_YOU.has(r.status)) {
           await this.alert({ kind: r.status as LoopEvent['kind'], agent: agent.name, title: `${agent.name}: ${r.status}`, detail: r.summary, itemId: item.id, chainId: item.chainId });
@@ -374,10 +464,10 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(
     out, bar,
     vscode.window.registerTreeDataProvider('loopRunner.inbox', inbox),
-    vscode.commands.registerCommand('loopRunner.startTeam', () => svc.start()),
+    vscode.commands.registerCommand('loopRunner.startTeam', () => svc.start(true)),
     vscode.commands.registerCommand('loopRunner.stopTeam', () => svc.stop(true)),
-    vscode.commands.registerCommand('loopRunner.reloadTeam', () => {
-      const errs = svc.reload();
+    vscode.commands.registerCommand('loopRunner.reloadTeam', async () => {
+      const errs = await svc.reloadAll();
       out.show(true);
       out.appendLine(errs.length ? 'Team config problems:\n  ' + errs.join('\n  ') : 'Team reloaded OK.\n' + svc.status());
     }),
@@ -461,7 +551,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     w.onDidCreate(() => inbox.refresh());
     ctx.subscriptions.push(w);
   }
-  const willAutoStart = ctx.globalState.get<boolean>(STARTED_KEY) === true;
+  const willAutoStart = ctx.workspaceState.get<boolean>(STARTED_KEY) === true;
   if (willAutoStart) {
     void svc.start().catch((e: any) => out.appendLine(`Auto-start failed: ${e?.message ?? e}`));
   }
