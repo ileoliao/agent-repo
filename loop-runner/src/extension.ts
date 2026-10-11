@@ -1,15 +1,26 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { AgentDef, SkillDef, loadAllAgents, loadSkills, pickModel, validateTeam } from './team';
-import { cronMatches } from './cron';
+import { cronMatches, minuteKey, missedSince } from './cron';
 import { Gate, WorkItem, audit, complete, enqueue, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
 import { loadPolicy, skillScriptRule } from './policy';
 import { checkWake } from './wake';
 import { runItem } from './runner';
 import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
 import { InboxView, showGate } from './inbox';
+import { createSimModel, simEnabled, simNow, simPauseMs, simTrace } from './sim-model';
+import { runSim } from './sim-drive';
 
 const SECRET_INDEX = 'loopRunner.secretNames';
+const STARTED_KEY = 'loopRunner.teamStarted';
 const NEEDS_YOU = new Set(['blocked', 'error', 'max_steps', 'stalled']);
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** Cancelled work and quota/rate-limit errors stay in the agent queue so the next start retries them. */
+export function keepQueued(status: string, summary?: string): boolean {
+  return status === 'cancelled' || (status === 'error' && /quota|rate|limit/i.test(summary ?? ''));
+}
 
 class TeamService {
   team = new Map<string, AgentDef>();
@@ -47,12 +58,21 @@ class TeamService {
     return errors;
   }
 
-  /** Must run inside a user-initiated command: the first call shows Copilot's consent dialog. */
+  /**
+   * The first Start Team is user-initiated, which is what shows Copilot's consent dialog.
+   * Later activations only reach this after that start succeeded.
+   */
   private async resolveModels(): Promise<string[]> {
     const problems: string[] = [];
+    this.models.clear();
+    if (simEnabled()) {
+      const root = this.root();
+      if (!root) return ['Open a folder first.'];
+      for (const a of this.team.values()) this.models.set(a.name, createSimModel(root, a.name));
+      return [];
+    }
     const available = await vscode.lm.selectChatModels({ vendor: 'copilot' });
     const fallback = this.cfg().get<string>('modelFamily', '');
-    this.models.clear();
     for (const a of this.team.values()) {
       const m = pickModel(available, a, fallback);
       if (m) { this.models.set(a.name, m); }
@@ -62,26 +82,38 @@ class TeamService {
   }
 
   async start(): Promise<void> {
+    if (this.running) return;
     const errors = this.reload();
     errors.push(...await this.resolveModels());
     this.out.show(true);
     if (errors.length) {
       this.out.appendLine('Team config problems:\n  ' + errors.join('\n  '));
       vscode.window.showErrorMessage(`Loop Runner: ${errors.length} config problem(s). See output.`);
+      this.changed();
       return;
     }
     this.running = true;
+    await this.ctx.globalState.update(STARTED_KEY, true);
+    if (!this.running) {
+      // Stop Team won the race while the flag was being written.
+      await this.ctx.globalState.update(STARTED_KEY, false);
+      return;
+    }
     this.out.appendLine(`Team started: ${[...this.team.values()].map(a => `${a.name} [${this.models.get(a.name)?.name}]` + (a.schedule ? ` (${a.schedule}${a.wakeIf ? ', wakeIf' : ''})` : '')).join(', ')}`);
-    this.timer = setInterval(() => this.tick(), 20_000);
-    this.tick();
-    // Anything still waiting on you from before a restart deserves a reminder.
-    void this.notifyPendingGates();
+    if (this.timer) clearInterval(this.timer);
+    // The simulation drives ticks itself; a 20s interval would race with scripted time.
+    this.timer = setInterval(() => void this.tick(), simEnabled() ? 3_600_000 : 20_000);
+    // A restart re-alerts every gate that is still pending, even if it was already shown.
+    await this.notifyPendingGates(true);
+    await this.drainThenSchedule();
   }
 
-  stop(): void {
+  /** `user` is Stop Team. Deactivate also stops the loop but must keep the flag so the next window continues. */
+  stop(user = false): void {
     this.running = false;
-    if (this.timer) { clearInterval(this.timer); }
+    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
     this.current?.cancel();
+    if (user) void this.ctx.globalState.update(STARTED_KEY, false);
     this.out.appendLine('Team stopped.');
     this.changed();
   }
@@ -91,13 +123,55 @@ class TeamService {
     this.tick();
   }
 
-  tick(): void {
+  tick(): Promise<void> {
+    const root = this.root();
+    if (!this.running || !root) { this.changed(); return Promise.resolve(); }
+    return this.schedule(root).then(() => {
+      if (!this.busy) return this.work(root);
+    }).then(() => { this.changed(); });
+  }
+
+  private now(): Date {
+    return simNow(this.root()) ?? new Date();
+  }
+
+  private ratePauseMs(): number {
+    return simPauseMs() ?? 10 * 60_000;
+  }
+
+  /**
+   * On start: finish anything already queued (cancel, rate limit, crash), then catch up one
+   * missed wakeIf, then the current minute. Pending work is not stuck behind a new schedule.
+   */
+  private async drainThenSchedule(): Promise<void> {
     const root = this.root();
     if (!this.running || !root) { this.changed(); return; }
-    void this.schedule(root).then(() => {
-      if (!this.busy) { void this.work(root); }
-      this.changed();
-    });
+    if (!this.busy) await this.work(root);
+    if (!this.running) { this.changed(); return; }
+    await this.catchUp(root);
+    if (!this.running) { this.changed(); return; }
+    await this.schedule(root);
+    if (this.running && !this.busy) await this.work(root);
+    this.changed();
+  }
+
+  /** One wakeIf per role if any cron minute was missed while the team was not running. */
+  private async catchUp(root: string): Promise<void> {
+    if (this.scheduling) return;
+    this.scheduling = true;
+    try {
+      this.loadFired(root);
+      const now = this.now();
+      for (const a of this.team.values()) {
+        if (!this.running) return;
+        if (!a.schedule || !a.task) continue;
+        if (!missedSince(a.schedule, this.lastFired.get(a.name), now)) continue;
+        this.out.appendLine(`${a.name}: missed a scheduled wake; catching up once.`);
+        await this.fireSchedule(root, a, now);
+      }
+    } finally {
+      this.scheduling = false;
+    }
   }
 
   /** Due schedules: run the zero-token wakeIf check first; only enqueue model work if it says so. */
@@ -105,30 +179,56 @@ class TeamService {
     if (this.scheduling) { return; }
     this.scheduling = true;
     try {
-      const now = new Date();
-      const minute = now.toISOString().slice(0, 16);
+      this.loadFired(root);
+      const now = this.now();
+      const minute = minuteKey(now);
       for (const a of this.team.values()) {
         if (!a.schedule || !a.task || this.lastFired.get(a.name) === minute || !cronMatches(a.schedule, now)) { continue; }
-        this.lastFired.set(a.name, minute);
-        if (pending(root, a.name).some(i => i.from === 'schedule')) { continue; }
-        const policy = loadPolicy(root, a.policy ?? this.cfg().get<string>('policyFile', '.loop/policy.json'));
-        const extraAllow = a.skills.map(s => this.skills.get(s)).filter((s): s is SkillDef => !!s).map(s => skillScriptRule(s.relDir));
-        const w = await checkWake(root, a, policy, extraAllow, await this.secrets());
-        audit(root, `wake-${now.toISOString().slice(0, 10)}`, { type: 'wake', agent: a.name, wake: w.wake, error: w.error });
-        if (w.error) {
-          if (this.wakeErrors.get(a.name) !== w.error) {
-            this.wakeErrors.set(a.name, w.error);
-            await this.alert({ kind: 'error', agent: a.name, title: `${a.name}: wakeIf check is failing`, detail: w.error });
-          }
-          continue;
-        }
-        if (this.wakeErrors.delete(a.name)) { this.out.appendLine(`${a.name}: wakeIf recovered.`); }
-        if (!w.wake) { continue; }
-        enqueue(root, { id: newId(), agent: a.name, task: a.task, context: w.context, from: 'schedule', chainId: newId(), hop: 0, createdAt: now.toISOString() });
+        await this.fireSchedule(root, a, now);
       }
     } finally {
       this.scheduling = false;
     }
+  }
+
+  private async fireSchedule(root: string, a: AgentDef, now: Date): Promise<void> {
+    const task = a.task;
+    if (!task) return;
+    this.lastFired.set(a.name, minuteKey(now));
+    this.saveFired(root);
+    if (pending(root, a.name).some(i => i.from === 'schedule')) return;
+    const policy = loadPolicy(root, a.policy ?? this.cfg().get<string>('policyFile', '.loop/policy.json'));
+    const extraAllow = a.skills.map(s => this.skills.get(s)).filter((s): s is SkillDef => !!s).map(s => skillScriptRule(s.relDir));
+    const w = await checkWake(root, a, policy, extraAllow, await this.secrets());
+    audit(root, `wake-${now.toISOString().slice(0, 10)}`, { type: 'wake', agent: a.name, wake: w.wake, error: w.error });
+    if (w.error) {
+      if (this.wakeErrors.get(a.name) !== w.error) {
+        this.wakeErrors.set(a.name, w.error);
+        await this.alert({ kind: 'error', agent: a.name, title: `${a.name}: wakeIf check is failing`, detail: w.error });
+      }
+      return;
+    }
+    if (this.wakeErrors.delete(a.name)) { this.out.appendLine(`${a.name}: wakeIf recovered.`); }
+    if (!w.wake) return;
+    enqueue(root, { id: newId(), agent: a.name, task, context: w.context, from: 'schedule', chainId: newId(), hop: 0, createdAt: now.toISOString() });
+  }
+
+  private loadFired(root: string): void {
+    const f = path.join(root, '.loop', 'schedule-state.json');
+    if (!fs.existsSync(f)) return;
+    try {
+      const data = JSON.parse(fs.readFileSync(f, 'utf8')) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(data)) {
+        if (typeof v === 'string') this.lastFired.set(k, v);
+      }
+    } catch { /* a corrupt file must not stop the team */ }
+  }
+
+  private saveFired(root: string): void {
+    const data: Record<string, string> = {};
+    for (const [k, v] of this.lastFired) data[k] = v;
+    fs.mkdirSync(path.join(root, '.loop'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.loop', 'schedule-state.json'), JSON.stringify(data, null, 2));
   }
 
   private async work(root: string): Promise<void> {
@@ -151,19 +251,30 @@ class TeamService {
           maxHops: this.cfg().get<number>('maxHops', 5),
           out: this.out, token: this.current.token
         });
-        complete(root, item, r.status, r.summary);
         this.current.dispose();
         this.current = undefined;
         this.activeAgent = undefined;
+        if (keepQueued(r.status, r.summary)) {
+          const reason = r.status === 'cancelled' ? 'cancelled' : 'rate-limit';
+          const queued = fs.existsSync(path.join(root, '.loop', 'queue', item.agent, `${item.id}.json`));
+          audit(root, item.chainId, { type: 'retry', agent: agent.name, itemId: item.id, reason, summary: r.summary });
+          simTrace(root, { event: 'kept-queued', reason, id: item.id, agent: item.agent, queued });
+          this.out.appendLine(`${agent.name} ${item.id} stays queued (${reason}).`);
+          this.changed();
+          if (reason === 'rate-limit' && this.running) {
+            const ms = this.ratePauseMs();
+            this.out.appendLine(`Model quota/rate limit hit: pausing the worker for ${ms === 10 * 60_000 ? '10 minutes' : `${ms} ms`}. The item stays queued and will be retried.`);
+            await sleep(ms);
+            if (this.running) continue;
+          }
+          break;
+        }
+        complete(root, item, r.status, r.summary);
         await this.notifyPendingGates();
         if (NEEDS_YOU.has(r.status)) {
           await this.alert({ kind: r.status as LoopEvent['kind'], agent: agent.name, title: `${agent.name}: ${r.status}`, detail: r.summary, itemId: item.id, chainId: item.chainId });
         }
         this.changed();
-        if (r.status === 'error' && /quota|rate|limit/i.test(r.summary ?? '')) {
-          this.out.appendLine('Model quota/rate limit hit: pausing the worker for 10 minutes.');
-          await new Promise(res => setTimeout(res, 10 * 60_000));
-        }
       }
     } finally {
       this.busy = false;
@@ -171,11 +282,14 @@ class TeamService {
     }
   }
 
-  /** Every new pending gate reaches you exactly once: in VS Code and through the notify skill. */
-  async notifyPendingGates(): Promise<void> {
+  /**
+   * New pending gates are announced once. `force` (team start) announces every gate that is
+   * still pending, including ones already shown before VS Code last closed.
+   */
+  async notifyPendingGates(force = false): Promise<void> {
     const root = this.root();
     if (!root) { return; }
-    for (const g of listGates(root).filter(x => x.status === 'pending' && !x.notifiedAt)) {
+    for (const g of listGates(root).filter(x => x.status === 'pending' && (force || !x.notifiedAt))) {
       g.notifiedAt = new Date().toISOString();
       saveGate(root, g);
       await this.alert({ kind: g.kind, agent: g.agent, title: g.title, detail: g.body, gateId: g.id, itemId: g.itemId, chainId: g.chainId }, g);
@@ -229,13 +343,23 @@ export function activate(ctx: vscode.ExtensionContext) {
   const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   bar.command = 'loopRunner.focusInbox';
   const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath);
-  const svc: TeamService = new TeamService(ctx, out, () => {
+  const refresh = () => {
     inbox.refresh();
     const n = inbox.pendingCount();
     bar.text = `$(${svc.running ? 'sync' : 'debug-pause'}) Loop${svc.activeAgent ? `: ${svc.activeAgent}` : ''}${n ? ` · $(bell-dot) ${n}` : ''}`;
     bar.tooltip = n ? `${n} item(s) need you` : 'Loop Runner';
     bar.show();
-  }, g => void showGate(root(), g));
+    if (simEnabled()) {
+      const folder = svc.root();
+      if (folder) {
+        fs.mkdirSync(path.join(folder, '.loop'), { recursive: true });
+        fs.writeFileSync(path.join(folder, '.loop', 'sim-status.json'), JSON.stringify({
+          running: svc.running, active: svc.activeAgent ?? null, pending: n, bar: bar.text
+        }));
+      }
+    }
+  };
+  const svc: TeamService = new TeamService(ctx, out, refresh, g => void showGate(root(), g));
   svc.reload();
 
   const root = () => {
@@ -251,7 +375,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     out, bar,
     vscode.window.registerTreeDataProvider('loopRunner.inbox', inbox),
     vscode.commands.registerCommand('loopRunner.startTeam', () => svc.start()),
-    vscode.commands.registerCommand('loopRunner.stopTeam', () => svc.stop()),
+    vscode.commands.registerCommand('loopRunner.stopTeam', () => svc.stop(true)),
     vscode.commands.registerCommand('loopRunner.reloadTeam', () => {
       const errs = svc.reload();
       out.show(true);
@@ -317,6 +441,18 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand('loopRunner.refreshInbox', () => inbox.refresh()),
     { dispose: () => svc.stop() }
   );
+  if (simEnabled()) {
+    ctx.subscriptions.push(
+      vscode.commands.registerCommand('loopRunner._sim.submit', (agent: string, task: string) => { svc.submit(agent, task); }),
+      vscode.commands.registerCommand('loopRunner._sim.answer', (gateId: string, answer: string) => {
+        after(answerQuestion(root(), gateId, answer).woke);
+      }),
+      vscode.commands.registerCommand('loopRunner._sim.tick', () => svc.tick()),
+      vscode.commands.registerCommand('loopRunner._sim.snapshot', () => ({
+        running: svc.running, active: svc.activeAgent ?? null, status: svc.status(), bar: bar.text
+      }))
+    );
+  }
 
   const r = svc.root();
   if (r) {
@@ -325,8 +461,29 @@ export function activate(ctx: vscode.ExtensionContext) {
     w.onDidCreate(() => inbox.refresh());
     ctx.subscriptions.push(w);
   }
-  bar.text = '$(debug-pause) Loop';
-  bar.show();
+  const willAutoStart = ctx.globalState.get<boolean>(STARTED_KEY) === true;
+  if (willAutoStart) {
+    void svc.start().catch((e: any) => out.appendLine(`Auto-start failed: ${e?.message ?? e}`));
+  }
+  // Paint the bell count even when nothing has ticked yet (and before auto-start finishes).
+  refresh();
+  if (simEnabled()) {
+    const folder = svc.root();
+    if (folder) {
+      fs.mkdirSync(path.join(folder, '.loop'), { recursive: true });
+      fs.writeFileSync(path.join(folder, '.loop', 'sim-activation.json'), JSON.stringify({
+        bar: bar.text, pending: inbox.pendingCount(), running: svc.running, willAutoStart
+      }, null, 2));
+    }
+    void runSim().catch(async (e: any) => {
+      const folder = svc.root();
+      if (folder) {
+        fs.mkdirSync(path.join(folder, '.loop'), { recursive: true });
+        fs.appendFileSync(path.join(folder, '.loop', 'sim-trace.jsonl'), JSON.stringify({ event: 'sim-crash', error: String(e?.stack ?? e) }) + '\n');
+      }
+      try { await vscode.commands.executeCommand('workbench.action.quit'); } catch { /* already closing */ }
+    });
+  }
 }
 
 export function deactivate() {}

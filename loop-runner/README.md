@@ -142,16 +142,16 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 
 ## 上手
 
-1. **先跑冒烟测试**：按 `examples/smoke/README.md` 操作，10 分钟走通安装、模型、定时、提问、审批和续跑，不碰任何真实系统
+1. **先跑冒烟测试**：克隆本仓库后，单独打开源码里的 `examples/smoke`（不在 vsix 里），按该目录的 `README.md` 操作。10 分钟走通安装、模型、定时、提问、审批和续跑，不碰任何真实系统
 2. 把示例的 `.github/agents/` 和 `.loop/policies/` 复制到工作区，按实际 skill 名修改
 3. 运行 `Loop Runner: Reload & Validate Team`，会报告缺失的 skill、无法无人值守的转交目标、写错的 cron
 4. 运行 `Loop Runner: Set Secret` 配置 `HARBOR_PAT`、`JIRA_TOKEN` 等凭证
-5. 运行 `Loop Runner: Start Team`。首次会弹出 Copilot 授权，必须由人触发
+5. 运行 `Loop Runner: Start Team`。首次会弹出 Copilot 授权，必须由人触发。成功启动过之后，再次打开工作区会自动接着跑，并先处理队列里没做完的项。`Stop Team` 会取消这个自动启动
 6. 可选：配置 `loopRunner.notifyCommand`，用 `Send a Test Notification` 测试
 
 ## 测试
 
-`npm test`：mock 的 vscode 加脚本化的假模型，跑真实的 runner，共 91 项检查。覆盖：
+`npm test`：mock 的 vscode 加脚本化的假模型，跑真实的 runner。覆盖：
 
 - 原生格式解析、模型选择
 - `wakeIf` 的四种情况
@@ -159,7 +159,8 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 - 三条续跑路径：答复、拒绝附反馈、批准执行
 - 通知、凭证脱敏、超时、stdin 关闭、审计
 - 命令拼接、重定向到受保护路径、进程树超时、凭证不从环境继承、批准时再次拒绝命令替换、Windows shell 选择
-- 冒烟测试工作区按角色说明完整跑一遍（`python3` / `python` / `py` 哪个能用就用哪个）
+- 冒烟测试工作区按角色说明完整跑一遍（`scripts/py.js` 在 `python3` / `python` / `py` 里自己挑）
+- 错过的 cron、`read_file` 的 `startLine` 续读、`list_dir` 的 `limit`、工具模式 Required 失败后改走 Auto、取消不记成完成
 
 ## 限制
 

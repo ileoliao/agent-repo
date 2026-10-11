@@ -19,6 +19,28 @@ export function validateCron(expr: string): string | undefined {
   return undefined;
 }
 
+/** UTC minute, `YYYY-MM-DDTHH:MM`. This is the identity stored for "already fired". */
+export function minuteKey(d: Date): string {
+  return d.toISOString().slice(0, 16);
+}
+
+/**
+ * True when a cron hit exists after `lastKey` and up to `now`.
+ * No history means nothing was missed (the live tick still fires the current minute).
+ * A gap longer than `maxMinutes` counts as missed without walking every minute.
+ */
+export function missedSince(expr: string, lastKey: string | undefined, now: Date, maxMinutes = 48 * 60): boolean {
+  if (!lastKey || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(lastKey)) return false;
+  const startMs = new Date(`${lastKey}:00.000Z`).getTime();
+  if (Number.isNaN(startMs) || startMs > now.getTime()) return false;
+  const gapMin = Math.floor((now.getTime() - startMs) / 60_000);
+  if (gapMin > maxMinutes) return true;
+  for (let t = startMs + 60_000; t <= now.getTime(); t += 60_000) {
+    if (cronMatches(expr, new Date(t))) return true;
+  }
+  return false;
+}
+
 export function cronMatches(expr: string, d: Date): boolean {
   const f = expr.trim().split(/\s+/);
   const [min, hour, dom, mon, dow] = f.map((x, i) => expand(x, RANGES[i][0], RANGES[i][1]));

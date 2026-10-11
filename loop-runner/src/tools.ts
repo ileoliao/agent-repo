@@ -36,17 +36,25 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
   const tools: vscode.LanguageModelChatTool[] = [
     {
       name: 'read_file',
-      description: 'Read a UTF-8 text file in the workspace (workspace-relative path). Use for SKILL.md references, code, data.',
+      description: 'Read a UTF-8 text file in the workspace (workspace-relative path). Use for SKILL.md references, code, data. To continue a truncated read, pass startLine (and optionally endLine).',
       inputSchema: {
         type: 'object',
-        properties: { path: { type: 'string' }, startLine: { type: 'number' }, endLine: { type: 'number' } },
+        properties: {
+          path: { type: 'string' },
+          startLine: { type: 'number', description: 'First line to return, 1-based. Also accepts offset as an alias.' },
+          endLine: { type: 'number', description: 'Last line to return, inclusive.' }
+        },
         required: ['path']
       }
     },
     {
       name: 'list_dir',
-      description: 'List a workspace directory (non-recursive). "." is the root.',
-      inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] }
+      description: 'List a workspace directory (non-recursive). "." is the root. If the result says the entry limit was reached, call again with a higher limit.',
+      inputSchema: {
+        type: 'object',
+        properties: { path: { type: 'string' }, limit: { type: 'number', description: 'Maximum entries to return (default 500).' } },
+        required: ['path']
+      }
     },
     {
       name: 'write_file',
@@ -147,16 +155,18 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
   switch (name) {
     case 'read_file': {
       const rel = workspaceRel(ctx.root, input.path);
-      const offset = input.startLine as number | undefined;
-      const limit = input.endLine != null ? Math.max(0, input.endLine - (input.startLine ?? 1) + 1) : undefined;
+      const window = readWindow(input);
       const result = await createReadToolDefinition(ctx.root).execute(
-        'read', { path: rel, offset, limit }, abortSignal(ctx)
+        'read', { path: rel, offset: window.offset, limit: window.limit }, abortSignal(ctx)
       );
-      return { text: toolText(result) };
+      return { text: rewriteReadHint(toolText(result)) };
     }
     case 'list_dir': {
       const rel = workspaceRel(ctx.root, input.path || '.');
-      const result = await createLsToolDefinition(ctx.root).execute('ls', { path: rel }, abortSignal(ctx));
+      const limit = asNumber(input.limit);
+      const result = await createLsToolDefinition(ctx.root).execute(
+        'ls', limit == null ? { path: rel } : { path: rel, limit }, abortSignal(ctx)
+      );
       return { text: toolText(result) };
     }
     case 'write_file':
@@ -270,6 +280,26 @@ function abortSignal(ctx: ToolContext): AbortSignal {
 
 function toolText(result: { content?: { type?: string; text?: string }[] }): string {
   return (result.content ?? []).map(part => part.text ?? '').join('\n');
+}
+
+function asNumber(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return undefined;
+}
+
+/** `startLine`/`endLine` are the tool contract. `offset` is accepted because older hints used that name. */
+function readWindow(input: any): { offset?: number; limit?: number } {
+  const start = asNumber(input.startLine ?? input.offset);
+  const end = asNumber(input.endLine);
+  if (end == null) return { offset: start, limit: asNumber(input.limit) };
+  const from = start ?? 1;
+  return { offset: start, limit: Math.max(0, end - from + 1) };
+}
+
+/** pi's reader says `offset`; this tool's schema is `startLine`/`endLine`. */
+function rewriteReadHint(text: string): string {
+  return text.replace(/Use offset=(\d+) to continue/g, 'Use startLine=$1 to continue');
 }
 
 /** Workspace-relative path, or throw if it escapes the root. pi resolves the path against cwd. */

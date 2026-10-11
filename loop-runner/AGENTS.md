@@ -116,9 +116,12 @@ Model resolution order: `loop.model` (by family, no fallback) → native `model`
 - `gates/<id>.json`: `Gate` with `kind` (`question` | `approval`), `status`, `resume`, `outcome`, `itemId`
 - `checkpoints/<itemId>.json`: `Checkpoint` with `messages`, `turnResults`, `parkedCallId`, `step`
 - `runs/<date>/<chainId>.jsonl`: audit events; `wake-<date>.jsonl` records wake checks
+- `schedule-state.json`: `{ [agent]: "YYYY-MM-DDTHH:MM" }` UTC minute of the last schedule slot that role already handled. Used to catch up one missed `wakeIf` on start
 - `outbox/`: drafts written by agents and editable by the human
 
-Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`. Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
+Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`, `retry`. Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
+
+`retry` means the item was left in `queue/<agent>/` instead of `_done`. Reasons: `cancelled` (Stop Team, or the run was cancelled as VS Code closed) and `rate-limit`. The rate-limit path pauses the worker, then runs that same item again. A successful Start Team sets globalState `loopRunner.teamStarted`. The next activation starts the team on its own and drains the queue before scheduling. The first start stays a user command so Copilot's consent dialog has a user gesture. Stop Team clears the flag. Pending gates are announced again on every start, including ones that already have `notifiedAt`.
 
 ### Notify
 
@@ -134,7 +137,7 @@ Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `
 | `maxSteps` | 40 |
 | `maxHops` | 5 |
 | Nudges when the model calls no tool | 2, then `stalled` |
-| Pause after a quota or rate-limit error | 10 min |
+| Pause after a quota or rate-limit error | 10 min, item stays queued and is retried |
 | Notify timeout | 30 s |
 
 Secrets are stored in SecretStorage under `loopRunner.secret.<NAME>`, with the list of names kept in globalState `loopRunner.secretNames`.
@@ -144,7 +147,7 @@ Secrets are stored in SecretStorage under `loopRunner.secret.<NAME>`, with the l
 ```bash
 npm install
 npm test          # tsc + test/e2e.js; must print "ALL <n> CHECKS PASSED"
-npm run package   # esbuild bundles src into out/extension.js (so `diff` is inside the vsix), then vsce
+npm run package   # esbuild bundles src into out/extension.js (so `diff` is inside the vsix), then npx @vscode/vsce
 ```
 
 `test/e2e.js` builds a throwaway workspace from the sample `.github/agents` and `.loop/policies` plus stub skills. It then runs the real runner with a mock `vscode` module and a scripted fake model. Every behaviour change needs a check there, especially anything touching the invariants above.

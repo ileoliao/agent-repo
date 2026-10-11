@@ -25,13 +25,12 @@ const OUT = path.join(__dirname, '..', 'out');
 const { loadAgents, loadAllAgents, loadSkills, validateTeam, pickModel } = require(`${OUT}/team.js`);
 const { checkWake } = require(`${OUT}/wake.js`);
 const { parseFrontmatter } = require(`${OUT}/frontmatter.js`);
-const { cronMatches, validateCron } = require(`${OUT}/cron.js`);
+const { cronMatches, validateCron, minuteKey, missedSince } = require(`${OUT}/cron.js`);
 const { loadPolicy, decideCommand, decideWrite, skillScriptRule } = require(`${OUT}/policy.js`);
 const Q = require(`${OUT}/queue.js`);
 const { runItem } = require(`${OUT}/runner.js`);
 const { exec, selectShellConfig, POWERSHELL_ARGS, resolveShellConfig } = require(`${OUT}/exec.js`);
 const { runTool } = require(`${OUT}/tools.js`);
-const { spawnSync } = require('child_process');
 const G = require(`${OUT}/gates.js`);
 
 // ---- fixture workspace: the repo's team config plus stub skills ----
@@ -116,6 +115,13 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
   ok(!cronMatches('*/15 9-21 * * 1-5', new Date(2026, 9, 12, 9, 31)), 'Mon 09:31 does not');
   ok(cronMatches('0 8 * * 0', new Date(2026, 9, 11, 8, 0)) && cronMatches('0 8 * * 7', new Date(2026, 9, 11, 8, 0)), 'Sunday as 0 and 7');
   ok(validateCron('61 * * * *') && validateCron('* * *'), 'bad cron rejected');
+  const missedNow = new Date(2026, 9, 12, 11, 30, 0);
+  const missedLast = new Date(2026, 9, 12, 8, 0, 0);
+  ok(missedSince('0 * * * *', minuteKey(missedLast), missedNow), 'hourly slots between 08:00 and 11:30 were missed');
+  ok(!missedSince('0 * * * *', minuteKey(new Date(2026, 9, 12, 11, 0, 0)), missedNow), 'last hit was the latest slot, so nothing to catch up');
+  ok(!missedSince('0 * * * *', minuteKey(missedNow), missedNow), 'the current minute is not a miss');
+  ok(!missedSince('0 * * * *', undefined, missedNow), 'no stored fire means no catch-up');
+  ok(missedSince('0 0 1 1 *', minuteKey(new Date(missedNow.getTime() - 50 * 60 * 60 * 1000)), missedNow), 'a gap over 48h counts as missed once');
 
   console.log('policy');
   const tl = loadPolicy(W, '.loop/policies/techlead.json');
@@ -333,13 +339,68 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(live.args.includes('-c') && /bash|sh$/.test(live.shell), 'this host runs commands through pi shell config');
   }
 
+  console.log('read_file continuation and list_dir limit');
+  {
+    const lines = Array.from({ length: 2005 }, (_, i) => `L${String(i + 1).padStart(4, '0')}`);
+    fs.writeFileSync(path.join(W, 'long.txt'), lines.join('\n'));
+    const ctx = {
+      root: W, secrets: {}, policy: loadPolicy(W, '.loop/policy.json'), extraAllow: [], token,
+      agent: sen, team, item: { id: 'read2', hop: 0, chainId: 'read2', agent: 'sentinel', task: 't', from: 'user', createdAt: '' },
+      maxHops: 5
+    };
+    const head = await runTool('read_file', { path: 'long.txt' }, ctx);
+    ok(head.text.includes('Use startLine=2001 to continue') && !head.text.includes('Use offset='), 'truncated read tells the model to pass startLine');
+    ok(head.text.includes('L0001') && !head.text.includes('L2001'), 'the first page stops before the continuation line');
+    const tail = await runTool('read_file', { path: 'long.txt', startLine: 2001 }, ctx);
+    ok(tail.text.includes('L2001') && tail.text.includes('L2005') && !tail.text.includes('L2000'), 'startLine continues where the hint said');
+    const alias = await runTool('read_file', { path: 'long.txt', offset: 2001, endLine: 2002 }, ctx);
+    ok(alias.text.includes('L2001') && alias.text.includes('L2002') && !alias.text.includes('L2003'), 'offset is accepted and endLine limits the window');
+    const many = path.join(W, 'many');
+    fs.mkdirSync(many);
+    for (let i = 0; i < 501; i++) fs.writeFileSync(path.join(many, `f${String(i).padStart(3, '0')}.txt`), 'x');
+    const listed = await runTool('list_dir', { path: 'many' }, ctx);
+    ok(listed.text.includes('Use limit=1000'), 'list_dir tells the model to pass limit');
+    const rest = await runTool('list_dir', { path: 'many', limit: 1000 }, ctx);
+    const names = rest.text.split('\n').filter(l => l.endsWith('.txt'));
+    ok(names.length === 501 && !rest.text.includes('limit reached'), 'list_dir limit returns every entry');
+  }
+
+  console.log('tool mode, cancel, and queue retention');
+  {
+    const { keepQueued } = require(`${OUT}/extension.js`);
+    ok(keepQueued('cancelled', 'The operation was cancelled'), 'cancel stays queued');
+    ok(keepQueued('error', 'Blocked: rate limit exceeded'), 'rate limit stays queued');
+    ok(keepQueued('error', 'quota exceeded'), 'quota stays queued');
+    ok(!keepQueued('error', 'boom') && !keepQueued('done', 'ok'), 'other results still complete');
+    const modeSeen = [];
+    const modeModel = {
+      family: 'fake', id: 'mode',
+      async sendRequest(_messages, options) {
+        modeSeen.push(options.toolMode);
+        if (options.toolMode === vscodeMock.LanguageModelChatToolMode.Required) throw new Error('tool mode Required is not supported');
+        return { stream: (async function* () { yield new ToolCallPart('mode-1', 'finish', { status: 'done', summary: 'mode ok' }); })() };
+      }
+    };
+    const modeItem = { id: 'mode-item', agent: 'techlead', task: 't', from: 'user', chainId: 'mode-chain', hop: 0, createdAt: new Date().toISOString() };
+    const modeResult = await runItem(modeItem, { root: W, team, skills, model: modeModel, secrets: {}, policy: loadPolicy(W, '.loop/policy.json'), maxSteps: 5, maxHops: 5, out, token });
+    ok(modeResult.status === 'done' && modeSeen[0] === vscodeMock.LanguageModelChatToolMode.Required && modeSeen[1] === vscodeMock.LanguageModelChatToolMode.Auto, 'Required is retried once as Auto');
+    const cancelToken = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
+    const cancelModel = {
+      family: 'fake', id: 'cancel',
+      async sendRequest() {
+        cancelToken.isCancellationRequested = true;
+        throw new Error('cancelled');
+      }
+    };
+    const cancelItem = { id: 'cancel-item', agent: 'techlead', task: 't', from: 'user', chainId: 'cancel-chain', hop: 0, createdAt: new Date().toISOString() };
+    const cancelResult = await runItem(cancelItem, { root: W, team, skills, model: cancelModel, secrets: {}, policy: loadPolicy(W, '.loop/policy.json'), maxSteps: 5, maxHops: 5, out, token: cancelToken });
+    ok(cancelResult.status === 'cancelled' && keepQueued(cancelResult.status, cancelResult.summary), 'a cancelled request is not a finished error');
+  }
+
   console.log('smoke workspace (examples/smoke)');
   {
-    const py = pythonBin();
     const S = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-smoke-'));
     fs.cpSync(path.join(__dirname, '..', 'examples', 'smoke'), S, { recursive: true });
-    const agentFile = path.join(S, '.github', 'agents', 'smoke.agent.md');
-    fs.writeFileSync(agentFile, fs.readFileSync(agentFile, 'utf8').replace(/\bpython3?\b/g, py));
     const sTeam = loadAgents(S), sSkills = loadSkills(S), sAll = loadAllAgents(S);
     ok(sTeam.size === 1 && validateTeam(sTeam, sSkills, sAll).length === 0, 'smoke team validates clean');
     const smoke = sTeam.get('smoke');
@@ -352,7 +413,8 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(!(await checkWake(S, smoke, sPolicy, sAllow, {})).wake, 'consumed trigger does not fire twice');
 
     // Drive the role's steps through the real runner with a scripted model.
-    const sendCmd = `${py} .github/skills/smoke-probe/scripts/send.py .loop/outbox/smoke/reply.md`;
+    ok(smoke.wakeIf.includes('scripts/py.js'), 'smoke wakeIf selects python3/python/py itself');
+    const sendCmd = 'node .github/skills/smoke-probe/scripts/py.js .github/skills/smoke-probe/scripts/send.py .loop/outbox/smoke/reply.md';
     const steps = [
       [['write_file', { path: '.loop/outbox/smoke/reply.md', content: 'Reply: hello from JL' }]],
       [['ask_human', { question: 'Smoke test: which colour should the reply mention?', context: 'smoke', options: ['blue', 'green'] }]],
@@ -390,10 +452,3 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });
 
-function pythonBin() {
-  for (const bin of ['python3', 'python', 'py']) {
-    const r = spawnSync(bin, ['--version'], { stdio: 'ignore' });
-    if (!r.error && r.status === 0) return bin;
-  }
-  return 'python3';
-}

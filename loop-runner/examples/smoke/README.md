@@ -4,11 +4,9 @@
 
 ## 0. 准备
 
-- 在终端运行 `python3 --version`（没有的话试 `python --version`）。
-  - 示例里的探测命令写的是 `python`。只有 `python3` 能用时，把 `.github/agents/smoke.agent.md` 里的 `python` 换成 `python3`。自动化测试会在 `python3`、`python`、`py` 里选一个能用的。
-  - 如果只有 `py` 能用（Windows 常见），把同样的 `python` 改成 `py`。
-  - Windows 上如果 `python` 打开的是应用商店，说明它是商店的占位程序，用 `py`。
-- 在 VS Code 里**单独打开本文件夹**作为工作区：文件 → 打开文件夹 → `examples/smoke`。
+- 本机需要 `python3`、`python`、`py` 里的任意一个。探测和发送都走 `scripts/py.js`，它会按这个顺序自己挑，不用改角色文件。
+  - Windows 上如果 `python` 打开的是应用商店占位程序，装好真正的 Python，或确认 `py` 能跑。包装脚本会在 `python` 失败后继续试 `py`。
+- 在 VS Code 里**单独打开本文件夹**作为工作区。这个文件夹在源码仓库的 `examples/smoke`，不在安装用的 vsix 里。克隆仓库后：文件 → 打开文件夹 → `examples/smoke`。
 
 ## 1. 安装与模型（最关键的一步）
 
@@ -22,8 +20,9 @@
 1. 运行 `Loop Runner: Reload & Validate Team`，应输出 `Team reloaded OK`
 2. 运行 `Loop Runner: Set Secret`，名称填 `SMOKE_TOKEN`，值随便填，比如 `abc12345`
 3. 运行 `Loop Runner: Start Team`
-   - 首次会弹出 Copilot 模型授权，选允许
+   - 首次会弹出 Copilot 模型授权，选允许。这一步必须由人点，扩展激活时不会自己弹授权
    - 状态栏出现 `Loop`
+   - 之后关掉 VS Code 再打开这个文件夹，团队会自动接着跑，并先处理队列里没做完的项。点 `Stop Team` 会取消这次自动启动
 
 ## 3. 触发
 
@@ -58,7 +57,7 @@
 | 现象 | 原因与处理 |
 |---|---|
 | Reload 报 skill 找不到 | 打开的文件夹不对，必须是 `examples/smoke` 本身 |
-| 弹出 "wakeIf check is failing" | 探测命令跑不起来，多半是 `python` 不可用，改成 `py` |
+| 弹出 "wakeIf check is failing" | `python3`、`python`、`py` 都不可用，或 `node` 不在 PATH 里 |
 | `no Copilot model matches` | 在设置 `loopRunner.modelFamily` 里填一个 List Available Models 列出的 family |
 | 一直没反应 | 运行 `Loop Runner: Show Team Status`，确认 running 为 true；cron 每分钟才检查一次 |
 
