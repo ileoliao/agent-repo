@@ -24,7 +24,9 @@ Do not add features. In particular, do not add:
 
 Bug fixes, security fixes and test improvements are welcome. If a change seems to need a new feature, stop and ask the human.
 
-**Approved additions (2026-10-11): the console.** The owner approved a native console on top of the existing surfaces: the status bar line (running agent, step, next wake), the sidebar "Agents" group (state, next run, last wake check, opens the agent file), "Recent runs" with the files each run wrote, and "Open Latest Result" reading `end.outputs`. It stays native (no webview, no chat, no notifications). The one data addition is the optional `outputs` field on the `end` audit event. Setup checks and a sample-agent command are not approved yet.
+**Approved additions (2026-10-11): the console.** The owner approved a native console on top of the existing surfaces: the status bar line (running agent, step, next wake), the sidebar "Agents" group (state, next run, last wake check, opens the agent file), "Recent runs" with the files each run wrote, and "Open Latest Result" reading `end.outputs`. It stays native (no chat, no notifications). The one data addition is the optional `outputs` field on the `end` audit event. Setup checks and a sample-agent command are not approved yet.
+
+**Approved addition (2026-10-11): the Loop Console webview.** After the owner found the native surfaces too hard to read, a single webview page (`Loop Runner: Open Console`, also the status bar item) shows what needs you (answer, approve with the exact command shown, reject), the agents, and a step timeline with output files for each recent run. It only reads `.loop/` and calls the existing gate functions; no new data contract, no new runtime behaviour.
 
 ## Division of labour (the core design rule)
 
@@ -53,6 +55,8 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `outbox.ts` | `latestOutput`: newest file under `.loop/outbox/` (fallback for Open Latest Result). Pure, no `vscode` | no |
 | `runs.ts` | `recentRuns` and `outputsFrom`: read-only summaries of `.loop/runs/*.jsonl`. Pure, no `vscode` | no |
 | `status.ts` | `agentRows` and `nextWake`: team state, next scheduled wake, last wake check. Pure, no `vscode` | no |
+| `console.ts` | `consoleModel`, `stepsOf`, `renderBody`/`renderPage`: the console's data and HTML (every value escaped, one nonce script). Pure, no `vscode` | no |
+| `consoleView.ts` | Webview panel host: forwards page actions to the existing commands and gate functions; opens only files inside the workspace | yes |
 | `extension.ts` | Glue: `TeamService` (tick, schedule, single worker), commands, notifications, secrets | yes |
 
 **Rule:** keep `vscode` out of every module marked "no". The test suite loads those modules without VS Code; `runner.ts` is tested through a mock `vscode` module.
