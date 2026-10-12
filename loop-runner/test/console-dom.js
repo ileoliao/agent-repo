@@ -59,7 +59,7 @@ ok(!threw, 'an id with a quote does not throw');
     { kind: 'steps', ts: now, steps: [{ step: 1, kind: 'tool', title: 'run_command · ls', detail: '[exit 0]', ok: true }, { step: 2, kind: 'tool', title: 'read_file · x', detail: 'REFUSED', ok: false }] }
   ];
   const chatModel = (selected, events = evts, gates = []) => ({ ...base, tab: 'chat', pending: gates,
-    chat: { agents: [{ name: 'a', state: 'running', pendingMessages: 0, needsYou: 0 }, { name: 'b', state: 'idle', pendingMessages: 0, needsYou: 0 }], selected, events, hidden: 0, gates } });
+    chat: { agents: [{ name: 'a', description: 'agent a', state: 'running', avatar: 'working', line: 'run_command · ls', pendingMessages: 0, needsYou: 0 }, { name: 'b', description: 'agent b', state: 'idle', avatar: 'idle', line: 'agent b', pendingMessages: 0, needsYou: 0 }], selected, events, hidden: 0, gates } });
   const sent2 = [];
   const dom2 = new JSDOM(renderPage(chatModel('a'), 'n', 'x').replace(/<meta http[^>]*>/, '').replace('<script nonce="n">', '<script>'), { runScripts: 'dangerously', pretendToBeVisual: true,
     beforeParse(w2) {
@@ -114,6 +114,22 @@ ok(!threw, 'an id with a quote does not throw');
   ok(d2.querySelector('[data-thread]').scrollTop === 100, 'but does not pull someone who scrolled up to read earlier messages');
   post2(renderBody(chatModel('b', [{ kind: 'agent', ts: now, text: 'b here', step: 1 }])));
   ok(d2.querySelector('[data-thread="b"]').scrollTop === 1000, 'a different conversation starts at its newest message');
+  // writing to another agent, stopping, and sending from anywhere
+  post2(renderBody(chatModel('a')));
+  const cs = () => sent2.filter(m => m.type === 'chatSend');
+  box().value = '@b please look at the backlog';
+  d2.querySelector('[data-chat-send]').click();
+  ok(cs().at(-1).agent === 'b' && cs().at(-1).text === 'please look at the backlog' && sent2.at(-1).type === 'view' && sent2.at(-1).agent === 'b', '@name writes to that agent instead, and opens its conversation');
+  box().value = '@nobody hello there';
+  d2.querySelector('[data-chat-send]').click();
+  ok(cs().at(-1).agent === 'a' && cs().at(-1).text === '@nobody hello there', 'an @name that is not an agent is just text for this one');
+  box().value = '/stop';
+  d2.querySelector('[data-chat-send]').click();
+  ok(sent2.at(-1).type === 'chatCancel' && sent2.at(-1).agent === 'a' && box().value === '', '/stop ends the current run, like telling it to stop');
+  box().value = 'sent from the keyboard shortcut';
+  d2.body.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
+  ok(cs().at(-1).text === 'sent from the keyboard shortcut', 'Cmd/Ctrl+Enter sends from anywhere on the page');
+  ok(d2.querySelector('.composer').classList.contains('running') && d2.querySelector('.roster-row.on .av.working') && d2.querySelector('.roster-row[data-agent="b"] .av.idle'), 'the composer, and each avatar, show what the agent is doing');
   // an agent's question sits in the thread and can be answered there
   const q = { id: 'gq', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 'Which?', body: 'two', options: ['red', 'blue'], files: [], resume: true, status: 'pending', createdAt: now, previews: [] };
   post2(renderBody(chatModel('a', evts, [q])));

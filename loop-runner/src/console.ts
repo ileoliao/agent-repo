@@ -5,7 +5,7 @@ import * as path from 'path';
 import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
 import { brief, clip, firstLine } from './textutil';
-import { ChatState, ThreadEvent, Tone, buildThread, chatState } from './thread';
+import { AvatarState, ChatState, ThreadEvent, Tone, buildThread, glance } from './thread';
 
 /** One line of a run's story: what the agent did at a step. */
 export interface Step {
@@ -35,7 +35,7 @@ function previewsOf(root: string, g: Gate): GateView['previews'] {
 }
 
 export interface ChatModel {
-  agents: { name: string; state: ChatState; pendingMessages: number; needsYou: number }[];
+  agents: { name: string; description: string; state: ChatState; avatar: AvatarState; line: string; at?: string; pendingMessages: number; needsYou: number }[];
   selected?: string;
   events: ThreadEvent[];
   /** Earlier events that are not shown. */
@@ -95,7 +95,7 @@ export function consoleModel(root: string, state: { running: boolean; active?: s
   const pending = listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) }));
   let chat: ChatModel | undefined;
   if (tab === 'chat') {
-    const rows = agents.map(a => ({ name: a.name, ...chatState(root, a.name, state.active) }));
+    const rows = agents.map(a => ({ name: a.name, description: a.description, ...glance(root, a.name, a.description, state.active, now) }));
     const selected = rows.find(r => r.name === state.agent)?.name ?? rows.find(r => r.needsYou)?.name ?? rows.find(r => r.state === 'running')?.name ?? rows[0]?.name;
     const th = selected ? buildThread(root, selected) : { events: [], hidden: 0 };
     chat = { agents: rows, selected, events: th.events, hidden: th.hidden, gates: pending.filter(g => g.agent === selected) };
@@ -161,6 +161,7 @@ const ICONS: Record<string, string> = {
   bot: 'M4 6h8v6H4V6zM8 6V3.5M6.2 8.8v.4M9.8 8.8v.4',
   chevron: 'M6 4l4 4-4 4',
   send: 'M2.5 8l11-5-4 10-2.5-4L2.5 8z',
+  up: 'M8 13V3M4 7l4-4 4 4',
   copy: 'M5.5 5.5h7v8h-7v-8zM3.5 10.5v-8h7',
   dot: 'M8 6a2 2 0 100 4 2 2 0 000-4z'
 };
@@ -255,7 +256,7 @@ function threadEvent(e: ThreadEvent, agent: string): string {
     return `<div class="msg human"><div class="bubble answer ${e.tone}"><div class="mkind">You answered “${esc(clip(e.title, 80))}”</div><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}</div></div></div>`;
   }
   if (e.kind === 'agent') {
-    return `<div class="msg agent"><div class="avatar">${icon('bot')}</div><div class="bubble"><div class="mname">${esc(agent)}</div><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}${e.step ? ` · step ${e.step}` : ''}</div></div></div>`;
+    return `<div class="msg agent">${avatar(agent, 'idle', 28)}<div class="bubble"><div class="mname">${esc(agent)}</div><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}${e.step ? ` · step ${e.step}` : ''}</div></div></div>`;
   }
   if (e.kind === 'steps') {
     const failed = e.steps.filter(s => !s.ok).length;
@@ -277,22 +278,44 @@ function composerHint(name: string, state: ChatState, running: boolean): string 
 
 const STATE_LABEL: Record<ChatState, string> = { running: 'working', waiting: 'waiting for you', queued: 'queued', idle: 'idle' };
 
+const hash = (s: string) => { let h = 2166136261; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
+const AVATAR_TITLE: Record<AvatarState, string> = { idle: 'idle', working: 'working', waiting: 'waiting for you', blocked: 'blocked', done: 'finished' };
+
+/**
+ * A small geometric face, different for every agent (colour, shape, eyes), so a roster is scannable at a glance.
+ * The state is carried by motion around it, not by a separate status light: idle is still, working turns, waiting pulses,
+ * blocked is red, done has a check.
+ */
+function avatar(name: string, state: AvatarState, size = 38): string {
+  const h = hash(name), hue = h % 360, shape = (h >> 9) % 3, eyes = (h >> 12) % 3;
+  const body = shape === 0 ? '<circle cx="20" cy="20" r="17"/>' : shape === 1 ? '<rect x="4" y="4" width="32" height="32" rx="11"/>' : '<rect x="7" y="7" width="26" height="26" rx="6" transform="rotate(45 20 20)"/>';
+  const eye = (cx: number) => eyes === 2
+    ? `<ellipse cx="${cx}" cy="19" rx="3.2" ry="4.6" fill="#fff"/><circle class="pupil" cx="${cx}" cy="20" r="1.8" fill="#222"/>`
+    : `<circle cx="${cx}" cy="19" r="${eyes === 0 ? 4.2 : 3.4}" fill="#fff"/><circle class="pupil" cx="${cx}" cy="19.5" r="${eyes === 0 ? 2 : 1.7}" fill="#222"/>`;
+  return `<span class="av ${state}" style="--h:${hue};--sz:${size}px" aria-hidden="true"><svg viewBox="0 0 40 40" width="${size}" height="${size}"><g fill="hsl(${hue} 55% 42%)">${body}</g>${eye(14)}${eye(26)}</svg></span>`;
+}
+
 function renderChat(m: ConsoleModel): string {
   const c = m.chat!;
   if (!c.agents.length) { return empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.'); }
   const sel = c.agents.find(a => a.name === c.selected)!;
-  const list = c.agents.map(a => `<button class="chat-agent ${a.name === sel.name ? 'on' : ''}" data-agent="${esc(a.name)}" aria-pressed="${a.name === sel.name}"><span class="dot ${a.state}" aria-hidden="true"></span><span class="grow"><span class="an">${esc(a.name)}</span><span class="muted as">${esc(STATE_LABEL[a.state])}</span></span>${a.needsYou ? `<span class="count warn" title="needs you">${a.needsYou}</span>` : ''}</button>`).join('');
+  const list = c.agents.map(a => `<button class="roster-row ${a.name === sel.name ? 'on' : ''}" data-agent="${esc(a.name)}" aria-pressed="${a.name === sel.name}" title="${esc(a.name)} is ${AVATAR_TITLE[a.avatar]}: ${esc(a.line)}">${avatar(a.name, a.avatar)}`
+    + `<span class="rr-main"><span class="rr-top"><span class="rr-name">${esc(a.name)}</span>${a.at ? `<span class="muted rr-time">${stamp(a.at, whenShort(a.at))}</span>` : ''}</span><span class="rr-line ${a.avatar === 'waiting' ? 'warn' : a.avatar === 'blocked' ? 'bad' : 'muted'}">${esc(a.line)}</span></span>`
+    + `${a.needsYou ? `<span class="count warn" title="needs you">${a.needsYou}</span>` : a.pendingMessages ? '<span class="unread" title="your message has not been read yet"></span>' : ''}</button>`).join('');
   const events = c.events.map(e => threadEvent(e, sel.name)).join('');
   const gates = c.gates.length ? `<div class="thread-gates">${c.gates.map(gateCard).join('')}</div>` : '';
   const empty0 = !c.events.length && !c.gates.length ? empty('send', `Nothing yet with ${sel.name}`, 'Say what you want below. If it is idle, this starts a run; if it is working, it will read it at its next step.') : '';
-  const cancel = sel.state === 'running' ? btn('Cancel this run', `data-chat-cancel="${esc(sel.name)}"`, 'secondary', 'stop') : '';
+  const running = sel.state === 'running';
   return `<div class="chat">
-    <nav class="chat-agents" aria-label="Agents">${list}</nav>
+    <nav class="roster" aria-label="Agents">${list}</nav>
     <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
-      <header class="chat-head"><b>${esc(sel.name)}</b><span class="chip ${sel.state === 'running' ? 'info' : sel.state === 'waiting' ? 'warn' : 'mute'}">${esc(STATE_LABEL[sel.state])}</span><span class="grow"></span>${cancel}</header>
+      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(STATE_LABEL[sel.state])} · ${esc(sel.line)}</div></div></header>
       <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${gates}</div>
-      <div class="composer"><div class="muted hint">${esc(composerHint(sel.name, sel.state, m.running))}</div>
-        <div class="row"><textarea rows="2" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}" aria-label="Message ${esc(sel.name)}" placeholder="Message ${esc(sel.name)}…  (Enter to send, Shift+Enter for a new line)"></textarea>${btn('Send', `data-chat-send="${esc(sel.name)}"`, 'primary', 'send')}</div></div>
+      <div class="composer ${running ? 'running' : ''}"><div class="muted hint">${esc(composerHint(sel.name, sel.state, m.running))}</div>
+        <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}" aria-label="Message ${esc(sel.name)}" placeholder="Message ${esc(sel.name)}…"></textarea>`
+    + `<button class="roundbtn stop" data-chat-cancel="${esc(sel.name)}" title="Stop this run" aria-label="Stop this run">${icon('stop')}<span class="stoplabel">Stop</span></button>`
+    + `<button class="roundbtn send" data-chat-send="${esc(sel.name)}" title="Send" aria-label="Send">${icon('up')}</button></div>
+        <div class="muted tiny">Enter sends · Shift+Enter new line · @name writes to another agent · /stop ends the current run</div></div>
     </section></div>`;
 }
 
@@ -392,28 +415,48 @@ a{color:var(--vscode-textLink-foreground)}
 .tabs{display:flex;gap:4px;margin:12px 0 0;border-bottom:1px solid var(--vscode-panel-border)}
 .tab{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:transparent;color:var(--vscode-descriptionForeground);border:0;border-bottom:2px solid transparent;font:inherit;cursor:pointer}
 .tab.on{color:var(--vscode-foreground);border-bottom-color:var(--vscode-focusBorder)}.tab:focus-visible{outline:1px solid var(--vscode-focusBorder)}
-.chat{display:grid;grid-template-columns:200px minmax(0,1fr);gap:16px;margin-top:12px;height:calc(100vh - 170px);min-height:380px}
-@media (max-width:700px){.chat{grid-template-columns:1fr;height:auto}}
-.chat-agents{display:flex;flex-direction:column;gap:4px;overflow:auto}
-.chat-agent{display:flex;align-items:center;gap:8px;padding:8px 10px;text-align:left;background:transparent;color:var(--vscode-foreground);border:1px solid transparent;border-radius:var(--r);font:inherit;cursor:pointer}
-.chat-agent:hover{background:var(--vscode-list-hoverBackground)}.chat-agent.on{background:var(--vscode-list-activeSelectionBackground,var(--vscode-list-hoverBackground));border-color:var(--cab)}
-.chat-agent:focus-visible{outline:1px solid var(--vscode-focusBorder)}.chat-agent .an{display:block;font-weight:600}.chat-agent .as{display:block;font-size:.85em}
-.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--vscode-descriptionForeground)}.dot.running{background:var(--info)}.dot.waiting{background:var(--warn)}.dot.queued{background:var(--vscode-descriptionForeground);opacity:.7}.dot.idle{background:transparent;border:1px solid var(--vscode-descriptionForeground)}
-.chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background,transparent)}
-.chat-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--vscode-panel-border)}
-.thread{flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}.center{text-align:center}
-.msg{display:flex;gap:8px;max-width:100%}.msg.human{justify-content:flex-end}.msg.agent{justify-content:flex-start}
-.avatar{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);flex:none}
-.bubble{max-width:78%;padding:8px 12px;border-radius:12px;border:1px solid var(--vscode-panel-border);overflow-wrap:anywhere}
-.human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:transparent;border-bottom-right-radius:3px}
-.human .bubble .mmeta{color:inherit;opacity:.8}.human .bubble.answer{background:var(--vscode-editor-background);color:var(--vscode-foreground);border-color:var(--cab)}
-.agent .bubble{background:var(--vscode-editor-background);border-bottom-left-radius:3px}
-.mtext{white-space:pre-wrap}.mname{font-weight:600;margin-bottom:2px}.mkind{font-size:.85em;opacity:.8;margin-bottom:2px}.mmeta{font-size:.8em;color:var(--vscode-descriptionForeground);margin-top:4px}
-.steps{display:block;width:100%;border:1px dashed var(--vscode-panel-border);border-radius:var(--r);padding:4px 10px;background:transparent}.steps>summary{padding:2px 0}.steps .timeline{margin:6px 0 4px}
+.chat{display:grid;grid-template-columns:280px minmax(0,1fr);gap:0;margin-top:12px;height:calc(100vh - 170px);min-height:400px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);overflow:hidden}
+@media (max-width:760px){.chat{grid-template-columns:1fr;height:auto}.roster{max-height:220px;border-right:0;border-bottom:1px solid var(--vscode-panel-border)}}
+.roster{display:flex;flex-direction:column;overflow:auto;background:var(--vscode-sideBar-background,transparent);border-right:1px solid var(--vscode-panel-border)}
+.roster-row{display:flex;align-items:center;gap:12px;padding:10px 14px;text-align:left;background:transparent;color:var(--vscode-foreground);border:0;border-bottom:1px solid var(--vscode-panel-border);font:inherit;cursor:pointer;width:100%}
+.roster-row:hover{background:var(--vscode-list-hoverBackground)}.roster-row.on{background:var(--vscode-list-activeSelectionBackground,var(--vscode-list-hoverBackground))}
+.roster-row:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
+.rr-main{display:flex;flex-direction:column;min-width:0;flex:1;gap:2px}.rr-top{display:flex;align-items:baseline;gap:8px}.rr-name{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rr-time{font-size:.8em;white-space:nowrap}
+.rr-line{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rr-line.warn{color:var(--warn)}.rr-line.bad{color:var(--bad)}
+.unread{width:9px;height:9px;border-radius:50%;background:var(--vscode-focusBorder);flex:none}
+.av{position:relative;display:inline-flex;flex:none;width:var(--sz);height:var(--sz);border-radius:50%}
+.av::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:2px solid transparent;pointer-events:none}
+.av.working::after{border-color:var(--info) transparent var(--info) transparent;animation:sp 1.4s linear infinite}
+.av.waiting::after{border-color:var(--warn);animation:pulse 1.4s ease-in-out infinite}
+.av.blocked::after{border-color:var(--bad)}
+.av.done::after{border-color:var(--ok)}.av.done::before{content:"✓";position:absolute;right:-4px;bottom:-4px;width:15px;height:15px;border-radius:50%;background:var(--ok);color:var(--vscode-editor-background);font-size:10px;font-weight:700;line-height:15px;text-align:center;z-index:1}
+.av.working .pupil{animation:look 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(1.08)}}@keyframes look{0%,100%{transform:translateX(-1px)}50%{transform:translateX(1px)}}
+@media (prefers-reduced-motion:reduce){.av.working::after,.av.waiting::after,.av.working .pupil{animation:none}}
+.chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--vscode-editor-background)}
+.chat-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--vscode-panel-border)}.ch-name{font-weight:600;font-size:1.05em}.ch-sub{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thread{flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}.center{text-align:center}
+.msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.agent{justify-content:flex-start;align-items:flex-start}
+.bubble{max-width:78%;padding:8px 14px;border-radius:18px;overflow-wrap:anywhere}
+.human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-bottom-right-radius:5px}
+.human .bubble .mmeta{color:inherit;opacity:.8}.human .bubble.answer{background:var(--vscode-input-background);color:var(--vscode-foreground);border:1px solid var(--cab)}
+.agent .bubble{background:var(--vscode-input-background);border-bottom-left-radius:5px}
+.mtext{white-space:pre-wrap}.mname{font-weight:600;margin-bottom:2px}.mkind{font-size:.85em;opacity:.8;margin-bottom:2px}.mmeta{font-size:.78em;color:var(--vscode-descriptionForeground);margin-top:3px}
+.steps{display:block;width:100%;border:0;border-left:2px solid var(--vscode-panel-border);border-radius:0;padding:2px 10px;margin-left:38px;max-width:calc(100% - 38px);background:transparent}.steps>summary{padding:2px 0}.steps .timeline{margin:6px 0 4px}
 .steps-sum{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}time{font-weight:400}
-.sline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;font-size:.92em;color:var(--vscode-descriptionForeground)}
+.sline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;font-size:.9em;color:var(--vscode-descriptionForeground)}
 .thread-gates{width:100%;margin-top:6px}.thread-gates .card{margin-bottom:8px}
-.composer{padding:10px 14px;border-top:1px solid var(--vscode-panel-border)}.composer .hint{font-size:.88em;margin-bottom:6px}.composer textarea{flex:1}`;
+.composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.75em;margin:6px 6px 0}
+.inputbar{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:24px;background:var(--vscode-input-background);padding:6px 8px 6px 16px}
+.inputbar:focus-within{border-color:var(--vscode-focusBorder)}
+.inputbar textarea{flex:1;border:0;background:transparent;color:var(--vscode-input-foreground);resize:none;padding:6px 0;max-height:160px;outline:none;font:inherit}
+.roundbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:34px;height:34px;border-radius:17px;border:1px solid var(--cb);cursor:pointer;font:inherit;padding:0 8px;flex:none}
+.roundbtn.send{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.roundbtn.send:hover{background:var(--vscode-button-hoverBackground)}
+.roundbtn.stop{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}.roundbtn.stop .stoplabel{display:none}.roundbtn.stop[data-armed] .stoplabel{display:inline}
+.roundbtn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+.composer:not(.running) .stop,.composer.running textarea:not(:placeholder-shown) ~ .stop{display:none}
+.composer.running textarea:placeholder-shown ~ .send{display:none}
+`;
 
 const SCRIPT = `
 const vs = acquireVsCodeApi(); const app = document.getElementById('app');
@@ -448,14 +491,31 @@ function scan() {
   if (empty) empty.classList.toggle('hidden', !document.querySelectorAll('details.run').length || [...document.querySelectorAll('details.run')].some(d => !d.classList.contains('hidden')));
   const sel = document.querySelector('[data-filter]'); if (sel) sel.value = filter;
 }
+function autosize(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; }
+document.addEventListener('input', e => { if (e.target.matches && e.target.matches('textarea[data-chat-input]')) autosize(e.target); });
 function sendChat(agent) {
   const ta = document.querySelector('[data-chat-input="' + CSS.escape(agent) + '"]');
-  const text = ta ? ta.value.trim() : '';
+  let text = ta ? ta.value.trim() : '';
   if (!text) return;
-  vs.postMessage({ type:'chatSend', agent, text });
-  ta.value = '';
+  // /stop ends the current run, like telling it to stop.
+  if (/^\\/stop$/i.test(text)) { ta.value = ''; autosize(ta); vs.postMessage({ type:'chatCancel', agent }); return; }
+  // @name writes to another agent, and takes you to that conversation.
+  const known = new Set([...document.querySelectorAll('[data-agent]')].map(x => x.dataset.agent));
+  const at = /^@([\\w.-]+)\\s+([\\s\\S]+)$/.exec(text);
+  let target = agent;
+  if (at && known.has(at[1])) { target = at[1]; text = at[2].trim(); }
+  vs.postMessage({ type:'chatSend', agent: target, text });
+  ta.value = ''; autosize(ta);
+  if (target !== agent) vs.postMessage({ type:'view', tab:'chat', agent: target });
 }
 // Enter sends, Shift+Enter is a new line; Enter that confirms an input-method composition (Chinese, Japanese) must not send.
+// Cmd/Ctrl+Enter sends from anywhere on the page.
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
+    const ta = document.querySelector('textarea[data-chat-input]');
+    if (ta && ta.value.trim()) { e.preventDefault(); sendChat(ta.dataset.chatInput); }
+  }
+});
 document.addEventListener('keydown', e => {
   const t = e.target;
   if (t && t.matches && t.matches('textarea[data-chat-input]') && e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendChat(t.dataset.chatInput); }
@@ -498,7 +558,7 @@ window.addEventListener('message', ev => {
   const topBefore = th ? th.scrollTop : 0, whose = th ? th.dataset.thread : '';
   app.innerHTML = ev.data.html;
   document.querySelectorAll('details[data-k]').forEach(d => { if (closed.has(d.dataset.k)) d.open = false; else if (open.has(d.dataset.k)) d.open = true; });
-  document.querySelectorAll('textarea[data-input]').forEach(t => { if (typed[t.dataset.input]) t.value = typed[t.dataset.input]; });
+  document.querySelectorAll('textarea[data-input]').forEach(t => { if (typed[t.dataset.input]) t.value = typed[t.dataset.input]; if (t.dataset.chatInput) autosize(t); });
   scan();
   if (fk) { const t = document.querySelector('[data-' + fk[0].replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + '="' + CSS.escape(fk[1]) + '"]'); if (t) { t.focus(); if (sel != null && t.setSelectionRange) t.setSelectionRange(sel, sel); } }
   window.scrollTo(0, y);

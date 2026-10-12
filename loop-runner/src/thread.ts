@@ -192,3 +192,64 @@ export function conversationContext(root: string, agent: string, max = 6): strin
       : e.kind === 'answer' ? [`You, on "${clip(e.title, 60)}": ${clip(e.text, 200)}`] : []);
   return lines.length ? `Conversation so far (oldest first):\n${lines.slice(-max).join('\n')}` : '';
 }
+
+// ---- the roster: one glance at each agent ----
+
+/** How an agent looks in the roster. Motion carries it: idle is still, working turns, waiting pulses, blocked is red, done is a check. */
+export type AvatarState = 'idle' | 'working' | 'waiting' | 'blocked' | 'done';
+
+export interface Glance {
+  state: ChatState;
+  avatar: AvatarState;
+  /** One line about what it is doing or did last: the roster's progress line, and the tooltip. */
+  line: string;
+  /** When that line happened. */
+  at?: string;
+  needsYou: number;
+  pendingMessages: number;
+}
+
+const BAD_END = new Set(['blocked', 'error', 'stalled', 'max_steps']);
+const HOUR = 3600_000;
+
+export function glance(root: string, agent: string, description: string, active?: string, now = new Date()): Glance {
+  const cs = chatState(root, agent, active);
+  // The newest few audit files are enough to know what it is doing or did last.
+  const mine = readAudit(root, 2).slice(-8).flatMap(c => c.events.filter(e => e.agent === agent));
+  const lastStart = mine.map(e => e.type).lastIndexOf('start');
+  const sinceStart = lastStart >= 0 ? mine.slice(lastStart) : [];
+  const lastTool = [...sinceStart].reverse().find(e => e.type === 'tool' && e.name !== 'finish');
+  const lastEnd = [...mine].reverse().find(e => e.type === 'end');
+  let line = clip(description, 90) || 'No activity yet';
+  let at: string | undefined;
+  let avatar: AvatarState = 'idle';
+  if (cs.state === 'running') {
+    avatar = 'working';
+    line = lastTool ? `${lastTool.name} · ${brief(lastTool.input) || '…'}` : 'Starting…';
+    at = lastTool?.ts ?? sinceStart[0]?.ts;
+  } else if (cs.state === 'waiting') {
+    avatar = 'waiting';
+    const g = listGates(root).find(x => x.agent === agent && x.status === 'pending');
+    line = g ? `Needs you: ${clip(g.title, 70)}` : 'Waiting for you';
+    at = g?.createdAt;
+  } else if (cs.state === 'queued') {
+    const q = queuedItems(root, agent)[0];
+    line = `Queued: ${clip(firstLine(q?.task ?? ''), 70)}`;
+    at = q?.createdAt;
+  } else {
+    // How the last run ended decides the face, whatever the line says.
+    if (lastEnd) {
+      const age = now.getTime() - Date.parse(lastEnd.ts);
+      if (lastEnd.status === 'done' && age < HOUR) { avatar = 'done'; }
+      else if (BAD_END.has(String(lastEnd.status)) && age < 24 * HOUR) { avatar = 'blocked'; }
+    }
+    if (cs.pendingMessages > 0) {
+      line = 'Your message is waiting to be read';
+    } else if (lastEnd) {
+      const [label] = END_LABEL[String(lastEnd.status)] ?? [String(lastEnd.status)];
+      line = `${label}${lastEnd.summary ? `: ${clip(firstLine(String(lastEnd.summary)), 70)}` : ''}`;
+      at = lastEnd.ts;
+    }
+  }
+  return { state: cs.state, avatar, line, at, needsYou: cs.needsYou, pendingMessages: cs.pendingMessages };
+}

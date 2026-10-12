@@ -6,6 +6,7 @@ import { listGates } from './queue';
 
 export interface AgentRow {
   name: string;
+  description: string;
   /** running: this agent holds the worker; waiting: a gate of its own is open; idle: neither. */
   state: 'running' | 'waiting' | 'idle';
   model?: string;
@@ -44,6 +45,7 @@ export function agentRows(root: string, activeAgent?: string, now = new Date()):
   const gates = listGates(root).filter(g => g.status === 'pending');
   return [...loadAllAgents(root).values()].filter(a => a.inLoop).map(a => ({
     name: a.name,
+    description: a.description,
     state: a.name === activeAgent ? 'running' : gates.some(g => g.agent === a.name) ? 'waiting' : 'idle',
     model: a.models[0] ?? a.modelFamily,
     schedule: a.schedule,
