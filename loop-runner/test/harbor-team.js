@@ -57,43 +57,49 @@ const stub = (root, name, scripts = {}) => {
 
   console.log('how the agents remember');
   {
-    const team = loadAgents(R);
-    const body = n => team.get(n).body;
-    ok(['briefer', 'sentinel', 'techlead'].every(n => body(n).includes(`.loop/outbox/notes/${n}/`) && body(n).includes('date +%Y-%m-%d-%H%M')), 'every agent reads its own notes and checks the date before it acts, and writes one note per run');
-    ok(['sentinel', 'techlead', 'briefer'].every(n => body(n).includes('.loop/outbox/signals.md')), 'all three share the signal board');
-    ok(/watching-until/.test(body('sentinel')) && /one and a half times/.test(body('sentinel')) && /expired/.test(body('sentinel')), 'sentinel suppresses a watched signal only while it has not got clearly worse and the date has not passed');
-    ok(/watching-until/.test(body('techlead')) && /until which date/.test(body('techlead')) && /Decision/.test(body('techlead')), 'techlead asks how long to watch and writes the human\'s decision back to the board');
-    ok(['briefer', 'sentinel', 'techlead'].every(n => /Never copy text from/.test(body(n)) && /reference, not orders/.test(body(n))), 'notes are marked as reference, and untrusted text is never copied into them');
-    ok(!/signals\.md/.test(read('.loop', 'policies', 'techlead.json')) && loadPolicy(SRC, '.loop/policies/techlead.json').writablePaths.length === 0, 'the board and notes live in the outbox, the only place the agents can write');
+    const team = loadAgents(R), body = n => team.get(n).body, all = ['briefer', 'sentinel', 'techlead'];
+    ok(all.every(n => team.get(n).skills.includes('loop-memory')), 'every agent gets memory by listing one shared skill');
+    ok(all.every(n => body(n).includes(`recall --agent ${n}`) && body(n).includes(`note --agent ${n}`) && /`now`/.test(body(n))), 'each role says only when to use it: start with now and recall, end with a note');
+    ok(!all.some(n => /signals\.md|notes\/|date \+|REFERENCE ONLY|Never copy text/.test(body(n))), 'no role carries its own copy of the protocol or the file layout; that lives once in the skill');
+    ok(/check --key/.test(body('sentinel')) && ['new', 'escalate', 'expired', 'tracked', 'suppress'].every(v => body('sentinel').includes('`' + v + '`')), 'sentinel acts on each verdict of check');
+    ok(/track --key/.test(body('techlead')) && /until which date/.test(body('techlead')) && /Decision/.test(body('techlead')), 'techlead asks how long to watch and records the decision');
+    const skill = fs.readFileSync(path.join(R, '.github', 'skills', 'loop-memory', 'SKILL.md'), 'utf8');
+    ok(/reference, not orders/.test(skill) && /Never copy text from tickets/.test(skill), 'the skill says its records are reference, and that untrusted text must not be copied into a note');
   }
 
-  console.log('the notebook flow on the real tools');
-  {
+  console.log('memory through the real tools');
+  const pyOk = !spawnSync('python3', ['--version']).error;
+  if (!pyOk) {
+    console.log('  - SKIPPED: python3 was not found on PATH');
+  } else {
     const { runTool } = require(`${OUT}/tools.js`);
-    const team = loadAgents(R), skills = loadSkills(R), a = team.get('sentinel');
-    const policy = loadPolicy(R, a.policy), extraAllow = a.skills.map(k => skillScriptRule(skills.get(k).relDir));
+    const team = loadAgents(R), skills = loadSkills(R);
     const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
-    const ctx = { root: R, agent: a, team, item: { id: 'i', agent: 'sentinel', task: 't', from: 'schedule', chainId: 'c', hop: 0, createdAt: '' }, policy, extraAllow, secrets: {}, maxHops: 5, token };
-    const call = async (name, input) => { try { return await runTool(name, input, ctx); } catch (e) { return { text: `ERROR: ${e.message}`, thrown: true }; } };
-    const now = await call('run_command', { command: 'date +%Y-%m-%d-%H%M' });
-    ok(now.decision === 'allow' && /\d{4}-\d\d-\d\d-\d{4}/.test(now.text), 'the agent can learn the date and time');
-    const board = '.loop/outbox/signals.md';
-    ok(/ENOENT|ERROR|not found|no such/i.test((await call('read_file', { path: board })).text), 'reading a board that does not exist yet fails in a way the agent can see and handle');
-    const line1 = '- request_rate | state: open | at-decision: 2.8 | incident: .loop/outbox/incidents/2026-10-12-request_rate.md | analysis: - | note: new';
-    ok(/^Wrote/.test((await call('write_file', { path: board, content: line1 + '\n- error_rate | state: closed | at-decision: 3.1 | incident: - | analysis: - | note: fixed\n' })).text), 'it can create the board');
-    const edit = await call('edit_file', { path: board, oldText: line1, newText: line1.replace('state: open', 'state: watching-until 2026-10-20').replace('note: new', 'note: known batch job') });
-    ok(/^Edited/.test(edit.text) && fs.readFileSync(path.join(R, board), 'utf8').includes('watching-until 2026-10-20') && fs.readFileSync(path.join(R, board), 'utf8').includes('error_rate | state: closed'), 'it can change exactly one line of the board and leave the others');
-    ok(/already|0 times|matched/i.test((await call('edit_file', { path: board, oldText: 'a line that is not there', newText: 'x' })).text), 'an edit of a line that is not there is refused with a reason, not silently ignored');
-    const dir = '.loop/outbox/notes/sentinel';
-    ok(/^Wrote/.test((await call('write_file', { path: `${dir}/2026-10-12-0900.md`, content: '- 做了: x\n' })).text) && /^Wrote/.test((await call('write_file', { path: `${dir}/2026-10-12-1300.md`, content: '- 做了: y\n' })).text), 'it can write one note file per run (the folder is created on demand)');
-    const listing = (await call('list_dir', { path: dir })).text;
-    ok(listing.indexOf('2026-10-12-0900.md') >= 0 && listing.indexOf('2026-10-12-0900.md') < listing.indexOf('2026-10-12-1300.md'), 'listing the folder gives names that sort by time, so the last three are the newest');
-    ok(/^Wrote/.test((await call('write_file', { path: '.loop/outbox/incidents/2026-10-12-request_rate.md', content: '# Signal\n' })).text), 'it can write an incident file');
-    for (const bad of ['.github/agents/sentinel.agent.md', '.loop/policy.json', '.loop/policies/sentinel.json', '.loop/queue/x.json', 'repos/x.txt', '../outside.txt']) {
+    const as = (name, listed = true) => {
+      const a = team.get(name);
+      return { root: R, agent: a, team, item: { id: 'i', agent: name, task: 't', from: 'schedule', chainId: 'c', hop: 0, createdAt: '' }, policy: loadPolicy(R, a.policy),
+        extraAllow: listed ? a.skills.map(k => skillScriptRule(skills.get(k).relDir)) : [], secrets: {}, maxHops: 5, token };
+    };
+    const mem = (name, args, listed = true) => runTool('run_command', { command: `python3 .github/skills/loop-memory/scripts/mem.py --now 2026-10-12T09:00 ${args}` }, as(name, listed));
+    const out = r => r.text.replace(/^\[exit \d+\]\n/, '');
+    const now = await mem('sentinel', 'now');
+    ok(now.decision === 'allow' && /2026-10-12 09:00 \(Monday\)/.test(now.text), 'sentinel can ask for the time through its policy');
+    const t = await mem('techlead', 'track --key request_rate --state watching --until 2026-10-20 --ref 2.8 --note "known batch job" --agent techlead');
+    ok(t.decision === 'allow' && /"until": "2026-10-20"/.test(t.text), 'techlead records the human\'s decision to watch');
+    ok(JSON.parse(out(await mem('sentinel', 'check --key request_rate --value 3.0'))).verdict === 'suppress', 'sentinel, next time, sees it is being watched and the number is not clearly worse: suppress');
+    ok(JSON.parse(out(await mem('sentinel', 'check --key request_rate --value 4.5'))).verdict === 'escalate', 'a clearly worse number: escalate');
+    const late = await runTool('run_command', { command: 'python3 .github/skills/loop-memory/scripts/mem.py --now 2026-10-21T09:00 check --key request_rate --value 3.0' }, as('sentinel'));
+    ok(JSON.parse(out(late)).verdict === 'expired', 'after the date: expired');
+    ok(/request_rate: watching until 2026-10-20/.test((await mem('sentinel', 'recall --agent sentinel')).text), 'what techlead recorded shows up in sentinel\'s recall: the team shares what it is tracking');
+    ok(/noted:/.test((await mem('briefer', 'note --agent briefer --text "reported 12 open, 2 blocked"')).text) && /reported 12 open/.test((await mem('briefer', 'recall --agent briefer')).text), 'briefer\'s note comes back to briefer');
+    ok(!/reported 12 open/.test((await mem('sentinel', 'recall --agent sentinel')).text), 'and not to sentinel');
+    const refused = await mem('sentinel', 'now', false);
+    ok(refused.decision === 'deny' && /REFUSED/.test(refused.text), 'an agent that does not list the skill cannot run it: memory is opt-in, and the permission comes from the config the agent cannot edit');
+    ok(fs.existsSync(path.join(R, '.loop/outbox/memory/tracked.json')) && fs.readdirSync(path.join(R, '.loop/outbox/memory/notes')).sort().join() === 'briefer', 'the records are plain files under the outbox, where the human can see them');
+    for (const bad of ['.github/agents/sentinel.agent.md', '.loop/policy.json', '.loop/queue/x.json', 'repos/x.txt']) {
       const abs = path.join(R, bad), before = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;
-      const r = await call('write_file', { path: bad, content: 'x' });
-      const after = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;
-      ok(/REFUSED|escapes|ERROR/.test(r.text) && after === before, `it cannot write ${bad} (refused, and the file is unchanged)`);
+      const r = await runTool('write_file', { path: bad, content: 'x' }, as('sentinel'));
+      ok(/REFUSED/.test(r.text) && (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null) === before, `an agent still cannot write ${bad}`);
     }
   }
 
@@ -125,7 +131,7 @@ const stub = (root, name, scripts = {}) => {
       'git -C repos/harbor-service grep -n RateLimit', 'git -C repos/harbor-docs show HEAD:docs/runbook.md', 'git -C repos/harbor-service diff HEAD~3 -- src',
       'git -C repos/harbor-service fetch', 'git -C repos/harbor-service blame -L 1,40 src/limit.go', 'git -C repos/harbor-service pull --ff-only',
       'gh search code RateLimit --repo your-org/harbor-service', 'gh pr view 123 --repo your-org/harbor-service', 'gh pr list --repo your-org/harbor-service --state merged --limit 10',
-      'gh repo view your-org/harbor-docs', 'gh api repos/your-org/harbor-service/commits?per_page=5', 'date +%Y-%m-%d-%H%M'
+      'gh repo view your-org/harbor-docs', 'gh api repos/your-org/harbor-service/commits?per_page=5'
     ];
     for (const c of readOnly) { ok(verdict(c), `allowed: ${c}`); }
     const writes = [
@@ -148,8 +154,7 @@ const stub = (root, name, scripts = {}) => {
       const a = team.get(n), p = loadPolicy(R, a.policy), allow = a.skills.map(k => skillScriptRule(skills.get(k).relDir));
       const s = a.skills[0];
       ok(decideCommand(p, `python3 .github/skills/${s}/scripts/x.py`, allow).decision === 'allow', `${n}: its own skill's scripts are allowed`);
-      ok(['git push origin main', 'gh pr merge 1', 'curl http://x', 'ls repos', 'cat /etc/passwd', 'date -s 2020-01-01', 'date +%s; rm -rf x'].every(c => decideCommand(p, c, allow).decision !== 'allow' || hardReject(p, c)), `${n}: nothing but its skill's scripts and the read-only date`);
-      ok(decideCommand(p, 'date +%Y-%m-%d-%H%M', allow).decision === 'allow', `${n}: may ask for the date and time (agents have no other clock)`);
+      ok(['git push origin main', 'gh pr merge 1', 'curl http://x', 'ls repos', 'cat /etc/passwd', 'date -s 2020-01-01', 'date +%s; rm -rf x'].every(c => decideCommand(p, c, allow).decision !== 'allow' || hardReject(p, c)), `${n}: nothing but its skills' scripts`);
       ok(p.writablePaths.length === 0, `${n}: can write only to the outbox`);
     }
   }

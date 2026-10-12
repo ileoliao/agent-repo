@@ -95,3 +95,7 @@ Make the exit-0 output self-sufficient (what, when, values versus target, ids or
 - [ ] External effects go through approval with a draft in `.loop/outbox/`.
 - [ ] Scripts are non-interactive, read secrets from the environment, and print small JSON.
 - [ ] The policy grants only what the role needs.
+
+## 6. Giving a role a memory
+
+Every run starts from nothing. If a role should build on what it did before (not reopen something a human chose to watch, say what changed since last time), add the shared skill `loop-memory` (source: `skills/loop-memory/` in the Loop Runner repository; copy it into the workspace's `.github/skills/`) to its `loop.skills`, and give it two lines in the body: start with `now` and `recall --agent <name>`, finish with `note --agent <name>`. Use `check --key <subject> --value <number>` before acting on something that may already be known, and `track` when a subject should be followed or a human has decided about it. The skill's own SKILL.md carries the protocol, so the role file does not repeat it. Do not give a role its own note-taking instructions or file layout.
