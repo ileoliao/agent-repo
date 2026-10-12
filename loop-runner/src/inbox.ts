@@ -1,3 +1,4 @@
+import { Active } from './textutil';
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -26,7 +27,7 @@ export class InboxView implements vscode.TreeDataProvider<Node> {
   private emitter = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
 
-  constructor(private root: () => string | undefined, private activeAgent: () => string | undefined = () => undefined) {}
+  constructor(private root: () => string | undefined, private activeAgent: () => Active = () => undefined) {}
 
   refresh(): void { this.emitter.fire(undefined); }
 

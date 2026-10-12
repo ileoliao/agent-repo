@@ -4,8 +4,9 @@ import { sha256Of } from './gates';
 import * as path from 'path';
 import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
-import { brief, clip, firstLine } from './textutil';
-import { AvatarState, ChatState, ThreadEvent, Tone, buildThread, glance } from './thread';
+import { Active, brief, clip, firstLine, isActive } from './textutil';
+import { Task, listTasks } from './tasks';
+import { AvatarState, ChatState, ThreadEvent, ThreadStep, Tone, buildThread, glance } from './thread';
 
 /** One line of a run's story: what the agent did at a step. */
 export interface Step {
@@ -46,9 +47,11 @@ export interface ChatModel {
 
 export interface ConsoleModel {
   running: boolean;
-  active?: string;
+  active?: Active;
   next?: { agent: string; at: string };
   pending: GateView[];
+  /** Tasks agents have in progress (state open). Absent in older callers. */
+  tasks?: Task[];
   agents: AgentRow[];
   runs: ConsoleRun[];
   /** Which page is showing. Chat is the default. */
@@ -88,7 +91,7 @@ export function stepsOf(file: string): Step[] {
 }
 
 /** Everything the console shows, as plain data. Pure and read-only: the same files the sidebar reads. */
-export function consoleModel(root: string, state: { running: boolean; active?: string; tab?: 'chat' | 'overview'; agent?: string }, now = new Date(), runLimit = 10): ConsoleModel {
+export function consoleModel(root: string, state: { running: boolean; active?: Active; tab?: 'chat' | 'overview'; agent?: string }, now = new Date(), runLimit = 10): ConsoleModel {
   const agents = agentRows(root, state.active, now);
   const nw = nextWake(agents);
   const tab = state.tab ?? 'chat';
@@ -107,12 +110,13 @@ export function consoleModel(root: string, state: { running: boolean; active?: s
     active: state.active,
     next: nw ? { agent: nw.agent, at: nw.at.toISOString() } : undefined,
     pending,
+    tasks: listTasks(root).filter(t => t.state === 'open').slice(0, 30),
     agents,
     // A run whose last event says "running" but that no live worker owns (team stopped, or another agent is active)
     // was cut off, for example when VS Code closed. Say so instead of showing it as running forever.
     runs: recentRuns(root, runLimit).map(r => ({
       ...r,
-      status: r.status === 'running' && !(state.running && state.active === r.agent) ? 'interrupted' : r.status,
+      status: r.status === 'running' && !(state.running && isActive(state.active, r.agent)) ? 'interrupted' : r.status,
       steps: stepsOf(r.file)
     })),
     updatedAt: now.toISOString()
@@ -173,7 +177,7 @@ const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
   retry: { label: 'Will retry', tone: 'warn', ic: 'clock' }, blocked: { label: 'Blocked', tone: 'warn', ic: 'alert' },
   max_steps: { label: 'Step limit', tone: 'warn', ic: 'alert' }, stalled: { label: 'Stalled', tone: 'bad', ic: 'alert' },
   interrupted: { label: 'Interrupted', tone: 'warn', ic: 'alert' },
-  nothing_to_do: { label: 'Nothing to do', tone: 'mute', ic: 'check' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
+  nothing_to_do: { label: 'Nothing to do', tone: 'mute', ic: 'check' }, open: { label: 'Not finished', tone: 'info', ic: 'clock' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
 };
 /** Statuses the "Problems" filter shows. */
 const PROBLEMS = new Set(['error', 'stalled', 'blocked', 'max_steps', 'interrupted', 'retry']);
@@ -226,6 +230,14 @@ function runCard(r: ConsoleRun): string {
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
 
+function taskCard(t: Task): string {
+  const nexts = t.holders.map(h => `<dt>${esc(h)}</dt><dd>${esc(t.next?.[h] ?? '(no next step recorded)')}</dd>`).join('');
+  return `<div class="card" data-task="${esc(t.id)}"><div class="card-head">${icon('clock', 'lead')}<div class="grow"><div class="card-title">${esc(t.title)}</div>
+    <div class="meta">${t.holders.map(h => `<span class="tag">${esc(h)}</span>`).join('')}<span class="mono">${esc(t.id)}</span><span>${stamp(t.updatedAt, ago(t.updatedAt))}</span></div></div>
+    ${btn('Close', `data-close-task="${esc(t.id)}" title="Drop this task: nobody holds it any more"`, 'secondary', 'x')}</div>
+    ${nexts ? `<dl class="kv">${nexts}</dl>` : ''}</div>`;
+}
+
 function agentRow(a: AgentRow): string {
   const label = a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
   const tone = a.state === 'running' ? 'info' : a.state === 'waiting' ? 'warn' : 'mute';
@@ -247,6 +259,49 @@ const empty = (ic: string, title: string, hint: string) => `<div class="empty">$
 const DELIVERY: Record<string, string> = { start: 'read when the run started', turn: 'read at its next step', resume: 'read when it resumed', task: 'started a run' };
 const toneOf = (t: Tone) => (t === 'mute' ? 'mute' : t);
 
+
+const stepLi = (s: ThreadStep) => `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.ok ? 'dot' : 'x')}</span><div class="grow"><div class="step-title"><span class="mono small">${esc(s.title)}</span></div>${s.detail && !/^(\[exit 0\]|ok)$/.test(s.detail) ? `<div class="${s.ok ? 'muted' : 'result-bad'} small wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`;
+const badWord = (s: ThreadStep) => (/^REFUSED/.test(s.detail ?? '') ? 'refused' : /^ERROR/.test(s.detail ?? '') ? 'error' : 'failed');
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** What a folded group of routine calls says in one line: "loop-memory ×4 · read 2 files". */
+function groupLine(g: ThreadStep[]): string {
+  if (g.length === 1) { return g[0].phrase; }
+  const skills = new Map<string, number>();
+  let reads = 0, lists = 0;
+  for (const s of g) {
+    if (s.famKind === 'read') { reads++; } else if (s.famKind === 'list') { lists++; } else { skills.set(s.fam ?? s.phrase, (skills.get(s.fam ?? s.phrase) ?? 0) + 1); }
+  }
+  return [...[...skills].map(([k, n]) => `${k} ×${n}`), ...(reads ? [plural(reads, 'file', 'files').replace(/^/, 'read ')] : []), ...(lists ? [`listed ${plural(lists, 'folder', 'folders')}`] : [])].join(' · ');
+}
+
+/**
+ * Tool calls as quiet lines. Consecutive routine calls (skill scripts, reads, listings) fold into one line; every other call is one line.
+ * A refused or failed call is never folded away: it stays visible, with its full result, and the line counts it in the warning colour.
+ */
+function stepsBlock(steps: ThreadStep[], ts: string): string {
+  const segs: ThreadStep[][] = [];
+  for (const s of steps) {
+    const last = segs[segs.length - 1];
+    if (s.routine && last && last[0].routine) { last.push(s); } else { segs.push([s]); }
+  }
+  return segs.map((g, i) => {
+    const bad = g.filter(s => !s.ok), good = g.filter(s => s.ok);
+    const word = bad.length ? [...new Set(bad.map(badWord))].join('/') : '';
+    const tag = bad.length ? `<span class="bad-count">· ${bad.length} ${esc(word)}</span>` : '';
+    const text = groupLine(g);
+    const full = g.map(s => s.title).join('\n');
+    const wraps = !g[0].routine && /^(handed|asked)/.test(g[0].phrase);
+    const head = `<span class="steps-sum ${wraps ? 'wrap-text' : 'ell'}" title="${esc(full)}">${esc(text)}</span>${tag}`;
+    const body = g.filter(s => s.ok || good.length).map(stepLi).join('');
+    const line = good.length
+      ? `<details class="msg steps" data-k="st-${esc(ts)}-${i}"><summary>${icon('chevron', 'chev')}${head}</summary><ol class="timeline">${body}</ol></details>`
+      : g.length > 1 ? `<div class="msg steps flat"><span class="chev-pad"></span>${head}</div>` : '';
+    const shown = bad.map(s => `<div class="msg steps badcall" title="${esc(s.title)}"><span class="node">${icon('x')}</span><div class="grow"><div class="small"><span class="steps-sum">${esc(s.phrase)}</span>${g.length === 1 ? ' <span class="bad-count">· ' + esc(badWord(s)) + '</span>' : ''}</div>${s.detail ? `<div class="result-bad small wrap-text">${esc(s.detail)}</div>` : ''}</div></div>`).join('');
+    return line + shown;
+  }).join('');
+}
+
 function threadEvent(e: ThreadEvent, agent: string): string {
   if (e.kind === 'human') {
     const seen = e.status === 'pending' ? `waiting for ${esc(agent)} to read it` : esc(DELIVERY[e.via ?? ''] ?? 'read');
@@ -256,15 +311,29 @@ function threadEvent(e: ThreadEvent, agent: string): string {
     return `<div class="msg human"><div class="bubble answer ${e.tone}"><div class="mkind">You answered “${esc(clip(e.title, 80))}”</div><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}</div></div></div>`;
   }
   if (e.kind === 'agent') {
-    return `<div class="msg agent">${avatar(agent, 'idle', 28)}<div class="bubble"><div class="mname">${esc(agent)}</div><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}${e.step ? ` · step ${e.step}` : ''}</div></div></div>`;
+    return `<div class="msg bot">${avatar(agent, 'idle', 28)}<div class="bubble"><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}</div></div></div>`;
   }
-  if (e.kind === 'steps') {
-    const failed = e.steps.filter(s => !s.ok).length;
-    const li = e.steps.map(s => `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.ok ? 'dot' : 'x')}</span><div class="grow"><div class="step-title"><span class="kind">${esc(s.kind)}</span>${s.step ? `<span class="muted">#${s.step}</span>` : ''}<span class="mono">${esc(s.title)}</span></div>${s.detail && !/^(\[exit 0\]|ok)$/.test(s.detail) ? `<div class="${s.ok ? 'muted' : 'result-bad'} wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`).join('');
-    return `<details class="msg steps" data-k="st-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span class="muted mono grow steps-sum">${esc(clip(e.steps[0].title, 70))}${e.steps.length > 1 ? ` +${e.steps.length - 1} more` : ''}${failed ? ` · ${failed} failed` : ''}</span><span class="muted nowrap">${stamp(e.ts, whenShort(e.ts))}</span></summary><ol class="timeline">${li}</ol></details>`;
+  if (e.kind === 'steps') { return stepsBlock(e.steps, e.ts); }
+  if (e.kind === 'result') {
+    const inner = e.fold.map(f => threadEvent(f, agent)).join('');
+    const label = e.stepCount ? `Show ${plural(e.stepCount, 'step', 'steps')}` : 'Show details';
+    const fold = inner ? `<details class="rfold" data-k="rf-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${esc(label)}</span></summary><div class="rfold-body">${inner}</div></details>` : '';
+    const pr = e.problems, probs = [pr.refused ? `${pr.refused} refused` : '', pr.error ? `${pr.error} error${pr.error === 1 ? '' : 's'}` : '', pr.failed ? `${pr.failed} failed` : ''].filter(Boolean).join(' · ');
+    if (e.status === 'nothing_to_do') {
+      return `<div class="rquiet" data-result="nothing_to_do"><div class="rtop"><span class="chip mute">${esc(e.label)}</span>${e.detail ? `<span class="rgoal ell" title="${esc(e.detail)}">${esc(e.detail)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${probs ? `<div class="rprob">${esc(probs)}</div>` : ''}${fold}</div>`;
+    }
+    const row = (d: { path: string; preview?: string }) => { const i = d.path.lastIndexOf('/'); return `<a class="deliv" href="#" data-open="${esc(d.path)}" title="${esc(d.path)}">${icon('file')}<span class="dtext"><span class="dline"><span class="dname">${esc(d.path.slice(i + 1))}</span>${i > 0 ? `<span class="ddir ell">${esc(d.path.slice(0, i))}</span>` : ''}</span>${d.preview ? `<span class="dprev ell">${esc(d.preview)}</span>` : ''}</span></a>`; };
+    const sup = e.supporting.length ? `<details class="rsup" data-k="rs-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${plural(e.supporting.length, 'supporting file', 'supporting files')}</span></summary><div class="rfiles">${e.supporting.map(o => `<a class="filechip" href="#" data-open="${esc(o)}" title="${esc(o)}">${icon('file')}<span class="ell">${esc(o)}</span></a>`).join('')}</div></details>` : '';
+    const files = e.deliverables.map(row).join('');
+    const line = (k: string, v: string) => `<div class="rline wrap-text"><span class="rk">${esc(k)}</span> ${esc(v)}</div>`;
+    return `<div class="rcard ${esc(e.status)} ${toneOf(e.tone)}" data-result="${esc(e.status)}"><div class="rtop"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.goal ? `<span class="rgoal ell" title="${esc(e.goal)}">${esc(e.goal)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`
+      + (e.detail ? `<div class="rsum wrap-text">${esc(e.detail)}</div>` : '')
+      + (e.next ? line('Next:', e.next) : '') + (e.handoff ? line(`Handed to ${e.handoff.to}:`, e.handoff.task) : '')
+      + (e.approvals ?? []).map(a => line('Approved:', a)).join('')
+      + (files ? `<div class="rdelivs">${files}</div>` : '') + sup + (probs ? `<div class="rprob">${esc(probs)}</div>` : '') + fold + '</div>';
   }
   const outs = (e.outputs ?? []).map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
-  return `<div class="sline"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.detail ? `<span class="wrap-text">${esc(e.detail)}</span>` : ''}${outs}<span class="muted nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`;
+  return `<div class="sline"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.detail ? `<span class="sdetail wrap-text">${esc(e.detail)}</span>` : ''}${outs}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`;
 }
 
 function composerHint(name: string, state: ChatState, running: boolean): string {
@@ -327,9 +396,9 @@ function renderTabs(m: ConsoleModel): string {
 
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
-  const live = m.runs.find(r => r.status === 'running' && r.agent === m.active);
+  const live = m.runs.find(r => r.status === 'running' && isActive(m.active, r.agent));
   const state = !m.running ? `<span class="state off">${icon('stop')}Team stopped</span>`
-    : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc(m.active)}${live ? ` · step ${live.step}` : ''}</span>`
+    : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
     : `<span class="state idle">${icon('clock')}Team on · idle${m.next ? ` · next wake ${esc(when(m.next.at))}` : ''}</span>`;
   const actions = (m.running ? btn('Stop team', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
     + btn('Give a task', 'data-cmd="runAgent"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult"', 'secondary', 'file');
@@ -341,6 +410,8 @@ export function renderBody(m: ConsoleModel): string {
     { k: 'Next wake', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
   ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
   const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
+  const tasks = m.tasks ?? [];
+  const openTasks = tasks.length ? `<h2>Open tasks<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
   const filter = m.runs.length ? `<label class="filter"><span class="muted">Show</span><select data-filter aria-label="Filter runs"><option value="all">All runs (${m.runs.length})</option><option value="problems">Problems (${problems})</option><option value="done">Done</option></select></label>` : '';
   const runs = m.runs.length ? `<div class="runs">${m.runs.map(runCard).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
@@ -351,7 +422,7 @@ export function renderBody(m: ConsoleModel): string {
   return `<header class="bar"><div class="brand">Loop Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
     ${note}${renderTabs(m)}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
-    <h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
+    ${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
 }
 
 const STYLE = `
@@ -436,15 +507,31 @@ a{color:var(--vscode-textLink-foreground)}
 .chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--vscode-editor-background)}
 .chat-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--vscode-panel-border)}.ch-name{font-weight:600;font-size:1.05em}.ch-sub{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .thread{flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}.center{text-align:center}
-.msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.agent{justify-content:flex-start;align-items:flex-start}
+.msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.bot{justify-content:flex-start;align-items:flex-start}
 .bubble{max-width:78%;padding:8px 14px;border-radius:18px;overflow-wrap:anywhere}
 .human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-bottom-right-radius:5px}
 .human .bubble .mmeta{color:inherit;opacity:.8}.human .bubble.answer{background:var(--vscode-input-background);color:var(--vscode-foreground);border:1px solid var(--cab)}
-.agent .bubble{background:var(--vscode-input-background);border-bottom-left-radius:5px}
-.mtext{white-space:pre-wrap}.mname{font-weight:600;margin-bottom:2px}.mkind{font-size:.85em;opacity:.8;margin-bottom:2px}.mmeta{font-size:.78em;color:var(--vscode-descriptionForeground);margin-top:3px}
-.steps{display:block;width:100%;border:0;border-left:2px solid var(--vscode-panel-border);border-radius:0;padding:2px 10px;margin-left:38px;max-width:calc(100% - 38px);background:transparent}.steps>summary{padding:2px 0}.steps .timeline{margin:6px 0 4px}
-.steps-sum{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}time{font-weight:400}
-.sline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;font-size:.9em;color:var(--vscode-descriptionForeground)}
+.bot .bubble{background:var(--vscode-input-background);border-bottom-left-radius:5px}
+.mtext{white-space:pre-wrap}.mkind{font-size:.85em;opacity:.8;margin-bottom:2px}.mmeta{font-size:.78em;color:var(--vscode-descriptionForeground);margin-top:3px}
+.small{font-size:.86em}
+.steps{display:block;width:calc(100% - 38px);margin-left:38px;padding:0;color:var(--vscode-descriptionForeground);font-size:.88em;min-width:0}.steps>summary{padding:1px 0;min-width:0}.steps .timeline{margin:4px 0 4px 6px}
+.steps-sum{min-width:0;overflow-wrap:anywhere}.steps-sum.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bad-count{color:var(--warn);white-space:nowrap;flex:none}
+.steps.flat{display:flex;align-items:center;gap:8px}.chev-pad{width:16px;flex:none}
+.steps.badcall{display:flex;gap:8px;align-items:flex-start;color:var(--vscode-foreground)}.steps.badcall .node{color:var(--bad);flex:none}.ell-inline{display:inline-block;max-width:100%;vertical-align:bottom;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+time{font-weight:400}
+.rcard{margin-left:38px;padding:2px 0 2px 12px;border-left:3px solid var(--vscode-panel-border);font-size:.92em;min-width:0}
+.rcard.done{border-color:color-mix(in srgb,var(--ok) 60%,transparent)}.rcard.open{border-color:var(--info)}.rcard.warn{border-color:var(--warn)}.rcard.bad{border-color:var(--bad)}
+.rtop{display:flex;align-items:center;gap:8px;min-width:0}.rtop .chip{font-size:.82em;padding:0 7px;font-weight:500;flex:none}.rtop .chip.info,.rtop .chip.ok{color:var(--vscode-descriptionForeground)}
+.rgoal{flex:1;min-width:0;color:var(--vscode-descriptionForeground)}.rgoal.ell,.rcard .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rtop .stime{margin-left:auto;font-size:.88em;color:var(--vscode-descriptionForeground)}
+.rquiet{margin-left:38px;padding-left:15px;font-size:.88em;min-width:0}.rprob{margin-top:3px;color:var(--warn);font-size:.9em}
+.rfold{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}.rfold>summary{padding:1px 0;width:fit-content}.rfold-body{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px -50px;padding-left:0;color:var(--vscode-foreground);font-size:1.08em}
+.rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
+.rdelivs{display:flex;flex-direction:column;gap:4px;margin-top:6px}.deliv{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:5px 8px;border-radius:6px;background:var(--vscode-input-background);color:var(--vscode-foreground);text-decoration:none}.deliv:hover{background:var(--vscode-list-hoverBackground)}.deliv svg{margin-top:2px;color:var(--vscode-textLink-foreground);flex:none}
+.dtext{display:flex;flex-direction:column;min-width:0;flex:1}.dline{display:flex;gap:8px;align-items:baseline;min-width:0}.dname{font-weight:600;color:var(--vscode-textLink-foreground);flex:none;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ddir{color:var(--vscode-descriptionForeground);font-size:.88em;min-width:0}.dprev{color:var(--vscode-descriptionForeground);font-size:.92em}
+.rsup{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}.rsup>summary{padding:1px 0;width:fit-content}
+.rfiles{display:flex;flex-wrap:wrap;gap:2px 6px;margin-top:4px}.rfiles .filechip{max-width:100%;min-width:0;margin:0}
+.sline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-left:38px;font-size:.88em;color:var(--vscode-descriptionForeground)}
+.sline .chip.info{color:var(--vscode-descriptionForeground)}.sline .chip{font-size:.82em;padding:0 7px;font-weight:500}.sline .sdetail{color:var(--vscode-foreground);min-width:0;flex:1 1 200px}.sline .stime{margin-left:auto;font-size:.9em}
 .thread-gates{width:100%;margin-top:6px}.thread-gates .card{margin-bottom:8px}
 .composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.75em;margin:6px 6px 0}
 .inputbar{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:24px;background:var(--vscode-input-background);padding:6px 8px 6px 16px}
@@ -486,7 +573,7 @@ function scan() {
     ap.setAttribute('aria-busy', busy.has(id) ? 'true' : 'false');
     const label = ap.querySelector('span'); if (label) label.textContent = busy.has(id) ? 'Running…' : 'Approve and run';
   });
-  document.querySelectorAll('details.run').forEach(d => { d.classList.toggle('hidden', !(filter === 'all' || (filter === 'done' ? d.dataset.status === 'done' : !['done','running','waiting','nothing_to_do','cancelled'].includes(d.dataset.status)))); });
+  document.querySelectorAll('details.run').forEach(d => { d.classList.toggle('hidden', !(filter === 'all' || (filter === 'done' ? d.dataset.status === 'done' : !['done','running','waiting','nothing_to_do','cancelled','open'].includes(d.dataset.status)))); });
   const empty = document.querySelector('[data-filter-empty]');
   if (empty) empty.classList.toggle('hidden', !document.querySelectorAll('details.run').length || [...document.querySelectorAll('details.run')].some(d => !d.classList.contains('hidden')));
   const sel = document.querySelector('[data-filter]'); if (sel) sel.value = filter;
@@ -522,7 +609,7 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('change', e => { if (e.target.matches('[data-filter]')) { filter = e.target.value; scan(); } });
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel],[data-close-task]'); if (!t) return;
   e.preventDefault(); const d = t.dataset;
   if (d.open) vs.postMessage({ type:'open', path:d.open });
   else if (d.openAbs) vs.postMessage({ type:'openAbs', path:d.openAbs });
@@ -532,6 +619,7 @@ document.addEventListener('click', e => {
   else if (d.approve) { if (busy.has(d.approve) || t.disabled) return; busy.add(d.approve); scan(); vs.postMessage({ type:'approve', id:d.approve, seen:hashes(d.approve) }); }
   else if (d.reject) vs.postMessage({ type:'reject', id:d.reject, feedback:val(d.reject) });
   else if (d.ack) { reviewed[d.ack] = hashes(d.ack); scan(); }
+  else if (d.closeTask) vs.postMessage({ type:'closeTask', id:d.closeTask });
   else if (d.tab) vs.postMessage({ type:'view', tab:d.tab });
   else if (d.agent) vs.postMessage({ type:'view', tab:'chat', agent:d.agent });
   else if (d.chatSend) sendChat(d.chatSend);

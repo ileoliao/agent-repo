@@ -103,6 +103,18 @@ console.log('damage and files');
   ok(fs.readdirSync(path.join(ws, '.loop')).join() === 'outbox', 'everything is under .loop/outbox, nowhere else');
 }
 
+console.log('two runs at once');
+{
+  // Two workers can run two agents together: concurrent writers must not lose each other's entries or tear the file.
+  fs.writeFileSync(path.join(ws, '.loop/outbox/memory/tracked.json'), '{}');
+  const script = path.join(SKILL, 'scripts', 'mem.py');
+  const cmd = `for i in $(seq 1 24); do python3 "${script}" --now 2026-10-12T09:00 track --key "par-$i" --state open --agent a$((i % 2)) >/dev/null & done; wait`;
+  spawnSync('sh', ['-c', cmd], { cwd: ws });
+  const data = JSON.parse(fs.readFileSync(path.join(ws, '.loop/outbox/memory/tracked.json'), 'utf8'));
+  ok(Object.keys(data).length === 24, 'twenty-four concurrent writers: every entry is kept and the file is valid JSON');
+  ok(!fs.readdirSync(path.join(ws, '.loop/outbox/memory')).some(n => n.endsWith('.tmp')), 'and no temporary file is left behind');
+}
+
 console.log('the shared skill and its copy');
 {
   const same = (a, b) => fs.readdirSync(a, { recursive: true }).filter(f => !f.includes('__pycache__')).sort().every(f => !fs.statSync(path.join(a, f)).isFile() || fs.readFileSync(path.join(a, f), 'utf8') === fs.readFileSync(path.join(b, f), 'utf8'));

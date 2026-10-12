@@ -2,11 +2,13 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { ConsoleModel, consoleModel, renderBody, renderPage } from './console';
+import { closeTaskByHuman } from './tasks';
+import { Active } from './textutil';
 
 /** What the console can ask the extension to do. Each action reuses an existing code path. */
 export interface ConsoleActions {
   root: () => string | undefined;
-  state: () => { running: boolean; active?: string };
+  state: () => { running: boolean; active?: Active };
   answer: (gateId: string, text: string) => void;
   approve: (gateId: string, seen: Record<string, string>) => Promise<void>;
   reject: (gateId: string, feedback: string) => void;
@@ -97,6 +99,7 @@ export class ConsolePanel {
         case 'view':
           this.view = { tab: m.tab === 'overview' ? 'overview' : 'chat', agent: typeof m.agent === 'string' && m.agent ? m.agent : this.view.agent };
           break;
+        case 'closeTask': closeTaskByHuman(r, String(m.id)); break;
         case 'chatSend': this.a.chatSend(String(m.agent), String(m.text ?? '')); break;
         case 'chatCancel':
           if (!this.a.chatCancel(String(m.agent))) { void vscode.window.showInformationMessage(`Loop Runner: ${m.agent} is not running right now.`); }

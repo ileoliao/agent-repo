@@ -3,6 +3,7 @@ import * as path from 'path';
 import { loadAllAgents } from './team';
 import { nextMatch } from './cron';
 import { listGates } from './queue';
+import { Active, isActive } from './textutil';
 
 export interface AgentRow {
   name: string;
@@ -40,16 +41,16 @@ function lastWakes(root: string): Map<string, { wake: boolean; at: string; cappe
 }
 
 /** One row per agent that has joined the unattended team. Read-only. */
-export function agentRows(root: string, activeAgent?: string, now = new Date()): AgentRow[] {
+export function agentRows(root: string, activeAgent?: Active, now = new Date()): AgentRow[] {
   const wakes = lastWakes(root);
   const gates = listGates(root).filter(g => g.status === 'pending');
   return [...loadAllAgents(root).values()].filter(a => a.inLoop).map(a => ({
     name: a.name,
     description: a.description,
-    state: a.name === activeAgent ? 'running' : gates.some(g => g.agent === a.name) ? 'waiting' : 'idle',
+    state: isActive(activeAgent, a.name) ? 'running' : gates.some(g => g.agent === a.name) ? 'waiting' : 'idle',
     model: a.models[0] ?? a.modelFamily,
-    schedule: a.schedule,
-    next: a.schedule ? nextMatch(a.schedule, now) : undefined,
+    schedule: a.goals.find(g => g.schedule)?.schedule,
+    next: a.goals.flatMap(g => (g.schedule ? [nextMatch(g.schedule, now)] : [])).filter((d): d is Date => !!d).sort((x, y) => x.getTime() - y.getTime())[0],
     lastWake: wakes.get(a.name),
     file: a.file
   }));

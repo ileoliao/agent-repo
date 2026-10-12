@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getGate, listGates, newId, pending as queuedItems, waiting } from './queue';
-import { brief, clip, firstLine } from './textutil';
+import { Active, brief, clip, firstLine, humanize, isActive } from './textutil';
 
 /**
  * Chat with an agent: the human's messages, and the conversation shown as a thread.
@@ -72,19 +72,47 @@ export function formatForModel(msgs: HumanMessage[], when: 'start' | 'while-work
 
 // ---- the thread ----
 
-export interface ThreadStep { step: number; kind: 'tool' | 'gate'; title: string; detail?: string; ok: boolean }
+/** `title` is the full call (audit detail); `phrase` is the plain-words version; `fam`/`famKind` say what routine calls fold under. */
+export interface ThreadStep { step: number; kind: 'tool' | 'gate'; title: string; phrase: string; routine: boolean; fam?: string; famKind?: 'skill' | 'read' | 'list'; detail?: string; ok: boolean; ts?: string; path?: string }
 export type Tone = 'info' | 'ok' | 'bad' | 'warn' | 'mute';
 export type ThreadEvent =
   | { kind: 'human'; ts: string; id: string; text: string; status: 'pending' | 'delivered'; deliveredAt?: string; via?: HumanMessage['via'] }
   | { kind: 'agent'; ts: string; text: string; step: number }
   | { kind: 'steps'; ts: string; steps: ThreadStep[] }
   | { kind: 'status'; ts: string; label: string; tone: Tone; detail?: string; chainId: string; outputs?: string[] }
+  /** How a run ended, as one card: the key result. `detail` is the full finish summary. */
+  | { kind: 'result'; ts: string; chainId: string; status: string; label: string; tone: Tone; goal?: string; detail?: string; next?: string; handoff?: { to: string; task: string }; deliverables: { path: string; preview?: string }[]; supporting: string[]; approvals?: string[];
+      /** Everything the run did, folded behind the card: today's detailed view, one click away. */
+      fold: ThreadEvent[]; stepCount: number; problems: { refused: number; error: number; failed: number } }
   | { kind: 'answer'; ts: string; title: string; text: string; tone: Tone };
 
 const END_LABEL: Record<string, [string, Tone]> = {
-  done: ['Finished', 'ok'], blocked: ['Blocked', 'warn'], nothing_to_do: ['Nothing to do', 'mute'], max_steps: ['Reached its step limit', 'warn'],
+  done: ['Finished', 'ok'], open: ['Not finished: continues later', 'info'], blocked: ['Blocked', 'warn'], nothing_to_do: ['Nothing to do', 'mute'], max_steps: ['Reached its step limit', 'warn'],
   stalled: ['Stopped: going in circles or out of time', 'bad'], cancelled: ['Cancelled', 'mute'], error: ['Failed', 'bad']
 };
+
+
+const DOC_EXT = /\.(md|html|pdf|csv|xlsx|docx|txt)$/i;
+/** The files meant for the human. The agent declares them in finish; for older runs, a document in the outbox is a deliverable and everything else supports. */
+export function splitOutputs(declared: string[] | undefined, outputs: string[]): { deliverables: string[]; supporting: string[] } {
+  const all = [...new Set([...(declared ?? []), ...outputs])];
+  const isDoc = (f: string) => f.startsWith('.loop/outbox/') && DOC_EXT.test(f) && !f.slice('.loop/outbox/'.length).split('/').some(seg => seg.startsWith('.'));
+  const deliverables = declared?.length ? declared : outputs.filter(isDoc);
+  return { deliverables: [...new Set(deliverables)], supporting: all.filter(f => !deliverables.includes(f)) };
+}
+
+/** One line about a document: its first heading, or its first line. Only for text formats. */
+function previewOf(root: string, rel: string): string | undefined {
+  if (!/\.(md|txt)$/i.test(rel)) { return undefined; }
+  try {
+    const abs = path.resolve(root, rel);
+    if (abs !== root && !abs.startsWith(root + path.sep)) { return undefined; }
+    const fd = fs.openSync(abs, 'r'); const buf = Buffer.alloc(4096); const n = fs.readSync(fd, buf, 0, 4096, 0); fs.closeSync(fd);
+    const lines = buf.slice(0, n).toString('utf8').split('\n').map(l => l.trim()).filter(Boolean);
+    const line = lines.find(l => /^#+\s/.test(l)) ?? lines[0];
+    return line ? clip(line.replace(/^#+\s*/, ''), 140) : undefined;
+  } catch { return undefined; }
+}
 
 function readAudit(root: string, days: number): { chainId: string; events: any[] }[] {
   const base = path.join(root, '.loop', 'runs');
@@ -121,24 +149,39 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
   const events: ThreadEvent[] = [];
   for (const c of chains) {
     let block: Extract<ThreadEvent, { kind: 'steps' }> | undefined;
-    const flush = () => { if (block) { events.push(block); block = undefined; } };
+    const flush = () => { if (block) { events.push(block); runBlocks.push(block); block = undefined; } };
+    // What the card for this run's end needs, gathered between its start and its end.
+    let runBlocks: Extract<ThreadEvent, { kind: 'steps' }>[] = [];
+    let goal: string | undefined, next: string | undefined, handoff: { to: string; task: string } | undefined, wrote: string[] = [];
+    let approvals: { ev: ThreadEvent; text: string }[] = [];
+    let errEv: { ev: ThreadEvent; message: string } | undefined;
+    let runStart = 0;
+    const resetRun = () => { runBlocks = []; goal = next = handoff = errEv = undefined; wrote = []; approvals = []; };
     for (const e of c.events) {
       const mine = e.agent === agent || (e.type === 'gate' && gateOwner.get(String(e.gateId)) === agent);
       if (!mine) { continue; }
       if (e.type === 'tool') {
-        if (e.name === 'finish') { continue; }
+        if (e.name === 'finish') { const n = e.input?.next; next = typeof n === 'string' && n.trim() ? n.trim() : next; continue; }
         const result = String(e.result ?? '');
-        const step: ThreadStep = { step: Number(e.step) || 0, kind: e.gateId ? 'gate' : 'tool', title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`,
+        if (Array.isArray(e.wrote)) { wrote.push(...e.wrote.map(String)); }
+        const h = humanize(String(e.name), e.input);
+        const gate = !!e.gateId;
+        const step: ThreadStep = { step: Number(e.step) || 0, kind: gate ? 'gate' : 'tool', phrase: gate ? `${e.name === 'ask_human' ? 'asked' : 'asked approval'}: ${clip(brief(e.input), 80)}` : h.phrase, routine: !gate && h.routine, fam: h.fam, famKind: h.famKind, ts: e.ts, title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`,
           detail: clip(firstLine(result), 160) || undefined, ok: !/^(REFUSED|ERROR|Not sent)/.test(result) };
+        if (step.ok && e.name === 'handoff' && typeof e.input?.to === 'string') { handoff = { to: e.input.to, task: String(e.input.task ?? '') }; }
+        if (e.name === 'write_file' || e.name === 'edit_file') { step.path = String(e.input?.path ?? ''); }
         if (!block) { block = { kind: 'steps', ts: e.ts, steps: [] }; }
         block.steps.push(step);
         continue;
       }
       flush();
       if (e.type === 'start') {
+        resetRun();
+        runStart = events.length;
         const from = String(e.from ?? '');
+        goal = from === 'chat' ? undefined : clip(firstLine(String(e.task ?? '')), 140) || undefined;
         events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'info',
-          label: from === 'schedule' ? 'Scheduled run started' : from === 'chat' ? 'Started from your message' : from === 'user' ? 'Task from you' : `Handed over by ${from}`,
+          label: from === 'schedule' ? 'Scheduled run started' : from === 'chat' ? 'Started from your message' : from === 'task' ? 'Woken: a task it holds progressed' : from === 'user' ? 'Task from you' : `Handed over by ${from}`,
           detail: from === 'chat' ? undefined : clip(String(e.task ?? ''), 240) });
       } else if (e.type === 'resume') {
         events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'info', label: e.from === 'checkpoint' ? 'Continued after an interruption' : 'Continued after your answer' });
@@ -147,15 +190,31 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
       } else if (e.type === 'park') {
         events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'warn', label: 'Waiting for you' });
       } else if (e.type === 'end') {
-        const [label, tone] = END_LABEL[String(e.status)] ?? [String(e.status), 'mute' as Tone];
-        events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone, label, detail: e.summary ? clip(String(e.summary), 400) : undefined, outputs: Array.isArray(e.outputs) && e.outputs.length ? e.outputs.map(String) : undefined });
+        const st = String(e.status);
+        const [label, tone] = END_LABEL[st] ?? [st, 'mute' as Tone];
+        const outputs = Array.isArray(e.outputs) && e.outputs.length ? e.outputs.map(String) : [...new Set(wrote)];
+        const split = splitOutputs(Array.isArray(e.deliverables) ? e.deliverables.map(String) : undefined, outputs);
+        const summary = e.summary ? clip(String(e.summary), 1200) : undefined;
+        const msg = errEv && !(summary ?? '').includes(errEv.message) ? errEv.message : undefined;
+        // The whole run folds behind its card; the human's own messages are not part of the audit and stay outside, in order.
+        const fold = events.splice(runStart);
+        const bad = fold.flatMap(f => (f.kind === 'steps' ? f.steps.filter(x => !x.ok) : []));
+        const count = (re: RegExp) => bad.filter(x => re.test(x.detail ?? '')).length;
+        const problems = { refused: count(/^REFUSED/), error: count(/^ERROR/), failed: 0 };
+        problems.failed = bad.length - problems.refused - problems.error;
+        events.push({ kind: 'result', ts: e.ts, chainId: c.chainId, status: st, label, tone, goal,
+          detail: [summary, msg].filter(Boolean).join('\n') || undefined, next: st === 'open' ? next : undefined, handoff, deliverables: split.deliverables.map(d => ({ path: d, preview: previewOf(root, d) })), supporting: split.supporting, approvals: approvals.length ? approvals.map(a => a.text) : undefined,
+          fold, stepCount: fold.reduce((n2, f) => n2 + (f.kind === 'steps' ? f.steps.length : 0), 0), problems });
+        resetRun();
       } else if (e.type === 'error') {
-        events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: e.cancelled ? 'mute' : 'bad', label: e.cancelled ? 'Cancelled' : 'Error', detail: clip(String(e.message ?? ''), 300) });
+        const ev: ThreadEvent = { kind: 'status', ts: e.ts, chainId: c.chainId, tone: e.cancelled ? 'mute' : 'bad', label: e.cancelled ? 'Cancelled' : 'Error', detail: clip(String(e.message ?? ''), 300) };
+        events.push(ev);
+        errEv = { ev, message: clip(String(e.message ?? ''), 300) };
       } else if (e.type === 'retry') {
         events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'warn', label: `Will be retried (${e.reason})` });
       } else if (e.type === 'gate') {
         const a = gateAnswer(root, e);
-        if (a) { events.push(a); }
+        if (a) { events.push(a); if (e.status === 'executed' || e.status === 'failed') { approvals.push({ ev: a, text: `${a.title}: ${a.text}` }); } }
       }
     }
     flush();
@@ -171,9 +230,9 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
 
 export type ChatState = 'running' | 'waiting' | 'queued' | 'idle';
 
-export function chatState(root: string, agent: string, active?: string): { state: ChatState; pendingMessages: number; needsYou: number } {
+export function chatState(root: string, agent: string, active?: Active): { state: ChatState; pendingMessages: number; needsYou: number } {
   const needsYou = listGates(root).filter(g => g.agent === agent && g.status === 'pending').length;
-  const state: ChatState = active === agent ? 'running'
+  const state: ChatState = isActive(active, agent) ? 'running'
     : needsYou > 0 || waiting(root).some(i => i.agent === agent) ? 'waiting'
       : queuedItems(root, agent).length > 0 ? 'queued' : 'idle';
   return { state, pendingMessages: pendingMessages(root, agent).length, needsYou };
@@ -188,7 +247,7 @@ export const routeFor = (state: ChatState): Route => (state === 'running' ? 'in-
 export function conversationContext(root: string, agent: string, max = 6): string {
   const { events } = buildThread(root, agent, { limit: 60 });
   const lines = events.flatMap(e => e.kind === 'human' ? [`You: ${clip(e.text, 300)}`]
-    : e.kind === 'status' && e.detail && e.label !== 'Scheduled run started' && !e.label.startsWith('Task') && !e.label.startsWith('Handed') ? [`${agent}: ${e.label}. ${clip(e.detail, 300)}`]
+    : (e.kind === 'status' || e.kind === 'result') && e.detail && e.label !== 'Scheduled run started' && !e.label.startsWith('Task') && !e.label.startsWith('Handed') ? [`${agent}: ${e.label}. ${clip(e.detail, 300)}`]
       : e.kind === 'answer' ? [`You, on "${clip(e.title, 60)}": ${clip(e.text, 200)}`] : []);
   return lines.length ? `Conversation so far (oldest first):\n${lines.slice(-max).join('\n')}` : '';
 }
@@ -212,7 +271,7 @@ export interface Glance {
 const BAD_END = new Set(['blocked', 'error', 'stalled', 'max_steps']);
 const HOUR = 3600_000;
 
-export function glance(root: string, agent: string, description: string, active?: string, now = new Date()): Glance {
+export function glance(root: string, agent: string, description: string, active?: Active, now = new Date()): Glance {
   const cs = chatState(root, agent, active);
   // The newest few audit files are enough to know what it is doing or did last.
   const mine = readAudit(root, 2).slice(-8).flatMap(c => c.events.filter(e => e.agent === agent));
@@ -225,7 +284,7 @@ export function glance(root: string, agent: string, description: string, active?
   let avatar: AvatarState = 'idle';
   if (cs.state === 'running') {
     avatar = 'working';
-    line = lastTool ? `${lastTool.name} · ${brief(lastTool.input) || '…'}` : 'Starting…';
+    line = lastTool ? humanize(String(lastTool.name), lastTool.input).phrase : 'Starting…';
     at = lastTool?.ts ?? sinceStart[0]?.ts;
   } else if (cs.state === 'waiting') {
     avatar = 'waiting';

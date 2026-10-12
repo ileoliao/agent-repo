@@ -1,12 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { AgentDef, SkillDef, loadAllAgents, loadSkills, pickModel, validateTeam } from './team';
-import { cronMatches, minuteKey, missedSince } from './cron';
-import { Gate, WorkItem, audit, complete, enqueue, getGate, hasOpenScheduled, scheduledToday, listGates, newId, nextItem, pending, saveGate, waiting } from './queue';
-import { loadPolicy, skillScriptRule } from './policy';
-import { checkWake } from './wake';
+import { AgentDef, GoalDef, SkillDef, loadAllAgents, loadSkills, pickModel, policyPathFor, validateTeam } from './team';
+import { Gate, WorkItem, audit, complete, enqueue, getGate, listGates, newId, nextItem, pending, saveGate, waiting, keepQueued } from './queue';
+import { loadPolicy } from './policy';
+import { GoalIO, checkSilence, fireGoal, goalsDue } from './goals';
 import { runItem } from './runner';
+import { taskOnEnd } from './tasks';
 import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
 import { InboxView, showGate } from './inbox';
 import { ConsolePanel } from './consoleView';
@@ -25,16 +25,7 @@ const STARTED_KEY = 'loopRunner.teamStarted';
 const NEEDS_YOU = new Set(['blocked', 'error', 'max_steps', 'stalled']);
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const TRANSIENT = /rate.?limit|quota|exhausted|too many requests|temporarily blocked/i;
-
-/**
- * Cancelled work and temporary quota/rate-limit errors stay in the agent queue so the next start retries them.
- * A context overflow ("Message exceeds token limit.") is permanent for that item: retrying it would loop forever.
- */
-export function keepQueued(status: string, summary?: string): boolean {
-  const s = summary ?? '';
-  return status === 'cancelled' || (status === 'error' && TRANSIENT.test(s) && !/token limit/i.test(s));
-}
+export { keepQueued };
 
 /** Models for a start. An empty list means Copilot is not ready yet (no sign-in or network): wait for it once. */
 export async function selectModelsWhenReady<T>(
@@ -72,17 +63,21 @@ export async function ensureConsent<M extends { id: string; name: string }>(
   return problems;
 }
 
-class TeamService {
+export class TeamService {
   team = new Map<string, AgentDef>();
   skills = new Map<string, SkillDef>();
   running = false;
-  activeAgent?: string;
+  /** The runs in progress, in the order they started. */
+  private live = new Map<string, { item: WorkItem; cts: vscode.CancellationTokenSource; startedAt: number; /** Set by Cancel this run: closed as cancelled instead of kept for a retry. */ drop: boolean; done: Promise<void> }>();
+  /** A rate-limit pause is on: nothing new starts until it ends. */
+  private paused = false;
+  private pumping = false;
+  private startedAt = new Date();
+  /** Goals already announced as silent (goalKey). */
+  private silent = new Set<string>();
+  private lastAlert = new Map<string, string>();
   private timer?: NodeJS.Timeout;
-  private busy = false;
   private scheduling = false;
-  private current?: vscode.CancellationTokenSource;
-  /** Set by Cancel this run: the run is closed as cancelled instead of being kept for a retry. */
-  private dropCurrent = false;
   private lastFired = new Map<string, string>();
   /** Per agent: the model resolved at start. */
   private models = new Map<string, vscode.LanguageModelChat>();
@@ -91,6 +86,13 @@ class TeamService {
   /** True once a rate-limit pause has been announced; cleared when an item finishes normally. */
   private rateAlerted = false;
   private starting = false;
+
+  /** Agents with a run in progress. */
+  get activeAgents(): string[] { return [...new Set([...this.live.values()].map(l => l.item.agent))]; }
+  /** The earliest-started running agent (status line fallbacks and the simulation). */
+  get activeAgent(): string | undefined { return this.activeAgents[0]; }
+  /** Worker slots. The simulation scripts time and runs one at a time. */
+  private workers(): number { return simEnabled() ? 1 : Math.max(1, Math.floor(this.cfg().get<number>('workers', 2)) || 1); }
 
   constructor(
     private ctx: vscode.ExtensionContext,
@@ -183,13 +185,15 @@ class TeamService {
       return;
     }
     this.running = true;
+    this.startedAt = this.now();
+    this.silent.clear();
     await this.ctx.workspaceState.update(STARTED_KEY, true);
     if (!this.running) {
       // Stop Team won the race while the flag was being written.
       await this.ctx.workspaceState.update(STARTED_KEY, false);
       return;
     }
-    this.out.appendLine(`Team started: ${[...this.team.values()].map(a => `${a.name} [${this.models.get(a.name)?.name}]` + (a.schedule ? ` (${a.schedule}${a.wakeIf ? ', wakeIf' : ''})` : '')).join(', ')}`);
+    this.out.appendLine(`Team started: ${[...this.team.values()].map(a => `${a.name} [${this.models.get(a.name)?.name}]` + (a.goals.length ? ` (${a.goals.map(g => g.schedule ? `${g.id}: ${g.schedule}${g.wakeIf ? ', wakeIf' : ''}` : g.id).join('; ')})` : '')).join(', ')}`);
     if (this.timer) clearInterval(this.timer);
     // The simulation drives ticks itself; a 20s interval would race with scripted time.
     this.timer = setInterval(() => void this.tick(), simEnabled() ? 3_600_000 : 20_000);
@@ -202,7 +206,7 @@ class TeamService {
   stop(user = false): void {
     this.running = false;
     if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
-    this.current?.cancel();
+    for (const l of this.live.values()) { l.cts.cancel(); }
     if (user) void this.ctx.workspaceState.update(STARTED_KEY, false);
     this.out.appendLine('Team stopped.');
     this.changed();
@@ -213,7 +217,7 @@ class TeamService {
     const root = this.root();
     if (!root) { throw new Error('Open a folder first.'); }
     if (!this.team.has(agent)) { throw new Error(`${agent} is not on the team. Reload the team if you just added it.`); }
-    const route = routeFor(chatState(root, agent, this.activeAgent).state);
+    const route = routeFor(chatState(root, agent, this.activeAgents).state);
     const context = route === 'new-task' ? conversationContext(root, agent) : '';
     const m = postHumanMessage(root, agent, text);
     if (route === 'new-task') {
@@ -225,16 +229,18 @@ class TeamService {
 
   /** Stop the agent's current run for good: it is closed as cancelled and not retried, unlike Stop Team. */
   cancelRun(agent: string): boolean {
-    if (!this.current || this.activeAgent !== agent) { return false; }
-    this.dropCurrent = true;
-    this.current.cancel();
+    // With several runs of one agent, the earliest-started one (the one that reads the human's messages).
+    const l = [...this.live.values()].find(x => x.item.agent === agent);
+    if (!l) { return false; }
+    l.drop = true;
+    l.cts.cancel();
     return true;
   }
 
   /** Words that arrived after the agent's last turn: if nothing else is going to read them, they start a run. */
   private followUpMessages(root: string, agent: string): void {
     const late = pendingMessages(root, agent);
-    if (!late.length || chatState(root, agent, this.activeAgent).state !== 'idle') { return; }
+    if (!late.length || chatState(root, agent, this.activeAgents).state !== 'idle') { return; }
     const context = conversationContext(root, agent);
     markDelivered(root, agent, late.map(m => m.id), { via: 'task' });
     this.submit(agent, late.map(m => m.text).join('\n\n'), 'chat', context || undefined);
@@ -248,9 +254,8 @@ class TeamService {
   tick(): Promise<void> {
     const root = this.root();
     if (!this.running || !root) { this.changed(); return Promise.resolve(); }
-    return this.schedule(root).then(() => {
-      if (!this.busy) return this.work(root);
-    }).then(() => { this.changed(); });
+    return this.schedule(root).then(() => checkSilence(root, this.team.values(), this.startedAt, this.now(), this.silent, ev => this.alert(ev)))
+      .then(() => { void this.pump(root); }).then(() => { this.changed(); });
   }
 
   private now(): Date {
@@ -268,80 +273,48 @@ class TeamService {
   private async drainThenSchedule(): Promise<void> {
     const root = this.root();
     if (!this.running || !root) { this.changed(); return; }
-    if (!this.busy) await this.work(root);
+    await this.drain(root);
     if (!this.running) { this.changed(); return; }
     await this.catchUp(root);
     if (!this.running) { this.changed(); return; }
     await this.schedule(root);
-    if (this.running && !this.busy) await this.work(root);
+    // After the catch-up checks, so a goal that was silent while VS Code was closed is reported only if it still is.
+    await checkSilence(root, this.team.values(), this.startedAt, this.now(), this.silent, ev => this.alert(ev));
+    if (this.running) await this.drain(root);
     this.changed();
   }
 
-  /** One wakeIf per role if any cron minute was missed while the team was not running. */
-  private async catchUp(root: string): Promise<void> {
-    if (this.scheduling) return;
-    this.scheduling = true;
-    try {
-      this.loadFired(root);
-      const now = this.now();
-      for (const a of this.team.values()) {
-        if (!this.running) return;
-        if (!a.schedule || !a.task) continue;
-        if (!missedSince(a.schedule, this.lastFired.get(a.name), now)) continue;
-        this.out.appendLine(`${a.name}: missed a scheduled wake; catching up once.`);
-        await this.fireSchedule(root, a, now);
-      }
-    } finally {
-      this.scheduling = false;
-    }
+  private goalIO(root: string): GoalIO {
+    return {
+      lastFired: this.lastFired, save: () => this.saveFired(root), skills: this.skills, wakeErrors: this.wakeErrors, lastAlert: this.lastAlert,
+      policy: (a, g) => loadPolicy(root, policyPathFor(a, g.id, this.cfg().get<string>('policyFile', '.loop/policy.json'))),
+      secrets: () => this.secrets(), alert: ev => this.alert(ev), log: l => this.out.appendLine(l)
+    };
   }
 
-  /** Due schedules: run the zero-token wakeIf check first; only enqueue model work if it says so. */
-  private async schedule(root: string): Promise<void> {
+  /** One wakeIf per goal if any cron minute was missed while the team was not running. */
+  private async catchUp(root: string): Promise<void> { await this.fireDue(root, true); }
+
+  /** Due goals: run the zero-token wakeIf check first; only enqueue model work if it says so. */
+  private async schedule(root: string): Promise<void> { await this.fireDue(root, false); }
+
+  private async fireDue(root: string, catchUp: boolean): Promise<void> {
     if (this.scheduling) { return; }
     this.scheduling = true;
     try {
       this.loadFired(root);
       const now = this.now();
-      const minute = minuteKey(now);
-      for (const a of this.team.values()) {
-        if (!a.schedule || !a.task || this.lastFired.get(a.name) === minute) { continue; }
+      const io = this.goalIO(root);
+      // Decided up front: firing one goal changes lastFired, not what is due for the others.
+      for (const d of goalsDue(this.team.values(), this.lastFired, now, catchUp)) {
+        if (!this.running && catchUp) { return; }
         // Also covers slots missed while the machine slept with VS Code open (one catch-up wake, not one per slot).
-        if (!cronMatches(a.schedule, now)) {
-          if (!missedSince(a.schedule, this.lastFired.get(a.name), now)) { continue; }
-          this.out.appendLine(`${a.name}: missed a scheduled wake; catching up once.`);
-        }
-        await this.fireSchedule(root, a, now);
+        if (d.missed) { this.out.appendLine(`${d.agent.name}/${d.goal.id}: missed a scheduled wake; catching up once.`); }
+        await fireGoal(root, d.agent, d.goal, now, io);
       }
     } finally {
       this.scheduling = false;
     }
-  }
-
-  private async fireSchedule(root: string, a: AgentDef, now: Date): Promise<void> {
-    const task = a.task;
-    if (!task) return;
-    this.lastFired.set(a.name, minuteKey(now));
-    this.saveFired(root);
-    if (hasOpenScheduled(root, a.name)) return;
-    if (a.maxRunsPerDay !== undefined && scheduledToday(root, a.name, now) >= a.maxRunsPerDay) {
-      audit(root, `wake-${now.toISOString().slice(0, 10)}`, { type: 'wake', agent: a.name, wake: false, capped: a.maxRunsPerDay });
-      return;
-    }
-    const policy = loadPolicy(root, a.policy ?? this.cfg().get<string>('policyFile', '.loop/policy.json'));
-    const extraAllow = a.skills.map(s => this.skills.get(s)).filter((s): s is SkillDef => !!s).map(s => skillScriptRule(s.relDir));
-    const w = await checkWake(root, a, policy, extraAllow, await this.secrets());
-    audit(root, `wake-${now.toISOString().slice(0, 10)}`, { type: 'wake', agent: a.name, wake: w.wake, error: w.error });
-    if (w.error) {
-      if (this.wakeErrors.get(a.name) !== w.error) {
-        this.wakeErrors.set(a.name, w.error);
-        await this.alert({ kind: 'error', agent: a.name, title: `${a.name}: wakeIf check is failing`, detail: w.error });
-      }
-      return;
-    }
-    if (this.wakeErrors.delete(a.name)) { this.out.appendLine(`${a.name}: wakeIf recovered.`); }
-    if (!w.wake) return;
-    enqueue(root, { id: newId(), agent: a.name, task, context: w.context, from: 'schedule', chainId: newId(), hop: 0, createdAt: now.toISOString() });
   }
 
   private loadFired(root: string): void {
@@ -362,73 +335,93 @@ class TeamService {
     fs.writeFileSync(path.join(root, '.loop', 'schedule-state.json'), JSON.stringify(data, null, 2));
   }
 
-  private async work(root: string): Promise<void> {
-    this.busy = true;
+  /** Start as many queued items as the pool allows (see `pickItem`). Does not wait for them. */
+  private async pump(root: string): Promise<void> {
+    if (this.pumping) { return; }
+    this.pumping = true;
     try {
       let item: WorkItem | undefined;
-      while (this.running && (item = nextItem(root, [...this.team.keys()]))) {
+      while (this.running && !this.paused && (item = nextItem(root, [...this.team.keys()], [...this.live.values()].map(l => l.item), this.workers()))) {
         const agent = this.team.get(item.agent);
         if (!agent) { complete(root, item, 'error', 'unknown agent'); continue; }
         const model = this.models.get(agent.name);
         if (!model) { complete(root, item, 'error', `no model resolved for ${agent.name}`); continue; }
-        this.current = new vscode.CancellationTokenSource();
-        this.dropCurrent = false;
-        this.activeAgent = agent.name;
-        this.changed();
-        const r = await runItem(item, {
-          root, team: this.team, skills: this.skills,
-          policy: loadPolicy(root, agent.policy ?? this.cfg().get<string>('policyFile', '.loop/policy.json')),
-          model, secrets: await this.secrets(),
-          maxSteps: this.cfg().get<number>('maxSteps', 40),
-          maxHops: this.cfg().get<number>('maxHops', 5),
-          maxMs: this.cfg().get<number>('maxMinutes', 30) * 60_000,
-          out: this.out, token: this.current.token
-        });
-        this.current.dispose();
-        this.current = undefined;
-        this.activeAgent = undefined;
-        if (this.dropCurrent) {
-          this.dropCurrent = false;
-          if (r.status === 'cancelled') {
-            audit(root, item.chainId, { type: 'end', agent: agent.name, itemId: item.id, step: r.steps, status: 'cancelled', summary: 'cancelled by the human', outputs: [] });
-            complete(root, item, 'cancelled', 'cancelled by the human');
-            this.followUpMessages(root, agent.name);
-            this.changed();
-            continue;
-          }
-        }
-        if (keepQueued(r.status, r.summary)) {
-          const reason = r.status === 'cancelled' ? 'cancelled' : 'rate-limit';
-          const queued = fs.existsSync(path.join(root, '.loop', 'queue', item.agent, `${item.id}.json`));
-          audit(root, item.chainId, { type: 'retry', agent: agent.name, itemId: item.id, reason, summary: r.summary });
-          simTrace(root, { event: 'kept-queued', reason, id: item.id, agent: item.agent, queued });
-          this.out.appendLine(`${agent.name} ${item.id} stays queued (${reason}).`);
+        const started = item;
+        const cts = new vscode.CancellationTokenSource();
+        const entry = { item: started, cts, startedAt: Date.now(), drop: false, done: Promise.resolve() };
+        this.live.set(started.id, entry);
+        entry.done = this.runOne(root, started, agent, model, entry).then(again => {
+          cts.dispose();
+          this.live.delete(started.id);
           this.changed();
-          if (reason === 'rate-limit' && this.running) {
-            if (!this.rateAlerted) {
-              this.rateAlerted = true;
-              await this.alert({ kind: 'error', agent: agent.name, title: `${agent.name}: model rate limit or quota hit, worker paused`, detail: r.summary, itemId: item.id, chainId: item.chainId });
-            }
-            const ms = this.ratePauseMs();
-            this.out.appendLine(`Model quota/rate limit hit: pausing the worker for ${ms === 10 * 60_000 ? '10 minutes' : `${ms} ms`}. The item stays queued and will be retried.`);
-            await sleep(ms);
-            if (this.running) continue;
-          }
-          break;
-        }
-        this.rateAlerted = false;
-        complete(root, item, r.status, r.summary, r.gateId);
-        if (r.status !== 'waiting') { this.followUpMessages(root, agent.name); }
-        await this.notifyPendingGates();
-        if (NEEDS_YOU.has(r.status)) {
-          await this.alert({ kind: r.status as LoopEvent['kind'], agent: agent.name, title: `${agent.name}: ${r.status}`, detail: r.summary, itemId: item.id, chainId: item.chainId });
-        }
+          if (again && this.running) { void this.pump(root); }
+        });
         this.changed();
       }
     } finally {
-      this.busy = false;
-      this.changed();
+      this.pumping = false;
     }
+  }
+
+  /** Wait until nothing is running and nothing more can start (used on start, to finish what was already queued). */
+  private async drain(root: string): Promise<void> {
+    do {
+      await this.pump(root);
+      if (!this.live.size) { break; }
+      await Promise.race([...this.live.values()].map(l => l.done));
+    } while (this.running);
+  }
+
+  /** Runs one item to its end. Returns whether the pool should look for more work right away. */
+  private async runOne(root: string, item: WorkItem, agent: AgentDef, model: vscode.LanguageModelChat, live: { cts: vscode.CancellationTokenSource; drop: boolean }): Promise<boolean> {
+    const earliest = () => [...this.live.values()].find(l => l.item.agent === agent.name)?.item.id === item.id;
+    const r = await runItem(item, {
+      root, team: this.team, skills: this.skills,
+      policy: loadPolicy(root, policyPathFor(agent, item.goal, this.cfg().get<string>('policyFile', '.loop/policy.json'))),
+      model, secrets: await this.secrets(),
+      maxSteps: this.cfg().get<number>('maxSteps', 40),
+      maxHops: this.cfg().get<number>('maxHops', 5),
+      maxMs: this.cfg().get<number>('maxMinutes', 30) * 60_000,
+      takesMessages: earliest,
+      out: this.out, token: live.cts.token
+    });
+    this.live.delete(item.id);
+    if (live.drop && r.status === 'cancelled') {
+      audit(root, item.chainId, { type: 'end', agent: agent.name, itemId: item.id, step: r.steps, status: 'cancelled', summary: 'cancelled by the human', outputs: [] });
+      taskOnEnd(root, item, 'cancelled_by_human', undefined, undefined, this.cfg().get<number>('maxHops', 5));
+      complete(root, item, 'cancelled', 'cancelled by the human');
+      this.followUpMessages(root, agent.name);
+      return true;
+    }
+    if (keepQueued(r.status, r.summary)) {
+      const reason = r.status === 'cancelled' ? 'cancelled' : 'rate-limit';
+      const queued = fs.existsSync(path.join(root, '.loop', 'queue', item.agent, `${item.id}.json`));
+      audit(root, item.chainId, { type: 'retry', agent: agent.name, itemId: item.id, reason, summary: r.summary });
+      simTrace(root, { event: 'kept-queued', reason, id: item.id, agent: item.agent, queued });
+      this.out.appendLine(`${agent.name} ${item.id} stays queued (${reason}).`);
+      if (reason === 'rate-limit' && this.running) {
+        // The whole pool pauses (the quota is shared), and before any await so the queued item is not picked up again meanwhile.
+        this.paused = true;
+        if (!this.rateAlerted) {
+          this.rateAlerted = true;
+          await this.alert({ kind: 'error', agent: agent.name, title: `${agent.name}: model rate limit or quota hit, worker paused`, detail: r.summary, itemId: item.id, chainId: item.chainId });
+        }
+        const ms = this.ratePauseMs();
+        this.out.appendLine(`Model quota/rate limit hit: pausing the workers for ${ms === 10 * 60_000 ? '10 minutes' : `${ms} ms`}. The item stays queued and will be retried.`);
+        await sleep(ms);
+        this.paused = false;
+        return true;
+      }
+      return false;
+    }
+    this.rateAlerted = false;
+    complete(root, item, r.status, r.summary, r.gateId);
+    if (r.status !== 'waiting') { this.followUpMessages(root, agent.name); }
+    await this.notifyPendingGates();
+    if (NEEDS_YOU.has(r.status)) {
+      await this.alert({ kind: r.status as LoopEvent['kind'], agent: agent.name, title: `${agent.name}: ${r.status}`, detail: r.summary, itemId: item.id, chainId: item.chainId });
+    }
+    return true;
   }
 
   /**
@@ -479,9 +472,9 @@ class TeamService {
   status(): string {
     const root = this.root();
     if (!root) { return 'no folder'; }
-    const lines = [`running: ${this.running}${this.activeAgent ? ` | active: ${this.activeAgent}` : ''} | waiting on you: ${waiting(root).length} item(s)`];
+    const lines = [`running: ${this.running}${this.activeAgents.length ? ` | active: ${this.activeAgents.join(', ')}` : ''} | waiting on you: ${waiting(root).length} item(s)`];
     for (const a of this.team.values()) {
-      lines.push(`- ${a.name}: queue ${pending(root, a.name).length} | skills [${a.skills.join(', ')}] | handoffs [${a.handoffs.join(', ')}]${a.schedule ? ` | ${a.schedule}` : ''}`);
+      lines.push(`- ${a.name}: queue ${pending(root, a.name).length} | skills [${a.skills.join(', ')}] | handoffs [${a.handoffs.join(', ')}]${a.goals.length ? ` | ${a.goals.map(g => `${g.id}${g.schedule ? ` ${g.schedule}` : ''}`).join('; ')}` : ''}`);
     }
     return lines.join('\n');
   }
@@ -503,7 +496,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   menu.tooltip = 'Loop Runner: all commands';
   menu.command = 'loopRunner.menu';
   menu.show();
-  const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, () => svc.activeAgent);
+  const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, () => svc.activeAgents);
   let consolePanel: ConsolePanel | undefined;
   const refresh = () => {
     inbox.refresh();
@@ -511,10 +504,11 @@ export function activate(ctx: vscode.ExtensionContext) {
     const n = inbox.pendingCount();
     // Live state in one line: what is running (and which step), or when the next wake is due.
     const r = svc.root();
-    const nw = r ? nextWake(agentRows(r, svc.activeAgent)) : undefined;
+    const nw = r ? nextWake(agentRows(r, svc.activeAgents)) : undefined;
     const current = r && svc.activeAgent ? recentRuns(r, 5).find(x => x.status === 'running' && x.agent === svc.activeAgent) : undefined;
+    const many = svc.activeAgents.length > 1 ? svc.activeAgents.join(', ') : undefined;
     const state = !svc.running ? '$(debug-stop) Loop · stopped'
-      : svc.activeAgent ? `$(sync~spin) Loop: ${svc.activeAgent}${current ? ` · step ${current.step}` : ''}`
+      : svc.activeAgent ? `$(sync~spin) Loop: ${many ?? svc.activeAgent}${current && !many ? ` · step ${current.step}` : ''}`
       : `$(debug-pause) Loop · idle${nw ? ` · next ${hhmm(nw.at)}` : ''}`;
     bar.text = `${state}${n ? ` · $(bell-dot) ${n}` : ''}`;
     bar.tooltip = n ? `${n} item(s) need you: click to open the inbox` : 'Loop Runner: click to open the inbox';
@@ -543,7 +537,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   };
   // A resolved gate may have woken a parked item; tick so the worker picks it up right away.
   const after = (_woke: boolean) => { svc.tick(); inbox.refresh(); consolePanel?.refresh(); };
-  const policyFor = (g: Gate) => loadPolicy(root(), svc.team.get(g.agent)?.policy ?? svc.cfg().get<string>('policyFile', '.loop/policy.json'));
+  const policyFor = (g: Gate) => loadPolicy(root(), (svc.team.get(g.agent) ? policyPathFor(svc.team.get(g.agent)!, g.goal, '') : '') || svc.cfg().get<string>('policyFile', '.loop/policy.json'));
   const approveGate = async (id: string, seen?: Record<string, string>) => {
     const g = getGate(root(), id);
     if (!g) { throw new Error(`No approval ${id}`); }
@@ -553,7 +547,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   };
   consolePanel = new ConsolePanel({
     root: () => svc.root(),
-    state: () => ({ running: svc.running, active: svc.activeAgent }),
+    state: () => ({ running: svc.running, active: svc.activeAgents }),
     answer: (id, text) => after(answerQuestion(root(), id, text).woke),
     approve: approveGate,
     reject: (id, fb) => after(rejectApproval(root(), id, fb).woke),
@@ -564,7 +558,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     const r = svc.root();
     return r ? {
       root: r,
-      state: () => ({ running: svc.running, active: svc.activeAgent }),
+      state: () => ({ running: svc.running, active: svc.activeAgents }),
       submit: (agent, task) => svc.submit(agent, task),
       answer: (id, text) => after(answerQuestion(r, id, text).woke),
       power: async on => { if (on) { await svc.start(true); } else { svc.stop(true); } refresh(); },
