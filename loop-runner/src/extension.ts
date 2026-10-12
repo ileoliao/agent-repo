@@ -10,6 +10,7 @@ import { runItem } from './runner';
 import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
 import { InboxView, showGate } from './inbox';
 import { ConsolePanel } from './consoleView';
+import { chatState, conversationContext, markDelivered, pendingMessages, postHumanMessage, routeFor } from './thread';
 import { registerLoopChat } from './chat';
 import { latestOutput } from './outbox';
 import { recentRuns } from './runs';
@@ -80,6 +81,8 @@ class TeamService {
   private busy = false;
   private scheduling = false;
   private current?: vscode.CancellationTokenSource;
+  /** Set by Cancel this run: the run is closed as cancelled instead of being kept for a retry. */
+  private dropCurrent = false;
   private lastFired = new Map<string, string>();
   /** Per agent: the model resolved at start. */
   private models = new Map<string, vscode.LanguageModelChat>();
@@ -203,6 +206,38 @@ class TeamService {
     if (user) void this.ctx.workspaceState.update(STARTED_KEY, false);
     this.out.appendLine('Team stopped.');
     this.changed();
+  }
+
+  /** The human writes to an agent in the chat. Where it goes depends on what the agent is doing (see routeFor). */
+  chatSend(agent: string, text: string): void {
+    const root = this.root();
+    if (!root) { throw new Error('Open a folder first.'); }
+    if (!this.team.has(agent)) { throw new Error(`${agent} is not on the team. Reload the team if you just added it.`); }
+    const route = routeFor(chatState(root, agent, this.activeAgent).state);
+    const context = route === 'new-task' ? conversationContext(root, agent) : '';
+    const m = postHumanMessage(root, agent, text);
+    if (route === 'new-task') {
+      markDelivered(root, agent, [m.id], { via: 'task' });
+      this.submit(agent, m.text, 'chat', context || undefined);
+    }
+    this.changed();
+  }
+
+  /** Stop the agent's current run for good: it is closed as cancelled and not retried, unlike Stop Team. */
+  cancelRun(agent: string): boolean {
+    if (!this.current || this.activeAgent !== agent) { return false; }
+    this.dropCurrent = true;
+    this.current.cancel();
+    return true;
+  }
+
+  /** Words that arrived after the agent's last turn: if nothing else is going to read them, they start a run. */
+  private followUpMessages(root: string, agent: string): void {
+    const late = pendingMessages(root, agent);
+    if (!late.length || chatState(root, agent, this.activeAgent).state !== 'idle') { return; }
+    const context = conversationContext(root, agent);
+    markDelivered(root, agent, late.map(m => m.id), { via: 'task' });
+    this.submit(agent, late.map(m => m.text).join('\n\n'), 'chat', context || undefined);
   }
 
   submit(agent: string, task: string, from = 'user', context?: string): void {
@@ -337,6 +372,7 @@ class TeamService {
         const model = this.models.get(agent.name);
         if (!model) { complete(root, item, 'error', `no model resolved for ${agent.name}`); continue; }
         this.current = new vscode.CancellationTokenSource();
+        this.dropCurrent = false;
         this.activeAgent = agent.name;
         this.changed();
         const r = await runItem(item, {
@@ -351,6 +387,16 @@ class TeamService {
         this.current.dispose();
         this.current = undefined;
         this.activeAgent = undefined;
+        if (this.dropCurrent) {
+          this.dropCurrent = false;
+          if (r.status === 'cancelled') {
+            audit(root, item.chainId, { type: 'end', agent: agent.name, itemId: item.id, step: r.steps, status: 'cancelled', summary: 'cancelled by the human', outputs: [] });
+            complete(root, item, 'cancelled', 'cancelled by the human');
+            this.followUpMessages(root, agent.name);
+            this.changed();
+            continue;
+          }
+        }
         if (keepQueued(r.status, r.summary)) {
           const reason = r.status === 'cancelled' ? 'cancelled' : 'rate-limit';
           const queued = fs.existsSync(path.join(root, '.loop', 'queue', item.agent, `${item.id}.json`));
@@ -372,6 +418,7 @@ class TeamService {
         }
         this.rateAlerted = false;
         complete(root, item, r.status, r.summary, r.gateId);
+        if (r.status !== 'waiting') { this.followUpMessages(root, agent.name); }
         await this.notifyPendingGates();
         if (NEEDS_YOU.has(r.status)) {
           await this.alert({ kind: r.status as LoopEvent['kind'], agent: agent.name, title: `${agent.name}: ${r.status}`, detail: r.summary, itemId: item.id, chainId: item.chainId });
@@ -509,7 +556,9 @@ export function activate(ctx: vscode.ExtensionContext) {
     state: () => ({ running: svc.running, active: svc.activeAgent }),
     answer: (id, text) => after(answerQuestion(root(), id, text).woke),
     approve: approveGate,
-    reject: (id, fb) => after(rejectApproval(root(), id, fb).woke)
+    reject: (id, fb) => after(rejectApproval(root(), id, fb).woke),
+    chatSend: (agent, text) => { svc.chatSend(agent, text); },
+    chatCancel: agent => svc.cancelRun(agent)
   });
   registerLoopChat(ctx, () => {
     const r = svc.root();
@@ -522,7 +571,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       reload: async () => { const errs = await svc.reloadAll(); refresh(); return errs; }
     } : undefined;
   });
-  const panelTimer = setInterval(() => consolePanel?.refresh(), 5000);
+  const panelTimer = setInterval(() => consolePanel?.refresh(), 3000);
 
   ctx.subscriptions.push(
     out, bar, toggle, result, menu, { dispose: () => clearInterval(panelTimer) },
@@ -630,6 +679,8 @@ export function activate(ctx: vscode.ExtensionContext) {
       vscode.commands.registerCommand('loopRunner._sim.answer', (gateId: string, answer: string) => {
         after(answerQuestion(root(), gateId, answer).woke);
       }),
+      vscode.commands.registerCommand('loopRunner._sim.chatSend', (agent: string, text: string) => { svc.chatSend(agent, text); }),
+      vscode.commands.registerCommand('loopRunner._sim.cancelRun', (agent: string) => svc.cancelRun(agent)),
       vscode.commands.registerCommand('loopRunner._sim.tick', () => svc.tick()),
       vscode.commands.registerCommand('loopRunner._sim.snapshot', () => ({
         running: svc.running, active: svc.activeAgent ?? null, status: svc.status(), bar: bar.text

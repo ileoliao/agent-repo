@@ -4,6 +4,8 @@ import { sha256Of } from './gates';
 import * as path from 'path';
 import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
+import { brief, clip, firstLine } from './textutil';
+import { ChatState, ThreadEvent, Tone, buildThread, chatState } from './thread';
 
 /** One line of a run's story: what the agent did at a step. */
 export interface Step {
@@ -32,6 +34,16 @@ function previewsOf(root: string, g: Gate): GateView['previews'] {
   });
 }
 
+export interface ChatModel {
+  agents: { name: string; state: ChatState; pendingMessages: number; needsYou: number }[];
+  selected?: string;
+  events: ThreadEvent[];
+  /** Earlier events that are not shown. */
+  hidden: number;
+  /** The selected agent's open questions and approvals, shown at the end of the conversation. */
+  gates: GateView[];
+}
+
 export interface ConsoleModel {
   running: boolean;
   active?: string;
@@ -39,21 +51,17 @@ export interface ConsoleModel {
   pending: GateView[];
   agents: AgentRow[];
   runs: ConsoleRun[];
+  /** Which page is showing. Chat is the default. */
+  tab: 'chat' | 'overview';
+  /** The conversation with one agent; only built while the chat tab is showing. */
+  chat?: ChatModel;
   /** ISO time this view was built. */
   updatedAt: string;
   /** Page-level message: no workspace, or the data could not be read. */
   note?: { tone: 'bad' | 'info'; text: string };
 }
 
-const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
-const firstLine = (s: string) => s.split('\n').find(l => l.trim()) ?? '';
-
-function brief(input: unknown): string {
-  if (!input || typeof input !== 'object') { return ''; }
-  const o = input as Record<string, unknown>;
-  const v = o.path ?? o.command ?? o.pattern ?? o.title ?? Object.values(o).find(x => typeof x === 'string');
-  return typeof v === 'string' ? clip(firstLine(v), 90) : '';
-}
+// clip, firstLine and brief live in textutil.ts so the chat thread can use them too.
 
 /** A run's audit file as a short list of steps. Read-only; torn lines are skipped. */
 export function stepsOf(file: string): Step[] {
@@ -80,14 +88,25 @@ export function stepsOf(file: string): Step[] {
 }
 
 /** Everything the console shows, as plain data. Pure and read-only: the same files the sidebar reads. */
-export function consoleModel(root: string, state: { running: boolean; active?: string }, now = new Date(), runLimit = 10): ConsoleModel {
+export function consoleModel(root: string, state: { running: boolean; active?: string; tab?: 'chat' | 'overview'; agent?: string }, now = new Date(), runLimit = 10): ConsoleModel {
   const agents = agentRows(root, state.active, now);
   const nw = nextWake(agents);
+  const tab = state.tab ?? 'chat';
+  const pending = listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) }));
+  let chat: ChatModel | undefined;
+  if (tab === 'chat') {
+    const rows = agents.map(a => ({ name: a.name, ...chatState(root, a.name, state.active) }));
+    const selected = rows.find(r => r.name === state.agent)?.name ?? rows.find(r => r.needsYou)?.name ?? rows.find(r => r.state === 'running')?.name ?? rows[0]?.name;
+    const th = selected ? buildThread(root, selected) : { events: [], hidden: 0 };
+    chat = { agents: rows, selected, events: th.events, hidden: th.hidden, gates: pending.filter(g => g.agent === selected) };
+  }
   return {
+    tab,
+    chat,
     running: state.running,
     active: state.active,
     next: nw ? { agent: nw.agent, at: nw.at.toISOString() } : undefined,
-    pending: listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) })),
+    pending,
     agents,
     // A run whose last event says "running" but that no live worker owns (team stopped, or another agent is active)
     // was cut off, for example when VS Code closed. Say so instead of showing it as running forever.
@@ -107,6 +126,12 @@ const when = (iso: string) => {
   const d = new Date(iso);
   if (isNaN(d.getTime())) { return ''; }
   return d.toDateString() === new Date().toDateString() ? time(iso) : `${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${time(iso)}`;
+};
+/** hh:mm today; month/day and hh:mm on another day. Short enough for a chat. */
+const whenShort = (iso: string) => {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) { return ''; }
+  return d.toDateString() === new Date().toDateString() ? time(iso) : `${d.toLocaleDateString([], { month: 'numeric', day: 'numeric' })} ${time(iso)}`;
 };
 /** A time with its exact value on hover. */
 const stamp = (iso: string, text: string) => `<time datetime="${esc(iso)}" title="${esc(new Date(iso).toLocaleString())}">${esc(text)}</time>`;
@@ -217,6 +242,66 @@ function agentRow(a: AgentRow): string {
 /** `hint` is trusted markup: callers pass only fixed strings. */
 const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
 
+
+const DELIVERY: Record<string, string> = { start: 'read when the run started', turn: 'read at its next step', resume: 'read when it resumed', task: 'started a run' };
+const toneOf = (t: Tone) => (t === 'mute' ? 'mute' : t);
+
+function threadEvent(e: ThreadEvent, agent: string): string {
+  if (e.kind === 'human') {
+    const seen = e.status === 'pending' ? `waiting for ${esc(agent)} to read it` : esc(DELIVERY[e.via ?? ''] ?? 'read');
+    return `<div class="msg human"><div class="bubble"><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))} · ${seen}</div></div></div>`;
+  }
+  if (e.kind === 'answer') {
+    return `<div class="msg human"><div class="bubble answer ${e.tone}"><div class="mkind">You answered “${esc(clip(e.title, 80))}”</div><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}</div></div></div>`;
+  }
+  if (e.kind === 'agent') {
+    return `<div class="msg agent"><div class="avatar">${icon('bot')}</div><div class="bubble"><div class="mname">${esc(agent)}</div><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}${e.step ? ` · step ${e.step}` : ''}</div></div></div>`;
+  }
+  if (e.kind === 'steps') {
+    const failed = e.steps.filter(s => !s.ok).length;
+    const li = e.steps.map(s => `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.ok ? 'dot' : 'x')}</span><div class="grow"><div class="step-title"><span class="kind">${esc(s.kind)}</span>${s.step ? `<span class="muted">#${s.step}</span>` : ''}<span class="mono">${esc(s.title)}</span></div>${s.detail && !/^(\[exit 0\]|ok)$/.test(s.detail) ? `<div class="${s.ok ? 'muted' : 'result-bad'} wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`).join('');
+    return `<details class="msg steps" data-k="st-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span class="muted mono grow steps-sum">${esc(clip(e.steps[0].title, 70))}${e.steps.length > 1 ? ` +${e.steps.length - 1} more` : ''}${failed ? ` · ${failed} failed` : ''}</span><span class="muted nowrap">${stamp(e.ts, whenShort(e.ts))}</span></summary><ol class="timeline">${li}</ol></details>`;
+  }
+  const outs = (e.outputs ?? []).map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
+  return `<div class="sline"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.detail ? `<span class="wrap-text">${esc(e.detail)}</span>` : ''}${outs}<span class="muted nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`;
+}
+
+function composerHint(name: string, state: ChatState, running: boolean): string {
+  switch (state) {
+    case 'running': return `${name} is working. It reads this at its next step, and can change course.`;
+    case 'waiting': return `${name} is waiting for your answer above. It reads this when it continues.`;
+    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The team is stopped.'}`;
+    default: return running ? `${name} is idle. This starts a new run.` : `The team is stopped. This is saved, and starts a run when you start the team.`;
+  }
+}
+
+const STATE_LABEL: Record<ChatState, string> = { running: 'working', waiting: 'waiting for you', queued: 'queued', idle: 'idle' };
+
+function renderChat(m: ConsoleModel): string {
+  const c = m.chat!;
+  if (!c.agents.length) { return empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.'); }
+  const sel = c.agents.find(a => a.name === c.selected)!;
+  const list = c.agents.map(a => `<button class="chat-agent ${a.name === sel.name ? 'on' : ''}" data-agent="${esc(a.name)}" aria-pressed="${a.name === sel.name}"><span class="dot ${a.state}" aria-hidden="true"></span><span class="grow"><span class="an">${esc(a.name)}</span><span class="muted as">${esc(STATE_LABEL[a.state])}</span></span>${a.needsYou ? `<span class="count warn" title="needs you">${a.needsYou}</span>` : ''}</button>`).join('');
+  const events = c.events.map(e => threadEvent(e, sel.name)).join('');
+  const gates = c.gates.length ? `<div class="thread-gates">${c.gates.map(gateCard).join('')}</div>` : '';
+  const empty0 = !c.events.length && !c.gates.length ? empty('send', `Nothing yet with ${sel.name}`, 'Say what you want below. If it is idle, this starts a run; if it is working, it will read it at its next step.') : '';
+  const cancel = sel.state === 'running' ? btn('Cancel this run', `data-chat-cancel="${esc(sel.name)}"`, 'secondary', 'stop') : '';
+  return `<div class="chat">
+    <nav class="chat-agents" aria-label="Agents">${list}</nav>
+    <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
+      <header class="chat-head"><b>${esc(sel.name)}</b><span class="chip ${sel.state === 'running' ? 'info' : sel.state === 'waiting' ? 'warn' : 'mute'}">${esc(STATE_LABEL[sel.state])}</span><span class="grow"></span>${cancel}</header>
+      <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${gates}</div>
+      <div class="composer"><div class="muted hint">${esc(composerHint(sel.name, sel.state, m.running))}</div>
+        <div class="row"><textarea rows="2" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}" aria-label="Message ${esc(sel.name)}" placeholder="Message ${esc(sel.name)}…  (Enter to send, Shift+Enter for a new line)"></textarea>${btn('Send', `data-chat-send="${esc(sel.name)}"`, 'primary', 'send')}</div></div>
+    </section></div>`;
+}
+
+function renderTabs(m: ConsoleModel): string {
+  const tab = (id: string, label: string, extra = '') => `<button role="tab" class="tab ${m.tab === id ? 'on' : ''}" aria-selected="${m.tab === id}" data-tab="${id}">${label}${extra}</button>`;
+  const needs = m.pending.length ? `<span class="count warn" title="needs you">${m.pending.length}</span>` : '';
+  return `<nav class="tabs" role="tablist">${tab('chat', 'Chat', needs)}${tab('overview', 'Overview')}</nav>`;
+}
+
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
   const live = m.runs.find(r => r.status === 'running' && r.agent === m.active);
@@ -241,9 +326,9 @@ export function renderBody(m: ConsoleModel): string {
     : empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.');
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
   return `<header class="bar"><div class="brand">Loop Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
-    ${note}<div class="tiles">${tiles}</div>
+    ${note}${renderTabs(m)}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
-    <h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`;
+    <h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
 }
 
 const STYLE = `
@@ -303,7 +388,32 @@ a{color:var(--vscode-textLink-foreground)}
 .agent-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.agent-name{font-weight:600;flex:1;text-decoration:none}.agent-name:hover{text-decoration:underline}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0 0;font-size:.92em}.kv dt{color:var(--vscode-descriptionForeground)}.kv dd{margin:0;overflow-wrap:anywhere}
 .empty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 12px;text-align:center;border:1px dashed var(--vscode-panel-border);border-radius:var(--r);color:var(--vscode-descriptionForeground)}.empty-title{color:var(--vscode-foreground);font-weight:600}
-.stale{margin:8px 0}.link{font-size:.9em}`;
+.stale{margin:8px 0}.link{font-size:.9em}
+.tabs{display:flex;gap:4px;margin:12px 0 0;border-bottom:1px solid var(--vscode-panel-border)}
+.tab{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:transparent;color:var(--vscode-descriptionForeground);border:0;border-bottom:2px solid transparent;font:inherit;cursor:pointer}
+.tab.on{color:var(--vscode-foreground);border-bottom-color:var(--vscode-focusBorder)}.tab:focus-visible{outline:1px solid var(--vscode-focusBorder)}
+.chat{display:grid;grid-template-columns:200px minmax(0,1fr);gap:16px;margin-top:12px;height:calc(100vh - 170px);min-height:380px}
+@media (max-width:700px){.chat{grid-template-columns:1fr;height:auto}}
+.chat-agents{display:flex;flex-direction:column;gap:4px;overflow:auto}
+.chat-agent{display:flex;align-items:center;gap:8px;padding:8px 10px;text-align:left;background:transparent;color:var(--vscode-foreground);border:1px solid transparent;border-radius:var(--r);font:inherit;cursor:pointer}
+.chat-agent:hover{background:var(--vscode-list-hoverBackground)}.chat-agent.on{background:var(--vscode-list-activeSelectionBackground,var(--vscode-list-hoverBackground));border-color:var(--cab)}
+.chat-agent:focus-visible{outline:1px solid var(--vscode-focusBorder)}.chat-agent .an{display:block;font-weight:600}.chat-agent .as{display:block;font-size:.85em}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--vscode-descriptionForeground)}.dot.running{background:var(--info)}.dot.waiting{background:var(--warn)}.dot.queued{background:var(--vscode-descriptionForeground);opacity:.7}.dot.idle{background:transparent;border:1px solid var(--vscode-descriptionForeground)}
+.chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background,transparent)}
+.chat-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--vscode-panel-border)}
+.thread{flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}.center{text-align:center}
+.msg{display:flex;gap:8px;max-width:100%}.msg.human{justify-content:flex-end}.msg.agent{justify-content:flex-start}
+.avatar{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);flex:none}
+.bubble{max-width:78%;padding:8px 12px;border-radius:12px;border:1px solid var(--vscode-panel-border);overflow-wrap:anywhere}
+.human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:transparent;border-bottom-right-radius:3px}
+.human .bubble .mmeta{color:inherit;opacity:.8}.human .bubble.answer{background:var(--vscode-editor-background);color:var(--vscode-foreground);border-color:var(--cab)}
+.agent .bubble{background:var(--vscode-editor-background);border-bottom-left-radius:3px}
+.mtext{white-space:pre-wrap}.mname{font-weight:600;margin-bottom:2px}.mkind{font-size:.85em;opacity:.8;margin-bottom:2px}.mmeta{font-size:.8em;color:var(--vscode-descriptionForeground);margin-top:4px}
+.steps{display:block;width:100%;border:1px dashed var(--vscode-panel-border);border-radius:var(--r);padding:4px 10px;background:transparent}.steps>summary{padding:2px 0}.steps .timeline{margin:6px 0 4px}
+.steps-sum{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}time{font-weight:400}
+.sline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;font-size:.92em;color:var(--vscode-descriptionForeground)}
+.thread-gates{width:100%;margin-top:6px}.thread-gates .card{margin-bottom:8px}
+.composer{padding:10px 14px;border-top:1px solid var(--vscode-panel-border)}.composer .hint{font-size:.88em;margin-bottom:6px}.composer textarea{flex:1}`;
 
 const SCRIPT = `
 const vs = acquireVsCodeApi(); const app = document.getElementById('app');
@@ -338,9 +448,21 @@ function scan() {
   if (empty) empty.classList.toggle('hidden', !document.querySelectorAll('details.run').length || [...document.querySelectorAll('details.run')].some(d => !d.classList.contains('hidden')));
   const sel = document.querySelector('[data-filter]'); if (sel) sel.value = filter;
 }
+function sendChat(agent) {
+  const ta = document.querySelector('[data-chat-input="' + CSS.escape(agent) + '"]');
+  const text = ta ? ta.value.trim() : '';
+  if (!text) return;
+  vs.postMessage({ type:'chatSend', agent, text });
+  ta.value = '';
+}
+// Enter sends, Shift+Enter is a new line; Enter that confirms an input-method composition (Chinese, Japanese) must not send.
+document.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && t.matches && t.matches('textarea[data-chat-input]') && e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendChat(t.dataset.chatInput); }
+});
 document.addEventListener('change', e => { if (e.target.matches('[data-filter]')) { filter = e.target.value; scan(); } });
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel]'); if (!t) return;
   e.preventDefault(); const d = t.dataset;
   if (d.open) vs.postMessage({ type:'open', path:d.open });
   else if (d.openAbs) vs.postMessage({ type:'openAbs', path:d.openAbs });
@@ -350,6 +472,14 @@ document.addEventListener('click', e => {
   else if (d.approve) { if (busy.has(d.approve) || t.disabled) return; busy.add(d.approve); scan(); vs.postMessage({ type:'approve', id:d.approve, seen:hashes(d.approve) }); }
   else if (d.reject) vs.postMessage({ type:'reject', id:d.reject, feedback:val(d.reject) });
   else if (d.ack) { reviewed[d.ack] = hashes(d.ack); scan(); }
+  else if (d.tab) vs.postMessage({ type:'view', tab:d.tab });
+  else if (d.agent) vs.postMessage({ type:'view', tab:'chat', agent:d.agent });
+  else if (d.chatSend) sendChat(d.chatSend);
+  else if (d.chatCancel) {
+    // Cancelling ends the run for good, so it takes two clicks.
+    if (t.dataset.armed) { delete t.dataset.armed; vs.postMessage({ type:'chatCancel', agent:d.chatCancel }); }
+    else { t.dataset.armed = '1'; const label = t.querySelector('span'); const old = label ? label.textContent : ''; if (label) label.textContent = 'Click again to cancel the run'; setTimeout(() => { delete t.dataset.armed; if (label) label.textContent = old; }, 4000); }
+  }
   else if (d.copy != null) { const done = () => { t.classList.add('picked'); setTimeout(() => t.classList.remove('picked'), 900); }; try { navigator.clipboard.writeText(d.copy).then(done, () => {}); } catch (_) {} }
 });
 // Re-render without losing what the user is doing: open sections, typed text, focus, filter.
@@ -362,14 +492,21 @@ window.addEventListener('message', ev => {
   const f = document.activeElement; const fk = f && f.dataset ? Object.entries(f.dataset).find(([k]) => /^(input|approve|reject|send|cmd|pick|open|ack|copy)$/.test(k)) : undefined;
   const sel = f && f.selectionStart;
   const y = window.scrollY;
+  // A conversation stays pinned to its newest message, unless the reader has scrolled up to read.
+  const th = document.querySelector('[data-thread]');
+  const stick = !th || th.scrollHeight - th.scrollTop - th.clientHeight < 40;
+  const topBefore = th ? th.scrollTop : 0, whose = th ? th.dataset.thread : '';
   app.innerHTML = ev.data.html;
   document.querySelectorAll('details[data-k]').forEach(d => { if (closed.has(d.dataset.k)) d.open = false; else if (open.has(d.dataset.k)) d.open = true; });
   document.querySelectorAll('textarea[data-input]').forEach(t => { if (typed[t.dataset.input]) t.value = typed[t.dataset.input]; });
   scan();
   if (fk) { const t = document.querySelector('[data-' + fk[0].replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + '="' + CSS.escape(fk[1]) + '"]'); if (t) { t.focus(); if (sel != null && t.setSelectionRange) t.setSelectionRange(sel, sel); } }
   window.scrollTo(0, y);
+  const th2 = document.querySelector('[data-thread]');
+  if (th2) th2.scrollTop = (stick || th2.dataset.thread !== whose) ? th2.scrollHeight : topBefore;
 });
 scan();
+{ const th0 = document.querySelector('[data-thread]'); if (th0) th0.scrollTop = th0.scrollHeight; }
 vs.postMessage({ type:'ready' });`;
 
 /** Full page. The script is the only inline code and carries the nonce; everything shown is escaped. */

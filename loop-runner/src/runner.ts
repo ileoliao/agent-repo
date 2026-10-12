@@ -7,6 +7,7 @@ import { buildTools, runTool, ToolOutcome } from './tools';
 import { outputsFrom, wroteFromAudit } from './runs';
 import { changedFiles, snapshotOutbox } from './outbox';
 import { memoryFor } from './manage';
+import { HumanMessage, formatForModel, markDelivered, pendingMessages } from './thread';
 import type { Agent as PiAgent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
 
@@ -41,9 +42,10 @@ You run unattended inside a policy. The human is not watching this conversation,
 - Actions that need human sign-off go through request_approval.
 - Hand work outside your role to a teammate with handoff, including all context they need.
 - Commands are non-interactive. Never start servers, watchers or anything that does not exit.
+- The human may send you a message while you work. It is an instruction from the person who owns this work: follow it within your policy. If it changes your task, say so in your next step and carry on from there.
 - Keep going until the work item is resolved, then call finish. If there is nothing to do, finish with nothing_to_do.`;
 
-export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps, 'team' | 'skills'>, memory = ''): string {
+export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps, 'team' | 'skills'>, memory = '', human: HumanMessage[] = []): string {
   const parts = [RUNTIME_RULES, `# Your role: ${agent.name}\n${agent.description}\n\n${agent.body}`];
   if (agent.skills.length) {
     parts.push('# Your skills');
@@ -59,6 +61,8 @@ export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps,
   if (memory.trim()) { parts.push(`# Standing instructions from the human (follow them in every run)\n${memory.trim()}`); }
   parts.push(`# Work item ${item.id}\nfrom: ${item.from} | chain: ${item.chainId} | hop: ${item.hop}\n\n${item.task}` +
     (item.context ? `\n\n## Context\n${item.context}` : ''));
+  // Anything the human said before this run began comes last, after the per-run item, so the static prefix is untouched.
+  if (human.length) { parts.push(formatForModel(human, 'start')); }
   return parts.join('\n\n');
 }
 
@@ -134,6 +138,24 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   const maxSteps = agent.maxSteps ?? deps.maxSteps;
   const log = (ev: Record<string, unknown>) => audit(deps.root, item.chainId, { agent: agent.name, itemId: item.id, ...ev });
 
+  // What the human said and the model has been given. It is marked delivered only once the turn that carried it is done and
+  // checkpointed, so an interruption in between delivers it again instead of losing it.
+  const inFlight: { id: string; via: NonNullable<HumanMessage['via']> }[] = [];
+  const commitHuman = () => {
+    for (const via of ['start', 'turn', 'resume'] as const) {
+      const ids = inFlight.filter(i => i.via === via).map(i => i.id);
+      if (ids.length) { markDelivered(deps.root, agent.name, ids, { itemId: item.id, via }); }
+    }
+    inFlight.length = 0;
+  };
+  const claim = (msgs: HumanMessage[], via: NonNullable<HumanMessage['via']>) => {
+    if (!msgs.length) { return msgs; }
+    inFlight.push(...msgs.map(m => ({ id: m.id, via })));
+    log({ type: 'human', via, ids: msgs.map(m => m.id), text: msgs.map(m => m.text).join(' / ').slice(0, 500) });
+    return msgs;
+  };
+  const unclaimed = () => pendingMessages(deps.root, agent.name).filter(m => !inFlight.some(i => i.id === m.id));
+
   let transcript: PlainMsg[];
   let step = 0;
 
@@ -152,26 +174,36 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
       if (!gate || gate.outcome === undefined) {
         return { status: 'error', summary: `cannot resume: checkpoint or gate outcome missing (${item.resumeGate})`, steps: 0 };
       }
+      const said = unclaimed();
       transcript.push({
         role: 'user',
-        parts: cp.turnResults.map(r => ({ t: 'result', callId: r.callId, text: r.callId === cp.parkedCallId ? gate.outcome! : r.text }))
+        parts: [
+          ...cp.turnResults.map((r): PlainPart => ({ t: 'result', callId: r.callId, text: r.callId === cp.parkedCallId ? gate.outcome! : r.text })),
+          ...(said.length ? [{ t: 'text', v: formatForModel(said) } as PlainPart] : [])
+        ]
       });
       limit = Math.max(maxSteps, step + 1);
       deps.out.appendLine(`\n▶ ${agent.name} resumes ${item.id} after ${gate.kind} ${gate.id}`);
       log({ type: 'resume', gateId: gate.id, kind: gate.kind, outcome: gate.outcome.slice(0, 2000) });
+      claim(said, 'resume');
     } else {
       deps.out.appendLine(`\n▶ ${agent.name} continues ${item.id} from its last completed step (${step})`);
       log({ type: 'resume', from: 'checkpoint', step });
+      const said = unclaimed();
+      if (said.length) { transcript.push({ role: 'user', parts: [{ t: 'text', v: formatForModel(said) }] }); claim(said, 'resume'); }
     }
   } else if (item.resumeGate) {
     return { status: 'error', summary: `cannot resume: checkpoint or gate outcome missing (${item.resumeGate})`, steps: 0 };
   } else {
-    transcript = [{ role: 'user', parts: [{ t: 'text', v: buildPrompt(agent, item, deps, memoryFor(deps.root, agent.name)) }] }];
+    const said = unclaimed();
+    transcript = [{ role: 'user', parts: [{ t: 'text', v: buildPrompt(agent, item, deps, memoryFor(deps.root, agent.name), said) }] }];
     deps.out.appendLine(`\n▶ ${agent.name} ← ${item.from} | ${item.id} | ${deps.model.family}`);
     log({ type: 'start', from: item.from, hop: item.hop, task: item.task, model: deps.model.id });
+    claim(said, 'start');
   }
 
   let finished: { status: string; summary: string } | undefined;
+  let finishedByTool = false;
   let parked: { gateId: string; callId: string } | undefined;
   let modelError: any;
   let hitLimit = false;
@@ -247,7 +279,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
       const wrote = before ? changedFiles(before, snapshotOutbox(deps.root)) : [];
       log({ type: 'tool', step, name: t.name, input, decision: o.decision, gateId: o.park, ms: Date.now() - t1, result: o.text.slice(0, 2000), ...(wrote.length ? { wrote } : {}) });
       if (o.park && !parked) { parked = { gateId: o.park, callId }; parkedThisTurn = true; }
-      if (o.finished) { finished = o.finished; }
+      if (o.finished) { finished = o.finished; finishedByTool = true; }
       const sig = `${t.name}\n${JSON.stringify(input)}\n${o.text}`;
       repeats = sig === lastSig ? repeats + 1 : 1;
       lastSig = sig;
@@ -263,8 +295,16 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
     streamFn: streamFn as any,
     toolExecution: 'sequential',
     // Runs after every completed turn, before the next request: where the old loop's bookkeeping lived.
+    // Between two turns: anything the human said meanwhile reaches the model before its next request.
+    prepareNextTurn: () => {
+      if (parked) { return undefined; }
+      const msgs = claim(unclaimed(), 'turn');
+      return msgs.length ? { messages: [{ role: 'user', content: [{ type: 'text', text: formatForModel(msgs) }], timestamp: Date.now() } as any] } : undefined;
+    },
     finishTurn: async turn => {
       parkedThisTurn = false;
+      // A turn that failed or was cancelled never carried the human's words to a finished answer: keep them pending.
+      if (turn.message.stopReason !== 'error' && turn.message.stopReason !== 'aborted') { commitHuman(); }
       if (parked) {
         // Snapshot the conversation up to the assistant message; the gate's outcome becomes the parked call's result on resume.
         const all = turn.context.messages as any[];
@@ -275,6 +315,8 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
         deps.out.appendLine(`⏸ ${agent.name} waiting on ${parked.gateId}`);
         return { action: 'end' };
       }
+      // The agent said it was finished, but the human wrote while it was finishing: let it read that before it stops.
+      if (finished && finishedByTool && unclaimed().length && step < limit && !deps.token.isCancellationRequested) { finished = undefined; finishedByTool = false; }
       if (finished) { return { action: 'end' }; }
       if (deps.maxMs && Date.now() - startedAt > deps.maxMs) {
         finished = { status: 'stalled', summary: `stopped after ${Math.round(deps.maxMs / 60000)} minutes (wall-clock cap)` };
@@ -286,6 +328,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
         saveCheckpoint(deps.root, { itemId: item.id, gateId: '', messages: piToPlain(turn.context.messages as any[]), turnResults: [], parkedCallId: '', step });
       }
       if (step >= limit) { hitLimit = true; return { action: 'end' }; }
+      if (unclaimed().length) { return { action: 'continue' }; }
       return undefined;
     }
   });

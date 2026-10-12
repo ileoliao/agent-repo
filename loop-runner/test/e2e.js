@@ -677,7 +677,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     const steps = stepsOf(wRun.file);
     ok(steps.some(s => s.kind === 'tool' && s.title.startsWith('write_file') && s.title.includes('report.md') && s.ok), 'a run shows its tool steps with what they touched');
     ok(steps[steps.length - 1].kind === 'end', 'a run ends with its outcome');
-    const m = consoleModel(W, { running: true, active: 'techlead' });
+    const m = consoleModel(W, { running: true, active: 'techlead', tab: 'overview' });
     ok(m.running && m.active === 'techlead' && m.runs.some(r => r.chainId === 'console-writer-chain' && r.steps.length > 0), 'the model carries state and run steps');
     const evil = { ...m, pending: [{ id: 'g<1>', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: '<img src=x onerror=alert(1)>', body: '</div><script>x</script>', command: 'rm -rf "<x>"', files: ['a"b.md'], resume: true, status: 'pending', createdAt: new Date().toISOString(), previews: [{ path: 'a"b.md', text: '<b>patch</b>', sha256: 'h"1', truncated: false }] }] };
     ok(renderBody(evil).includes('&lt;b&gt;patch&lt;/b&gt;') && renderBody(evil).includes('data-hash="h&quot;1"'), 'draft contents are shown escaped, with the hash the approval is bound to');
@@ -893,15 +893,15 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ].join('\n'));
     const { recentRuns } = require(`${OUT}/runs.js`);
     ok(recentRuns(R)[0].status === 'running' && recentRuns(R)[0].updated === '2026-10-11T09:10:00Z', 'a run that resumed after a park is running again, with its last event time');
-    const cut = consoleModel(R, { running: false });
+    const cut = consoleModel(R, { running: false, tab: 'overview' });
     ok(cut.runs[0].status === 'interrupted', 'a run no worker owns is shown as interrupted, not running forever');
-    ok(consoleModel(R, { running: true, active: 'a1' }).runs[0].status === 'running', 'the active agent\'s run stays running');
+    ok(consoleModel(R, { running: true, active: 'a1', tab: 'overview' }).runs[0].status === 'running', 'the active agent\'s run stays running');
     ok(renderBody(cut).includes('Interrupted') && renderBody(cut).includes('Team stopped'), 'the page says so');
 
     const F = path.join(R, '.loop', 'outbox'); fs.mkdirSync(F, { recursive: true });
     fs.writeFileSync(path.join(F, 'd.md'), 'draft v1');
     Q.saveGate(R, { id: 'pg1', kind: 'approval', agent: 'a1', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'echo hi', files: ['.loop/outbox/d.md', '.loop/outbox/gone.md'], resume: false, status: 'pending', createdAt: new Date().toISOString() });
-    const m = consoleModel(R, { running: true });
+    const m = consoleModel(R, { running: true, tab: 'overview' });
     const pv = m.pending[0].previews;
     ok(pv[0].sha256 === G.fileSha256(R, '.loop/outbox/d.md') && pv[1].sha256 === 'missing', 'the shown draft and its hash come from the same bytes; a missing file is marked missing');
     const html = renderBody(m);
@@ -911,10 +911,146 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(html.includes('data-copy="echo hi"') && html.includes('<time datetime='), 'the command can be copied and times carry their exact value');
     fs.writeFileSync(path.join(F, 'big.md'), 'x'.repeat(7000));
     Q.saveGate(R, { id: 'pg2', kind: 'approval', agent: 'a1', itemId: 'i', chainId: 'c', title: 't2', body: 'b', command: 'echo', files: ['.loop/outbox/big.md'], resume: false, status: 'pending', createdAt: new Date().toISOString() });
-    ok(renderBody(consoleModel(R, { running: true })).includes('Open full file'), 'a long draft offers the full file and says approval covers all of it');
+    ok(renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('Open full file'), 'a long draft offers the full file and says approval covers all of it');
     const banner = renderBody({ ...m, note: { tone: 'bad', text: '<b>boom</b>' } });
     ok(banner.includes('role="alert"') && banner.includes('&lt;b&gt;boom') && !banner.includes('<b>boom'), 'a page-level error is shown, escaped');
     ok(renderBody({ ...m, running: true, active: undefined }).includes('Team on · idle'), 'a running team with no active agent is labelled idle, not stopped');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
+  console.log('chat with an agent: messages reach a running agent');
+  {
+    const T = require(`${OUT}/thread.js`);
+    const policy = loadPolicy(W, '.loop/policy.json');
+    const texts = messages => messages.flatMap(m => m.content.map(c => (c instanceof ToolResultPart ? `[result] ${c.content[0].value}` : c.value ?? '')));
+    const all = reqs => reqs.map(r => texts(r).join('\n'));
+    let n = 0;
+    const model = (script, onRequest) => { const requests = []; let i = 0;
+      return { requests, family: 'fake', id: 'chat',
+        async sendRequest(messages) {
+          requests.push(messages); onRequest?.(requests.length, messages);
+          const t = script[Math.min(i++, script.length - 1)];
+          if (t === 'throw') { throw new Error('model unavailable'); }
+          return { stream: (async function* () { yield* t.map(([name, input], k) => new ToolCallPart(`ch-${++n}-${k}`, name, input)); })() };
+        } }; };
+    const item = id => ({ id, agent: 'techlead', task: 'Look at the queue.', from: 'user', chainId: `${id}-chain`, hop: 0, createdAt: new Date().toISOString() });
+    const run = (it, m) => runItem(it, { root: W, team, skills, model: m, secrets: {}, policy, maxSteps: 12, maxHops: 5, out, token });
+    const FIN = [['finish', { status: 'done', summary: 'ok' }]];
+    const mine = () => T.listMessages(W, 'techlead');
+
+    // 1. said before the run started: it is in the first prompt, after the work item
+    const m1 = T.postHumanMessage(W, 'techlead', 'Please focus on the backlog first.');
+    ok(m1.status === 'pending' && T.pendingMessages(W, 'techlead').length === 1, 'a message you send is pending until the agent has seen it');
+    const mod1 = model([FIN]);
+    await run(item('chat-start'), mod1);
+    const first = all(mod1.requests)[0];
+    ok(first.includes('Messages from the human, sent before this run started') && first.includes('Please focus on the backlog first.') && first.indexOf('# Work item') < first.indexOf('Please focus on the backlog'), 'said before the run started: in the first prompt, after the work item (the static prefix is untouched)');
+    const d1 = mine().find(m => m.id === m1.id);
+    ok(d1.status === 'delivered' && d1.via === 'start' && d1.itemId === 'chat-start' && T.pendingMessages(W, 'techlead').length === 0, 'and it is then marked delivered, with how and in which run');
+    ok(fs.readFileSync(path.join(W, '.loop/runs', new Date().toISOString().slice(0, 10), 'chat-start-chain.jsonl'), 'utf8').includes('"type":"human"'), 'the audit records that the agent was given it');
+    ok(first.includes('The human may send you a message while you work'), 'the runtime rules tell the agent such messages are instructions from the owner of the work');
+
+    // 2. said while it works: it is read before the next request
+    let m2;
+    const mod2 = model([[['list_dir', { path: '.' }]], FIN], count => { if (count === 1) { m2 = T.postHumanMessage(W, 'techlead', 'Actually, skip the docs folder.'); } });
+    const r2 = await run(item('chat-turn'), mod2);
+    const second = all(mod2.requests)[1];
+    ok(r2.status === 'done' && !all(mod2.requests)[0].includes('skip the docs folder') && second.includes('Message from the human, sent while you were working') && second.includes('Actually, skip the docs folder.'), 'said while it works: it reaches the model before its next request, not before the one already in flight');
+    ok(mine().find(m => m.id === m2.id).via === 'turn' && mine().find(m => m.id === m2.id).status === 'delivered', 'and is marked delivered once that turn is done');
+
+    // 3. said while it was finishing: it does not stop before reading it
+    const mod3 = model([FIN, FIN], count => { if (count === 1) { T.postHumanMessage(W, 'techlead', 'Wait, also check the backlog count.'); } });
+    const r3 = await run(item('chat-finish'), mod3);
+    ok(mod3.requests.length === 2 && all(mod3.requests)[1].includes('also check the backlog count') && r3.status === 'done', 'said while it was finishing: it reads the message before it stops, then finishes again');
+
+    // 4. said while it waits for you: it comes with your answer
+    const mod4 = model([[['ask_human', { question: 'Which queue?', context: 'two match' }]], FIN]);
+    const it4 = item('chat-wait');
+    Q.enqueue(W, it4);
+    const r4 = await run(it4, mod4);
+    ok(r4.status === 'waiting' && T.chatState(W, 'techlead').state === 'waiting', 'it parks on a question, and the chat says it is waiting for you');
+    const m4 = T.postHumanMessage(W, 'techlead', 'By the way, the blue queue is the one.');
+    ok(mod4.requests.length === 1 && T.pendingMessages(W, 'techlead').length === 1, 'a message sent now is not delivered yet');
+    Q.complete(W, it4, r4.status, r4.summary, r4.gateId);
+    G.answerQuestion(W, r4.gateId, 'blue');
+    const resumed = Q.nextItem(W, ['techlead']);
+    await run(resumed, mod4);
+    const afterWait = all(mod4.requests)[1];
+    ok(afterWait.includes('The human answered: blue') && afterWait.includes('the blue queue is the one'), 'it resumes with your answer and the message together');
+    ok(mine().find(m => m.id === m4.id).via === 'resume', 'delivered, as a resume');
+
+    // 5. an interruption between receiving and finishing the turn does not lose it
+    let m5;
+    const mod5 = model([[['list_dir', { path: '.' }]], 'throw'], count => { if (count === 1) { m5 = T.postHumanMessage(W, 'techlead', 'Remember to be brief.'); } });
+    const r5 = await run(item('chat-crash'), mod5);
+    ok(r5.status === 'error' && mine().find(m => m.id === m5.id).status === 'pending', 'if the model fails right after it was given, the message is still pending and will be given again');
+
+    // 6. said after the last turn: it stays pending for the follow-up
+    const mod6 = model([FIN]);
+    await run(item('chat-late'), mod6);
+    const late = T.postHumanMessage(W, 'techlead', 'One more thing for next time.');
+    ok(T.pendingMessages(W, 'techlead').some(m => m.id === late.id), 'a message that arrives after the run is still pending (the extension turns it into a follow-up run)');
+    for (const m of T.pendingMessages(W, 'techlead')) { T.markDelivered(W, 'techlead', [m.id], { via: 'task' }); }
+  }
+
+  console.log('chat with an agent: the thread and where a message goes');
+  {
+    const T = require(`${OUT}/thread.js`);
+    ok(T.cleanMessage('  hi\x00 there\x07\r\nbye  ') === 'hi there\nbye' && T.cleanMessage('x'.repeat(5000)).length === 4000, 'a message is stripped of control characters and bounded');
+    ok(!T.postHumanMessage.length || (() => { try { T.postHumanMessage(W, '../x', 'a'); } catch { return true; } return false; })(), 'a bad agent name is refused');
+    ok((() => { try { T.postHumanMessage(W, 'techlead', '   '); } catch { return true; } return false; })(), 'an empty message is refused');
+    const th = T.buildThread(W, 'techlead');
+    const kinds = th.events.map(e => e.kind);
+    ok(kinds.includes('human') && kinds.includes('status') && kinds.includes('steps') && kinds.includes('answer'), 'the thread has your messages, the runs, the steps and your answers');
+    ok(th.events.every((e, i, a) => i === 0 || a[i - 1].ts <= e.ts), 'oldest first');
+    const turn = th.events.find(e => e.kind === 'human' && e.text.includes('skip the docs'));
+    ok(turn && turn.status === 'delivered' && turn.via === 'turn', 'a delivered message says how it was delivered');
+    const ans = th.events.find(e => e.kind === 'answer' && e.text === 'blue');
+    ok(ans && ans.title === 'Which queue?', 'your answer to a question appears with the question it answered');
+    const steps = th.events.find(e => e.kind === 'steps' && e.steps.some(s => s.title.startsWith('list_dir')));
+    ok(steps && !th.events.some(e => e.kind === 'steps' && e.steps.some(s => s.title.startsWith('finish'))), 'consecutive tool calls are one block, and finish is shown as the run\'s end instead');
+    ok(T.buildThread(W, 'techlead', { limit: 5 }).events.length === 5 && T.buildThread(W, 'techlead', { limit: 5 }).hidden > 0, 'the thread can be limited and says how much is hidden');
+    ok(T.buildThread(W, 'nobody-here').events.length === 0, 'an agent with no history has an empty thread');
+
+    const route = T.routeFor;
+    ok(route('running') === 'in-run' && route('waiting') === 'on-resume' && route('queued') === 'at-start' && route('idle') === 'new-task', 'where a message goes depends on what the agent is doing');
+    ok(T.chatState(W, 'techlead', 'techlead').state === 'running' && T.chatState(W, 'nobody-here', 'sentinel').state === 'idle', 'running when the worker is on it, idle otherwise');
+    Q.enqueue(W, { id: 'q1', agent: 'sentinel', task: 't', from: 'user', chainId: 'q1c', hop: 0, createdAt: new Date().toISOString() });
+    ok(T.chatState(W, 'sentinel').state === 'queued', 'queued when it has work waiting for the worker');
+    Q.complete(W, { id: 'q1', agent: 'sentinel', task: 't', from: 'user', chainId: 'q1c', hop: 0, createdAt: '' }, 'done', 'x');
+    const ctx = T.conversationContext(W, 'techlead');
+    ok(/^Conversation so far/.test(ctx) && /You: /.test(ctx) && ctx.length < 2500, 'a run that starts from a message gets a short summary of the conversation so far');
+  }
+
+  console.log('chat page: what you see for each state of an agent');
+  {
+    const { consoleModel, renderBody } = require(`${OUT}/console.js`);
+    const T = require(`${OUT}/thread.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-chatui-'));
+    fs.mkdirSync(path.join(R, '.github', 'agents'), { recursive: true });
+    for (const n of ['alpha', 'beta']) { fs.writeFileSync(path.join(R, '.github', 'agents', `${n}.agent.md`), `---\nname: ${n}\ndescription: ${n}\nloop:\n  skills: []\n  task: t\n---\nbody\n`); }
+    const page = (state, agent) => renderBody(consoleModel(R, { running: true, ...state, tab: 'chat', agent }));
+    ok(renderBody(consoleModel(R, { running: true })).includes('data-tab="chat"') && /aria-selected="true" data-tab="chat"/.test(renderBody(consoleModel(R, { running: true }))), 'the console opens on the chat tab');
+    ok(!renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('chat-agents') && renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('Recent runs'), 'the overview is still there, with the runs, the agents and what needs you');
+    let h = page({}, 'alpha');
+    ok(h.includes('data-agent="alpha"') && h.includes('data-agent="beta"') && /alpha is idle\. This starts a new run\./.test(h) && !h.includes('data-chat-cancel'), 'an idle agent: it says a message starts a run, and there is nothing to cancel');
+    ok(/The team is stopped\. This is saved/.test(renderBody(consoleModel(R, { running: false, tab: 'chat', agent: 'alpha' }))), 'with the team stopped it says the message is kept until you start it');
+    Q.enqueue(R, { id: 'qa', agent: 'alpha', task: 't', from: 'user', chainId: 'qac', hop: 0, createdAt: new Date().toISOString() });
+    ok(/alpha has work queued\. It reads this when it starts\./.test(page({}, 'alpha')), 'a queued agent: it will read the message when it starts');
+    h = page({ active: 'alpha' }, 'alpha');
+    ok(/alpha is working\. It reads this at its next step/.test(h) && h.includes('data-chat-cancel="alpha"'), 'a working agent: it will read it at its next step, and the run can be cancelled');
+    Q.complete(R, { id: 'qa', agent: 'alpha', task: 't', from: 'user', chainId: 'qac', hop: 0, createdAt: '' }, 'done', 'x');
+    Q.saveGate(R, { id: 'cg1', kind: 'approval', agent: 'alpha', itemId: 'i', chainId: 'c', title: 'Publish it', body: 'b', command: 'echo go', files: [], resume: true, status: 'pending', createdAt: new Date().toISOString() });
+    h = page({}, 'alpha');
+    ok(/alpha is waiting for your answer above/.test(h) && h.includes('thread-gates') && h.includes('data-approve="cg1"') && h.includes('echo go'), 'a waiting agent: its question or approval sits at the end of the conversation, with the exact command, and a message is read when it continues');
+    ok(/class="count warn" title="needs you">1<\/span>/.test(h), 'the agent list and the tab show that something needs you');
+    ok(!page({}, 'beta').includes('data-approve="cg1"'), 'another agent\'s conversation does not show it');
+    ok(page({}, 'alpha').includes('aria-pressed="true"') && page({}, 'unknown-agent').includes('data-agent="alpha"'), 'an unknown or missing selection falls back to an agent that needs you');
+    T.postHumanMessage(R, 'beta', '<img src=x onerror=alert(1)> hello & goodbye');
+    h = page({}, 'beta');
+    ok(!h.includes('<img') && h.includes('&lt;img src=x') && h.includes('hello &amp; goodbye') && /waiting for beta to read it/.test(h), 'your own text is shown escaped, and says the agent has not read it yet');
+    ok(/empty-title">Nothing yet with alpha|Nothing yet with beta/.test(page({}, 'beta')) === false && true, 'a conversation with messages is not shown as empty');
+    ok(/Nothing yet with alpha/.test(renderBody(consoleModel(fs.mkdtempSync(path.join(os.tmpdir(), 'loop-chatui2-')), { running: true, tab: 'chat' }))) === false, 'a workspace with no team says there are no agents rather than showing an empty chat');
     fs.rmSync(R, { recursive: true, force: true });
   }
 

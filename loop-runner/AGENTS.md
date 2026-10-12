@@ -29,6 +29,8 @@ Bug fixes, security fixes and test improvements are welcome. If a change seems t
 
 **Approved (2026-10-11): `@loop` in the Chat window and standing notes.** The owner asked to steer agents by conversation. `@loop` (`/status`, `/pending`, or free text) uses the model picked in Chat. It reads team state with tools and can only *propose* changes (schedule, task text, role edit, standing note, one-off task, answer a question, start/stop); the user sees the diff and presses Apply, and `applyChange` refuses a file that changed since it was proposed. Approvals are never decided in chat: they stay in the console, where the exact command and files are shown. Role and schedule edits write `.github/agents/*.agent.md` on the human's click, which is the only path by which those files change (invariant 5 still binds the agents themselves).
 
+**Approved (2026-10-12): chat with each agent.** The console opens on a Chat tab: one conversation per team agent, and the Overview tab keeps everything else (needs-you, agents, runs). The human can write to an agent that is **working, waiting for them, queued or idle**; the message reaches it at the next opportunity (see "Messages from the human" below). Questions and approvals appear inside the conversation and are answered there; approvals still show the exact command and the files and are bound to their hashes. **Cancel this run** ends the current run as `cancelled` (not retried, unlike Stop Team). The agent's side of the conversation is not stored again: it is read from the audit files.
+
 **Approved additions (2026-10-11), second batch:** approval bound to what the reviewer saw (the console shows each draft file and sends its sha256; `approveAndRun` refuses if a file changed since or was never shown), run guardrails (stalled after 3 identical results, `loopRunner.maxMinutes`), and the optional `loop.maxRunsPerDay`. A capped wake is recorded as a `wake` audit event with `wake:false, capped:<n>`.
 
 **Approved addition (2026-10-11): the Loop Console webview.** After the owner found the native surfaces too hard to read, a single webview page (`Loop Runner: Open Console`, also the status bar item) shows what needs you (answer, approve with the exact command shown, reject), the agents, and a step timeline with output files for each recent run. It only reads `.loop/` and calls the existing gate functions; no new data contract, no new runtime behaviour.
@@ -60,6 +62,8 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `outbox.ts` | `latestOutput`: newest file under `.loop/outbox/` (fallback for Open Latest Result). Pure, no `vscode` | no |
 | `runs.ts` | `recentRuns` and `outputsFrom`: read-only summaries of `.loop/runs/*.jsonl`. Pure, no `vscode` | no |
 | `status.ts` | `agentRows` and `nextWake`: team state, next scheduled wake, last wake check. Pure, no `vscode` | no |
+| `thread.ts` | The human's messages (`postHumanMessage`, `pendingMessages`, `markDelivered`), `buildThread` (the conversation with one agent, from those messages plus the audit), `chatState`, `routeFor`, `conversationContext`. Pure, no `vscode` | no |
+| `textutil.ts` | `clip`, `firstLine`, `brief`. Pure | no |
 | `console.ts` | `consoleModel`, `stepsOf`, `renderBody`/`renderPage`: the console's data and HTML (every value escaped, one nonce script). Pure, no `vscode` | no |
 | `consoleView.ts` | Webview panel host: forwards page actions to the existing commands and gate functions; opens only files inside the workspace | yes |
 | `manage.ts` | `Change` for a schedule, task, role edit or memory note (`proposeSchedule`, `proposeRoleEdit`, `proposeRemember`, `proposeForget`), `diffOf`, `applyChange`, `memoryFor`. Patches single lines of the `loop:` block; nothing is written until `applyChange` | no |
@@ -81,6 +85,19 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 5. **Human.** The human resolves the gate in the Loop Inbox. `gates.ts` writes `gate.outcome`, and `wake()` moves the item back to its queue with `resumeGate` set.
 6. **Resume.** `runItem` loads the checkpoint and appends one User message holding every tool result of the parked turn, with the parked call's result replaced by `gate.outcome`. It then continues; the step count carries over.
 
+## Messages from the human
+
+A message is a file in `.loop/chat/<agent>/`, `pending` until the model has been given it. Where it goes depends on `chatState`/`routeFor`:
+
+| Agent is | The message is read |
+|---|---|
+| running | between two turns: `prepareNextTurn` appends it as a user message before the next request. If the agent has just said `finish` (via the tool) or ended a text-only turn, `finishTurn` returns `continue` so it reads the message before stopping |
+| waiting on a gate | when it resumes, as an extra text part next to the gate's outcome |
+| queued | in the first prompt, after the work item (static prefix untouched) |
+| idle | a new work item (`from: chat`, the message as the task, a short conversation summary as context); the message is marked delivered at once (`via: task`) |
+
+A message is marked delivered only after the turn that carried it ended normally (its content is then in the checkpoint). A failed or cancelled turn leaves it pending, so it is delivered again rather than lost. A message that arrives after the last turn and that nothing else will read (the item has ended and the agent is idle) starts a follow-up run. The runtime rules tell the agent such messages are instructions from the owner of the work, within its policy.
+
 ## Invariants: do not break these
 
 1. **Refusal is a tool result, never an exception or a dialog.** Policy denials return text starting with `REFUSED`; tool exceptions return `ERROR: ...`. The loop always continues so the model can change course. This is the reason the runtime does not stall.
@@ -94,6 +111,7 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 9. **One gate per turn.** A second gate call in the same turn returns `Not sent: ...` and creates nothing.
 10. **`notifyCommand` is machine-scoped.** A repository must not be able to set it.
 11. **`wakeIf` must pass the agent's policy** like any other command.
+12. **A human message never blocks and is never lost.** Writing to an agent only writes a file; the worker never waits for it. Delivery is at least once (marked delivered after the turn completes), so an interruption can repeat it but not drop it.
 
 ## Data contracts (stable; other files and people depend on these)
 
@@ -135,10 +153,11 @@ Model resolution order: `loop.model` (by family, no fallback) → native `model`
 - `checkpoints/<itemId>.json`: `Checkpoint` with `messages`, `turnResults`, `parkedCallId`, `step`. Written when a gate parks the item, and also at the end of every completed turn with `parkedCallId: ''` and `gateId: ''` (no gate result to add). A queued item that has a checkpoint continues from it, so an interrupted or rate-limited run does not repeat its handoffs and writes. `complete()` removes it
 - `runs/<date>/<chainId>.jsonl`: audit events; `wake-<date>.jsonl` records wake checks
 - `schedule-state.json`: `{ [agent]: "YYYY-MM-DDTHH:MM" }` UTC minute of the last schedule slot that role already handled. Used to catch up one missed `wakeIf` on start
+- `chat/<agent>/<id>.json`: one message the human wrote to that agent: `{ id, ts, text, status: pending | delivered, deliveredAt, itemId, via: start | turn | resume | task }`. Written only by the extension on the human's action (`.loop/**` is protected from agents); text is stripped of control characters and capped at 4000 characters
 - `outbox/`: drafts written by agents and editable by the human
 - `memory/<agent>.md`, `memory/_all.md`: the human's standing notes, one dated bullet per line (max 8000 characters per file). `buildPrompt` puts everyone's notes, then the agent's own, under "Standing instructions from the human" after the static parts and before the work item. Agents cannot write here (`.loop/**` is protected); only an applied `@loop` proposal or the human does. A resumed run keeps the prompt it started with
 
-Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`, `retry`. Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
+Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`, `retry`, `human` (the agent was given the human's message(s): `via`, `ids`, a clipped `text`). `tool` events may carry `wrote` (files a command left in the outbox). Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
 
 `end` may carry `outputs: string[]`: the workspace-relative files that `write_file` or `edit_file` wrote successfully, from the transcript's tool results (so it holds after a resume). Older chains have no `outputs`; readers fall back to file modification time.
 

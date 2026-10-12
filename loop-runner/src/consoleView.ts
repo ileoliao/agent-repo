@@ -10,6 +10,10 @@ export interface ConsoleActions {
   answer: (gateId: string, text: string) => void;
   approve: (gateId: string, seen: Record<string, string>) => Promise<void>;
   reject: (gateId: string, feedback: string) => void;
+  /** The human writes to an agent. Returns where the message went, for the status line. */
+  chatSend: (agent: string, text: string) => void;
+  /** Cancel the agent's current run (it is not retried). */
+  chatCancel: (agent: string) => boolean;
 }
 
 const COMMANDS: Record<string, string> = {
@@ -24,6 +28,8 @@ export class ConsolePanel {
   private panel?: vscode.WebviewPanel;
   /** Gates whose approved command is running now: a second click must not run it again. */
   private inFlight = new Set<string>();
+  /** Which page is showing and which agent's conversation; set by the page, kept here so a refresh does not reset it. */
+  private view: { tab: 'chat' | 'overview'; agent?: string } = { tab: 'chat' };
   private lastHtml = '';
 
   constructor(private a: ConsoleActions) {}
@@ -61,13 +67,13 @@ export class ConsolePanel {
   private model(): ConsoleModel {
     const r = this.a.root();
     if (!r) {
-      return { running: false, next: undefined, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
+      return { tab: this.view.tab, running: false, next: undefined, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
         note: { tone: 'info', text: 'Open a folder in VS Code to use Loop Runner.' } };
     }
     try {
-      return consoleModel(r, this.a.state());
+      return consoleModel(r, { ...this.a.state(), tab: this.view.tab, agent: this.view.agent });
     } catch (e: any) {
-      return { running: this.a.state().running, active: this.a.state().active, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
+      return { tab: this.view.tab, running: this.a.state().running, active: this.a.state().active, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
         note: { tone: 'bad', text: `Could not read .loop data: ${e?.message ?? e}. Showing nothing rather than something stale.` } };
     }
   }
@@ -88,6 +94,13 @@ export class ConsolePanel {
           break;
         }
         case 'reject': this.a.reject(String(m.id), String(m.feedback ?? '')); break;
+        case 'view':
+          this.view = { tab: m.tab === 'overview' ? 'overview' : 'chat', agent: typeof m.agent === 'string' && m.agent ? m.agent : this.view.agent };
+          break;
+        case 'chatSend': this.a.chatSend(String(m.agent), String(m.text ?? '')); break;
+        case 'chatCancel':
+          if (!this.a.chatCancel(String(m.agent))) { void vscode.window.showInformationMessage(`Loop Runner: ${m.agent} is not running right now.`); }
+          break;
         case 'open': case 'openAbs': {
           // Only files inside the workspace; the page cannot ask for anything else.
           const abs = path.resolve(r, String(m.path));

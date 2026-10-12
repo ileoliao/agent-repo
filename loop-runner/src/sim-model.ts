@@ -14,6 +14,8 @@ export interface SimTurn {
   error?: string;
   /** Block until the cancellation token fires. The turn is left in the script for the retry. */
   hold?: boolean;
+  /** Take this many milliseconds to answer, so a test can write to the agent while it is working. */
+  delay?: number;
   /** Like Copilot: fail inside the response stream (not in sendRequest) when toolMode is Required. */
   rejectRequired?: boolean;
 }
@@ -81,6 +83,10 @@ export function createSimModel(root: string, agent: string): vscode.LanguageMode
       if (rejectRequired) { simTrace(root, { event: 'tool-mode-required-rejected', agent }); }
       if (options?.toolMode === vscode.LanguageModelChatToolMode.Auto) {
         simTrace(root, { event: 'tool-mode-auto-accepted', agent });
+      }
+      if (turn.delay) {
+        simTrace(root, { event: 'delay-started', agent });
+        await new Promise(r => setTimeout(r, turn.delay));
       }
       if (turn.hold) {
         const holdFile = path.join(root, '.loop', 'sim-holding');
