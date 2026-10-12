@@ -8,8 +8,8 @@ import { outputsFrom, wroteFromAudit } from './runs';
 import { changedFiles, snapshotOutbox } from './outbox';
 import { memoryFor } from './manage';
 import { HumanMessage, formatForModel, markDelivered, pendingMessages } from './thread';
-import type { Agent as PiAgent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
+import { Agent, AgentMessage, AgentTool } from './vendor/pi-agent';
+import { AssistantMessage, Message, createAssistantMessageEventStream } from './vendor/pi-agent/ai';
 
 export interface RunDeps {
   root: string;
@@ -125,10 +125,6 @@ function piToPlain(msgs: readonly (AgentMessage | Message)[]): PlainMsg[] {
 }
 
 export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult> {
-  // pi ships as ESM only; a dynamic import works from the compiled CommonJS output and from the esbuild bundle.
-  const { Agent } = await import('@earendil-works/pi-agent-core');
-  const { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai/utils/event-stream');
-
   const agent = deps.team.get(item.agent)!;
   const extraAllow = agent.skills
     .map(s => deps.skills.get(s))
@@ -290,7 +286,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
     }
   }));
 
-  const pi: PiAgent = new Agent({
+  const pi = new Agent({
     initialState: { systemPrompt: '', model: { id: deps.model.id, name: deps.model.family, ...API, contextWindow: 128000, maxTokens: 4096, reasoning: false, input: ['text'], cost: ZERO_USAGE.cost } as any, tools: piTools, messages: resuming ? plainToPi(transcript, deps.model.id) : [] },
     streamFn: streamFn as any,
     toolExecution: 'sequential',
