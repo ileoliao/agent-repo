@@ -1084,6 +1084,33 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     fs.rmSync(R, { recursive: true, force: true });
   }
 
+  console.log('tool arguments: checked and converted before a tool runs');
+  {
+    const { validateToolArguments: v } = require(`${OUT}/vendor/pi-agent/ai/validation.js`);
+    const { buildTools } = require(`${OUT}/tools.js`);
+    const tool = { name: 'read_file', description: 'd', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number' }, wait: { type: 'boolean' }, files: { type: 'array', items: { type: 'string' } }, mode: { type: 'string', enum: ['a', 'b'] }, nested: { type: 'object', properties: { n: { type: 'integer' } }, required: ['n'] } }, required: ['path'] } };
+    const call = args => ({ type: 'toolCall', id: '1', name: 'read_file', arguments: args });
+    const fails = args => { try { v(tool, call(args)); return ''; } catch (e) { return e.message; } };
+    ok(JSON.stringify(v(tool, call({ path: 'a', startLine: '5', wait: 'true' }))) === '{"path":"a","startLine":5,"wait":true}', 'a number or boolean the model sent as text is converted');
+    ok(v(tool, call({ path: 'a', extra: 1 })).extra === 1, 'a property the schema does not know is allowed');
+    ok(JSON.stringify(v(tool, call({ path: 'a', nested: { n: '3' }, files: ['x'] })).nested) === '{"n":3}', 'nested objects are converted too');
+    const missing = fails({ startLine: 2 });
+    ok(/Validation failed for tool "read_file"/.test(missing) && /\/path: required property is missing/.test(missing) && /Received arguments/.test(missing), 'a missing required property: an error the model can read and act on');
+    ok(/\/startLine: expected number, received string/.test(fails({ path: 'a', startLine: 'soon' })) && /\/startLine: expected number/.test(fails({ path: 'a', startLine: '' })), 'text that is not a number is an error, and so is an empty string');
+    ok(/must be one of "a", "b"/.test(fails({ path: 'a', mode: 'c' })), 'a value outside an enum names the choices');
+    ok(/\/files: expected array, received string/.test(fails({ path: 'a', files: 'x' })) && /\/files\/0: expected string, received object/.test(fails({ path: 'a', files: [{}] })), 'arrays are checked, item by item');
+    ok(JSON.stringify(v(tool, call({ path: 'a', files: [1, true] })).files) === '["1","true"]', 'and numbers or booleans in a list of strings are converted to text');
+    ok(/\/nested\/n: required property is missing/.test(fails({ path: 'a', nested: {} })), 'required properties of nested objects too');
+    const original = { path: 'a', startLine: '5' }; v(tool, call(original));
+    ok(original.startLine === '5', 'the model\'s own arguments are not changed in place (the audit keeps what it sent)');
+    ok(buildTools({ handoffs: ['x'] }).every(t => t.inputSchema.type === 'object'), 'every tool Loop Runner offers describes its arguments as a JSON Schema object');
+    const real = buildTools({ handoffs: ['x'] });
+    const asTool = n => ({ name: n, description: '', parameters: real.find(t => t.name === n).inputSchema });
+    ok(v(asTool('ask_human'), call({ question: 'q', context: 'c', options: ['a'] })).options.length === 1 && /required property is missing/.test((() => { try { v(asTool('ask_human'), call({ question: 'q' })); } catch (e) { return e.message; } })()), 'the real tools: ask_human needs its context, and its options are an array');
+    ok(v(asTool('request_approval'), call({ title: 't', summary: 's', command: 'c', wait: 'false' })).wait === false, 'the real tools: request_approval accepts "false" as false');
+    ok(v(asTool('handoff'), call({ to: 'x', task: 't', context: 'c' })).to === 'x' && /must be one of "x"/.test((() => { try { v(asTool('handoff'), call({ to: 'y', task: 't', context: 'c' })); } catch (e) { return e.message; } })()), 'the real tools: a handoff to someone who is not a teammate is refused');
+  }
+
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });

@@ -25,7 +25,7 @@ Bug fixes, security fixes and test improvements are welcome. If a change seems t
 
 **Approved additions (2026-10-11): the console.** The owner approved a native console on top of the existing surfaces: the status bar line (running agent, step, next wake), the sidebar "Agents" group (state, next run, last wake check, opens the agent file), "Recent runs" with the files each run wrote, and "Open Latest Result" reading `end.outputs`. It stays native (no chat, no notifications). The one data addition is the optional `outputs` field on the `end` audit event. Setup checks and a sample-agent command are not approved yet.
 
-**Approved (2026-10-11): pi as the loop.** The owner decided the basic harness should be pi's `Agent` rather than our own loop. `runItem`'s interface, the checkpoint format and the audit events are unchanged; the e2e suite and the sim pass on it. Tools are executed sequentially. pi validates tool arguments against the schemas (strings such as `"5"` are coerced; a missing required field comes back as a tool error).
+**Approved (2026-10-11): pi as the loop.** The owner decided the basic harness should be pi's `Agent` rather than our own loop. `runItem`'s interface, the checkpoint format and the audit events are unchanged; the e2e suite and the sim pass on it. Tools are executed sequentially. pi validates tool arguments against the schemas (strings such as `"5"` are coerced; a missing required field comes back as a tool error). The loop is vendored (`src/vendor/pi-agent/`), so the extension's only runtime dependency is `diff`: none of pi's model-provider SDKs are installed.
 
 **Approved (2026-10-11): `@loop` in the Chat window and standing notes.** The owner asked to steer agents by conversation. `@loop` (`/status`, `/pending`, or free text) uses the model picked in Chat. It reads team state with tools and can only *propose* changes (schedule, task text, role edit, standing note, one-off task, answer a question, start/stop); the user sees the diff and presses Apply, and `applyChange` refuses a file that changed since it was proposed. Approvals are never decided in chat: they stay in the console, where the exact command and files are shown. Role and schedule edits write `.github/agents/*.agent.md` on the human's click, which is the only path by which those files change (invariant 5 still binds the agents themselves).
 
@@ -57,7 +57,7 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `wake.ts` | `checkWake`: runs `loop.wakeIf` and interprets its exit code | no |
 | `gates.ts` | Resolve gates (answer, approve-and-run, reject) and `notify` | no |
 | `tools.ts` | Generic tool schemas and `runTool` | types only (elided) |
-| `runner.ts` | One work item on pi's `Agent` (`@earendil-works/pi-agent-core`): `streamFn` over `vscode.lm`, tools via `runTool`, `finishTurn` for park, finish, caps and checkpoints. Converts between pi messages and `PlainMsg` | yes |
+| `runner.ts` | One work item on pi's `Agent` loop, vendored in `src/vendor/pi-agent/` (no npm dependency): `streamFn` over `vscode.lm`, tools via `runTool`, `finishTurn` for park, finish, caps and checkpoints. Converts between pi messages and `PlainMsg` | yes |
 | `inbox.ts` | Sidebar tree view and gate rendering | yes |
 | `outbox.ts` | `latestOutput`: newest file under `.loop/outbox/` (fallback for Open Latest Result). Pure, no `vscode` | no |
 | `runs.ts` | `recentRuns` and `outputsFrom`: read-only summaries of `.loop/runs/*.jsonl`. Pure, no `vscode` | no |
@@ -188,7 +188,6 @@ Secrets are stored in SecretStorage under `loopRunner.secret.<NAME>`, with the l
 
 ```bash
 npm install
-# pi is ESM-only: runner.ts loads it with dynamic import(); tsconfig uses module node20; pins are exact (1.1.0)
 npm test          # tsc + test/e2e.js; must print "ALL <n> CHECKS PASSED"
 npm run package   # esbuild bundles src into out/extension.js (so `diff` is inside the vsix), then npx @vscode/vsce
 ```

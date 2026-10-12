@@ -106,3 +106,24 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+## pi agent loop
+
+`src/vendor/pi-agent/` holds the agent loop that runs each work item. It is adapted from
+[pi](https://github.com/earendil-works/pi) (`packages/agent` and three small files of `packages/ai`), package
+versions `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` 1.1.0.
+
+- Copyright (c) 2025 Mario Zechner
+- License: MIT
+
+The npm packages are ESM-only and `pi-ai` pulls in the SDKs of many model providers (AWS Bedrock, Anthropic, Google,
+OpenAI and others, about 70 MB), none of which Loop Runner uses: it reaches the model only through VS Code's Language
+Model API. So the loop is vendored and the provider code is left out. What was removed or replaced is listed in the
+header of each file. Not included: the model and provider layer, the proxy transport, TypeBox (arguments are checked by
+`ai/validation.ts`, which converts and checks the JSON Schema subset Loop Runner's tools use).
+
+Vendored paths:
+
+- `packages/agent/src/agent.ts`, `agent-loop.ts`, `types.ts`, `stream-fn.ts`
+- `packages/ai/src/utils/event-stream.ts`, `transcript.ts`, `text.ts`
+- `packages/ai/src/types.ts` (message, content, tool and event types only)
