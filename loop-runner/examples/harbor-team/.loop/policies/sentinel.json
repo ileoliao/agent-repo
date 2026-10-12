@@ -1,0 +1,22 @@
+{
+  "allowCommands": [],
+  "denyCommands": [
+    "\\brm\\b",
+    "\\bgit (push|reset --hard|clean)\\b",
+    "\\b(curl|wget|ssh|scp|nc|Invoke-WebRequest)\\b",
+    "\\bsudo\\b",
+    ">\\s*/"
+  ],
+  "writablePaths": [],
+  "protectedPaths": [
+    ".loop/**",
+    ".git/**",
+    ".github/**",
+    ".vscode/**",
+    "**/*.env",
+    "**/secrets/**"
+  ],
+  "onUnmatched": "deny",
+  "commandTimeoutSec": 120,
+  "maxOutputBytes": 16000
+}
