@@ -60,6 +60,11 @@
         "category": "Harbor Mate"
       },
       {
+        "command": "harborMate.getStarted",
+        "title": "Get Started (Add a Starter Agent)",
+        "category": "Harbor Mate"
+      },
+      {
         "command": "harborMate.runDoctor",
         "title": "Check Agents (Doctor)",
         "category": "Harbor Mate"
@@ -295,6 +300,10 @@
           {
             "name": "health",
             "description": "How each agent has been doing, and what to improve"
+          },
+          {
+            "name": "improve",
+            "description": "Review an agent and propose the smallest fixes"
           }
         ]
       }

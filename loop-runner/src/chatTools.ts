@@ -112,6 +112,7 @@ export const CHAT_TOOLS: ChatTool[] = [
   { name: 'propose_answer', description: 'Propose answering a pending question with the human\'s words. Never invent an answer the human did not give.', inputSchema: obj({ gate_id: str('Id from list_pending'), answer: str('The answer') }, ['gate_id', 'answer']) },
   { name: 'run_doctor', description: "Check, without a model, whether agents can actually run: skills exist, script interpreters are installed, the policy file parses, wakeIf probes are allowed by policy, config is valid. Use right after creating or changing an agent, and whenever a run failed for a reason that looks like the environment. It does not execute probes; the human runs /doctor in Chat to do that.", inputSchema: obj({ agent: str('One agent; omit for the whole team') }, []) },
   { name: 'agent_health', description: "How each agent has been doing over the last days (default 14), from the audit trail, with no model: outcomes, steps, how often it asked the human, how often policy refused it, whether it produces files, and findings with the change that would help. Use to answer whether an agent is worth keeping and to find what to improve.", inputSchema: obj({ days: { type: 'number', description: 'Look-back window, default 14' } }, []) },
+  { name: 'review_agent', description: "Everything known about whether one agent is built and running well, in one call: the doctor's checks, its recent health findings, and its file. Use to improve an existing agent; then propose the smallest fixes (propose_role_edit, propose_schedule, propose_skills, propose_remember) and re-check with run_doctor.", inputSchema: obj({ agent: str('Agent name') }, ['agent']) },
   { name: 'list_queue', description: 'List work that has not finished: queued items, items parked on a question or approval, and what is running now. Ids are for propose_cancel.', inputSchema: obj({}, []) },
   { name: 'storage_usage', description: "How much finished work Harbor Mate keeps (items, run logs, questions, tasks) and what a cleanup would remove under the current retention. Use before propose_cleanup.", inputSchema: obj({}, []) },
   { name: 'get_run', description: 'The step-by-step record of one run (tool calls, results, how it ended). Get chain ids from recent_runs.', inputSchema: obj({ chain_id: str('Chain id from recent_runs') }, ['chain_id']) },
@@ -213,6 +214,13 @@ async function runTool(name: string, input: any, host: ChatHost): Promise<ToolRe
     case 'agent_health': {
       const days = typeof input.days === 'number' && input.days >= 1 && input.days <= 365 ? input.days : 14;
       return { text: healthMarkdown(healthReport(root, new Date(), days)) };
+    }
+    case 'review_agent': {
+      const name = String(input.agent ?? '');
+      const a = agents.get(name);
+      if (!a) { return { text: `No agent named "${name}". Use list_agents.` }; }
+      const h = healthReport(root).findings.filter(f => f.agent === name);
+      return { text: `${doctorMarkdown(await runDoctor(root, { agent: name, runProbes: false }))}\n\n**Recent behaviour**\n${h.length ? h.map(f => `- (${f.severity}) ${f.what} Fix: ${f.fix}`).join('\n') : '- Nothing stands out in its recent runs (or it has few).'}\n\n**Its file**\n${clip(fs.readFileSync(path.join(root, a.file), 'utf8'), 5000)}` };
     }
     case 'list_queue':
       { const act = host.state().active; return { text: json({ running: act === undefined ? [] : Array.isArray(act) ? act : [act], items: listQueue(root) }) }; }

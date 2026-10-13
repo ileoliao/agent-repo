@@ -82,6 +82,13 @@ agent 会记住自己手上还没做完的任务，可以同时有好几个，�
 - 控制台的 Overview 页有 “Open tasks”，每个任务可以点 Close（记为 `dropped`，不再有人持有）；`@mate` 可以用 `list_tasks` 查看
 - 它和 `loop-memory` 不同：`loop-memory` 存知识和被跟踪的对象，任务是“进行中的承诺”，谁持有要随 `handoff` 变化，只有运行时看得见，所以由运行时记账
 
+## 上手、体检与健康报告
+
+- **Get Started**:命令 `Harbor Mate: Get Started (Add a Starter Agent)` 提供两个开箱即用的模板(每日提交报告、文件夹监听,后者演示 `wakeIf` 探针),也可以选"Describe what you want"直接在 Chat 里用自己的话描述。模板只写文件、从不覆盖,写完立刻体检,告诉你能不能跑。
+- **体检(Doctor)**:`Harbor Mate: Check Agents (Doctor)` 或 Chat 里 `@mate /doctor`。不调用模型,检查 skill 是否存在、脚本需要的解释器是否装好、policy 文件能否读取、`wakeIf` 是否会被 policy 拒绝,并且把每个探针真实跑一次,确认退出码是 0 或 1。`@mate` 创建或修改 agent 后会自动做不跑探针的版本,并在结果里告诉你"可以运行"或"还缺什么"。
+- **健康报告**:`Harbor Mate: Agent Health Report` 或 `@mate /health`。从审计记录统计每个 agent 近 14 天的结果、步数、问你的次数、被 policy 拒绝的次数、有没有产出文件、探针跳过比例,并给出发现和对应的修法(总是 nothing_to_do 的该加探针或降频、反复失败的、被拒绝的、问同一类问题的、探针坏了的)。
+- **优化**:`@mate /improve <agent>` 会综合体检、健康发现和 agent 文件,只提最小的修改,由你 Apply。
+
 ## 清理与管理
 
 `.loop/` 里的已完成工作不会无限增长:

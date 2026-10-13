@@ -86,5 +86,48 @@ const skill = (R, name, script) => { w(R, `.github/skills/${name}/SKILL.md`, `--
     ok(typeof t.text === 'string', 'the chat tool answers');
     fs.rmSync(R, { recursive: true, force: true });
   }
+  console.log('starter templates');
+  {
+    const { TEMPLATES, installTemplate } = require(`${OUT}/templates.js`);
+    for (const t of TEMPLATES) {
+      const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-tpl-'));
+      const res = installTemplate(R, t.id);
+      ok(res.ok && Object.keys(t.files).every(f => fs.existsSync(path.join(R, f))), `${t.label}: installs its files`);
+      const r = await runDoctor(R, { agent: t.agent, runProbes: true });
+      ok(r.ready.includes(t.agent) && !r.checks.some(c => c.level !== 'ok'), `${t.label}: is ready as installed, with no warnings`);
+      ok(!installTemplate(R, t.id).ok, `${t.label}: never overwrites`);
+      fs.rmSync(R, { recursive: true, force: true });
+    }
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-tpl-'));
+    installTemplate(R, 'folder-watch');
+    fs.mkdirSync(path.join(R, 'drop'), { recursive: true });
+    fs.writeFileSync(path.join(R, 'drop', 'a.txt'), 'x');
+    const { spawnSync } = require('child_process');
+    const probe = () => spawnSync('node', ['.github/skills/drop-folder-probe/scripts/check.js'], { cwd: R, encoding: 'utf8' });
+    ok(probe().status === 0 && probe().stdout.trim() === 'a.txt', 'the folder probe reports a new file');
+    fs.mkdirSync(path.join(R, '.loop/outbox/folder-watch'), { recursive: true });
+    fs.writeFileSync(path.join(R, '.loop/outbox/folder-watch/processed.txt'), 'a.txt\n');
+    ok(probe().status === 1, 'and stays quiet once it is listed as processed');
+    ok(!installTemplate(R, 'nope').ok, 'an unknown template is explained');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
+  console.log('readiness after a change');
+  {
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-ready-'));
+    w(R, '.github/agents/x.agent.md', agent('x', '  skills: [quiet]\n  schedule: "0 9 * * *"\n  task: Go.\n'));
+    skill(R, 'quiet', 'process.exit(1)');
+    const host = { root: R, state: () => ({}), reload: async () => [] };
+    const res = await runChatTool('propose_skills', { agent: 'x', remove: ['quiet'] }, host);
+    // removing the skill keeps the agent valid; adding a name that does not exist is refused up front
+    ok(res.proposal, 'a skill change is proposed');
+    const msg = await res.proposal.apply();
+    ok(/Applied/.test(msg), 'and applied');
+    const ok2 = await runChatTool('propose_schedule', { agent: 'x', wakeIf: 'node .github/skills/quiet/scripts/check.js' }, host);
+    const msg2 = ok2.proposal ? await ok2.proposal.apply() : ok2.text;
+    ok(/Not ready to run|Applied/.test(msg2), 'a change reports readiness or is refused with a reason');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
   console.log(`${pass} doctor and health checks passed`);
 })().catch(e => { console.error('FAILED:', e.message); process.exit(1); });

@@ -1,3 +1,4 @@
+import { TEMPLATES, installTemplate } from './templates';
 import { doctorMarkdown, runDoctor } from './doctor';
 import { healthMarkdown, healthReport } from './health';
 import { DEFAULT_RETENTION, Retention, autoCleanup, describeResult, pausedAgents, planCleanup, runCleanup } from './maintenance';
@@ -639,6 +640,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         { label: '$(sync) Reload & Validate Team', run: run('harborMate.reloadTeam') },
         { label: '$(send) Give an Agent a Task', run: run('harborMate.runAgent') },
         { label: '$(info) Show Team Status', run: run('harborMate.status') },
+        { label: '$(rocket) Get Started', run: run('harborMate.getStarted') },
         { label: '$(pulse) Check Agents (Doctor)', run: run('harborMate.runDoctor') },
         { label: '$(graph) Agent Health Report', run: run('harborMate.showHealth') },
         { label: '$(trash) Clean Up Finished Work', run: run('harborMate.cleanUp') },
@@ -656,6 +658,27 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!pick) { return; }
       const task = await vscode.window.showInputBox({ prompt: `Task for ${pick.label}`, ignoreFocusOut: true });
       if (task) { svc.submit(pick.label, task); }
+    }),
+    vscode.commands.registerCommand('harborMate.getStarted', async () => {
+      const r = root();
+      const items = [
+        ...TEMPLATES.map(t => ({ label: t.label, description: t.id, detail: t.detail, id: t.id })),
+        { label: 'Describe what you want', description: 'ask @mate', detail: 'Open Chat and tell @mate in your own words; it builds the agent and checks it can run.', id: '' }
+      ];
+      const pick = await vscode.window.showQuickPick(items, { title: 'Harbor Mate: Get Started', placeHolder: 'Pick a starting point. Nothing runs on a schedule until you start the team.' });
+      if (!pick) { return; }
+      if (!pick.id) { await vscode.commands.executeCommand('workbench.action.chat.open', { query: '@mate I want an agent that ', isPartialQuery: true }); return; }
+      const res = installTemplate(r, pick.id);
+      if (!res.ok) { vscode.window.showWarningMessage(`Harbor Mate: ${res.error}`); return; }
+      const errs = await svc.reloadAll();
+      refresh();
+      const report = await runDoctor(r, { agent: res.agent, runProbes: true, secrets: await svc.secrets() });
+      const ready = report.ready.includes(res.agent);
+      const next = await vscode.window.showInformationMessage(
+        ready && !errs.length ? `Harbor Mate: ${pick.label} is ready. Start the team to let it run on its schedule, or give it a task now.` : `Harbor Mate: ${pick.label} was created but is not ready: ${[...errs, ...report.checks.filter(c => c.level === 'fail').map(c => c.what)].join(' ')}`,
+        ...(ready && !svc.running ? ['Start Team'] : []), 'Open File');
+      if (next === 'Start Team') { await svc.start(true); }
+      if (next === 'Open File') { await vscode.window.showTextDocument(vscode.Uri.file(path.join(r, res.files[0]))); }
     }),
     vscode.commands.registerCommand('harborMate.runDoctor', async () => {
       const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking agents…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json') })));
