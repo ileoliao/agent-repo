@@ -25,7 +25,7 @@ function demo() {
   agent('release-watch', 'Watches release health and raises problems early.', '  schedule: "*/30 * * * *"\n  task: Check release health.\n');
   agent('triage', 'Sorts new issues and proposes owners.', '  goals:\n    - id: new-issue\n      text: Triage new issues.\n      on: "webhook:issue"\n');
   const run = (chain, name, startMin, status, steps, summary, outputs = []) => {
-    const ev = [{ type: 'start', agent: name, ts: ago(startMin), step: 0, task: TASKS[name] ?? 'Do the work.' }];
+    const ev = [{ type: 'start', agent: name, ts: ago(startMin), step: 0, from: 'schedule', hop: 0, task: TASKS[name] ?? 'Do the work.' }];
     steps.forEach((s, i) => ev.push({ type: 'tool', agent: name, ts: ago(startMin - i - 1), step: i + 1, name: s.name, input: s.input, decision: s.decision ?? 'allow', result: s.result ?? 'ok' }));
     if (status) { ev.push({ type: 'end', agent: name, ts: ago(startMin - steps.length - 1), step: steps.length, status, summary, outputs }); }
     w(R, `.loop/runs/${day}/${chain}.jsonl`, ev.map(e => JSON.stringify({ chainId: chain, ...e })).join('\n') + '\n');
