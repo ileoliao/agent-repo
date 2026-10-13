@@ -109,6 +109,12 @@ ok(/data-agent="a"[^>]*>[^]*Chat/.test(card2) && /data-open="\.github\/agents\/a
 ok(/Give a mate a task/.test(renderBody(base)) && /title="Stop every mate/.test(renderBody(base)) && /title="Open the newest file any mate wrote"/.test(renderBody(base)), 'the top buttons say whom they affect');
 ok(/class="chips-row"[^]*Try[^]*ask for status/.test(head) && !/ask for status/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ state: 'running' }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'an idle mate gets a ready-made question to try, a running one does not');
 ok(/appears at the top once you have a mate/.test(renderBody({ ...base, running: false, agents: [], runs: [], tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'the disabled Start says why');
+console.log('the everyday thread');
+const withSteps = renderBody({ ...base, tab: 'chat', chat: { agents: [{ name: 'a', description: 'd', state: 'idle', avatar: 'idle', line: 'x', pendingMessages: 0, needsYou: 0 }], selected: 'a', events: [{ kind: 'result', ts: now, chainId: 'c1', status: 'done', label: 'Finished', tone: 'ok', detail: 'Write the report', deliverables: [], supporting: [], fold: [{ kind: 'steps', ts: now, steps: [{ step: 1, kind: 'tool', title: 'run_command', phrase: 'ran git log', routine: false, ok: true }, { step: 2, kind: 'tool', title: 'write_file', phrase: 'wrote today.md', routine: false, ok: true }] }], stepCount: 2, problems: { refused: 0, error: 0, failed: 0 } }], hidden: 0, gates: [] } });
+ok(/class="fold-label">Show 2 steps<\/span><span class="fold-gist">ran git log · wrote today\.md/.test(withSteps), 'a folded run says what it did before you open it');
+const waiting = renderBody({ ...base, pending: [{ id: 'g', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now, previews: [] }] });
+ok(/<button class="state wait" data-agent="a"/.test(waiting) && !/needs-banner/.test(waiting), 'the status pill is the way to the mate who is waiting, so nothing shifts the page');
+ok(!/class="state wait"/.test(renderBody(base)), 'with nothing waiting it is a plain status');
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');
 console.log(`${n} console wording checks passed`);

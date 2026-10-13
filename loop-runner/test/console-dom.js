@@ -145,6 +145,7 @@ ok(!threw, 'an id with a quote does not throw');
   const q = { id: 'gq', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 'Which?', body: 'two', options: ['red', 'blue'], files: [], resume: true, status: 'pending', createdAt: now, previews: [] };
   post2(renderBody(chatModel('a', evts, [q])));
   d2.querySelector('[data-pick="gq"][data-text="blue"]').click();
+  ok(d2.querySelector('[data-send="gq"]').classList.contains('ready') && d2.querySelector('[data-input="gq"]').value === 'blue', 'picking a suggestion fills the box and lights up Send');
   d2.querySelector('[data-send="gq"]').click();
   ok(sent2.at(-1).type === 'answer' && sent2.at(-1).id === 'gq' && sent2.at(-1).text === 'blue', 'a question in the conversation can be answered right there');
   w2.close();
