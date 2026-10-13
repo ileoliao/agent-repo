@@ -43,6 +43,7 @@ A skill is a folder an agent can use: instructions in `SKILL.md`, and optionally
 ```
 
 - **name**: lowercase letters, digits and hyphens, at most 63 characters, equal to the folder name.
+- **requires** (optional): the programs the scripts call, for example `requires: [harbor]`. The doctor checks each is installed and reachable and says what to do when it is not. If a program works in the human's terminal but is not found, they add its folder to `harborMate.extraPath`. Scripts should call a CLI with its non-interactive, machine-readable form (for example `--json`) and fixed subcommands, so the policy only has to allow the script.
 - **description**: say what the skill does **and when to use it**. It is all an agent sees before deciding to read the rest, so it is what makes the skill get picked. Name the situations and the words a task would use, a little generously, because agents tend to under-use skills. Keep it under 1024 characters.
   - Weak: `Helps with release data.`
   - Strong: `Summarises the last 24 hours of Harbor release health into a short table. Use when a task mentions release health, a failed rollout or a deploy check, even if it does not say "summary".`

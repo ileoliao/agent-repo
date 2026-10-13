@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { loadAllAgents, loadSkills, policyPathFor, skillsFor, validateTeam, loadAgents } from './team';
 import { decideCommand, loadPolicy, skillScriptRule } from './policy';
-import { exec } from './exec';
+import { exec, getExtraPath } from './exec';
 import { designWarnings } from './manage';
 import { parseOn } from './triggers';
 
@@ -23,6 +23,8 @@ export interface DoctorOptions {
   policyFile?: string;
   /** The configured webhook port (0 = off); lets the doctor warn about a webhook goal nobody can reach. */
   triggerPort?: number;
+  /** Extra directories searched for programs; defaults to harborMate.extraPath as set in the runtime. */
+  extraPath?: string[];
   /** Test hook: where interpreters are looked up. */
   pathEnv?: string;
 }
@@ -66,6 +68,19 @@ export async function runDoctor(root: string, o: DoctorOptions = {}): Promise<Do
     }
     for (const [name, cands] of needed) {
       if (!onPath(cands, o.pathEnv)) { add(a.name, 'fail', `A script of its skills needs ${cands.join(' or ')}, which is not on PATH.`, `Install ${name}, or make sure VS Code is started from a shell where it is available.`); }
+    }
+
+    // Programs the skills' scripts call: installed, and reachable from where commands run.
+    const searchPath = [...(o.extraPath ?? getExtraPath()), o.pathEnv ?? process.env.PATH ?? ''].filter(Boolean).join(path.delimiter);
+    for (const s of mySkills) {
+      for (const cli of s.requires) {
+        if (!onPath([cli], searchPath)) {
+          add(a.name, 'fail', `Skill ${s.name} needs the program \`${cli}\`, which is not on PATH.`, `Install it, or add its folder to harborMate.extraPath in your user settings. VS Code started from the Dock or Start menu may not see a PATH that only your terminal has.`);
+        } else if (o.runProbes) {
+          const v = await exec(`${cli} --version`, { cwd: root, timeoutSec: 10, maxOutputBytes: 400, secrets: o.secrets ?? {}, env: { PATH: searchPath } });
+          add(a.name, v.code === 0 ? 'ok' : 'warn', v.code === 0 ? `\`${cli}\` is installed (${v.text.replace(/^\[exit \d+\]\s*/, '').trim().split('\n')[0].slice(0, 80) || 'no version printed'}).` : `\`${cli}\` was found but \`${cli} --version\` did not succeed (${v.code === null ? 'timed out' : `exit ${v.code}`}).`, v.code === 0 ? undefined : 'Run it once in a terminal to see why; scripts that call it will likely fail the same way.');
+        }
+      }
     }
 
     // Policy: it must parse, and a named file must exist.

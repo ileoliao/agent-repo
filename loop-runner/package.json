@@ -293,6 +293,15 @@
           "maximum": 65535,
           "scope": "application",
           "markdownDescription": "Listen for webhooks on this port, on 127.0.0.1 only, so goals with `on: webhook:<name>` can be woken by `POST /hook/<name>` with a bearer token (command: Copy Webhook Example). 0 turns it off. Set it in your user settings."
+        },
+        "harborMate.extraPath": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "application",
+          "markdownDescription": "Folders put in front of PATH for every command an agent or probe runs. Use it when a CLI (for example `harbor`) works in your terminal but VS Code cannot find it. Set it in your user settings."
         }
       }
     },

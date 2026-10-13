@@ -86,6 +86,32 @@ const skill = (R, name, script) => { w(R, `.github/skills/${name}/SKILL.md`, `--
     ok(typeof t.text === 'string', 'the chat tool answers');
     fs.rmSync(R, { recursive: true, force: true });
   }
+  console.log('programs a skill requires');
+  {
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-req-'));
+    const reqSkill = (name, reqs) => w(R, `.github/skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: Use when checking ${name}.\nrequires: [${reqs}]\n---\nRun it.\n`);
+    reqSkill('has-node', 'node'); reqSkill('has-ghost', 'harbor-cli-xyz'); reqSkill('bad', '"rm -rf /"');
+    w(R, '.github/agents/a.agent.md', agent('a', '  skills: [has-node]\n'));
+    w(R, '.github/agents/b.agent.md', agent('b', '  skills: [has-ghost]\n'));
+    w(R, '.github/agents/c.agent.md', agent('c', '  skills: [bad]\n'));
+    const ra = await runDoctor(R, { agent: 'a', runProbes: true });
+    ok(ra.ready.includes('a') && ra.checks.some(c => c.level === 'ok' && /`node` is installed/.test(c.what)), 'a required program that is installed is confirmed, with its version');
+    const rb = await runDoctor(R, { agent: 'b' });
+    ok(rb.blocked.includes('b') && rb.checks.some(c => c.level === 'fail' && /harbor-cli-xyz/.test(c.what) && /extraPath/.test(c.fix)), 'a missing program blocks the agent and points at extraPath');
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-bin-'));
+    const exe = path.join(bin, 'harbor-cli-xyz');
+    fs.writeFileSync(exe, '#!/bin/sh\necho "harbor 9.9.9"\n'); fs.chmodSync(exe, 0o755);
+    const rb2 = await runDoctor(R, { agent: 'b', runProbes: true, extraPath: [bin] });
+    ok(rb2.ready.includes('b') && rb2.checks.some(c => /9\.9\.9/.test(c.what)), 'extraPath makes it findable, and its version is shown');
+    const { setExtraPath, buildShellEnv } = require(`${OUT}/exec.js`);
+    setExtraPath([bin]);
+    ok(buildShellEnv({}).PATH.split(path.delimiter)[0] === bin, 'commands run with extraPath in front of PATH');
+    setExtraPath([]);
+    const rc = await runDoctor(R, { agent: 'c' });
+    ok(!rc.checks.some(c => /rm -rf/.test(c.what)), 'an unsafe requires entry is ignored, never run');
+    fs.rmSync(R, { recursive: true, force: true }); fs.rmSync(bin, { recursive: true, force: true });
+  }
+
   console.log('starter templates');
   {
     const { TEMPLATES, installTemplate } = require(`${OUT}/templates.js`);
