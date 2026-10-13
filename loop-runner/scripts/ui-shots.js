@@ -16,6 +16,8 @@ const now = new Date();
 const ago = min => new Date(now.getTime() - min * 60_000).toISOString();
 const day = ago(0).slice(0, 10);
 
+const TASKS = { 'daily-report': 'Write the report.', 'release-watch': 'Check release health.', triage: 'Triage new issues.' };
+
 function demo() {
   const R = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-demo-'));
   const agent = (n, d, loop) => w(R, `.github/agents/${n}.agent.md`, `---\nname: ${n}\ndescription: ${d}\nloop:\n${loop}---\nYou do this work carefully. Ask the human with ask_human when a call depends on risk. Finish with done or blocked.\n`);
@@ -23,17 +25,18 @@ function demo() {
   agent('release-watch', 'Watches release health and raises problems early.', '  schedule: "*/30 * * * *"\n  task: Check release health.\n');
   agent('triage', 'Sorts new issues and proposes owners.', '  goals:\n    - id: new-issue\n      text: Triage new issues.\n      on: "webhook:issue"\n');
   const run = (chain, name, startMin, status, steps, summary, outputs = []) => {
-    const ev = [{ type: 'start', agent: name, ts: ago(startMin), step: 0, task: 'task' }];
+    const ev = [{ type: 'start', agent: name, ts: ago(startMin), step: 0, task: TASKS[name] ?? 'Do the work.' }];
     steps.forEach((s, i) => ev.push({ type: 'tool', agent: name, ts: ago(startMin - i - 1), step: i + 1, name: s.name, input: s.input, decision: s.decision ?? 'allow', result: s.result ?? 'ok' }));
-    ev.push({ type: 'end', agent: name, ts: ago(startMin - steps.length - 1), step: steps.length, status, summary, outputs });
+    if (status) { ev.push({ type: 'end', agent: name, ts: ago(startMin - steps.length - 1), step: steps.length, status, summary, outputs }); }
     w(R, `.loop/runs/${day}/${chain}.jsonl`, ev.map(e => JSON.stringify({ chainId: chain, ...e })).join('\n') + '\n');
   };
-  const q = (chain, name, status, summary, min) => Q.complete(R, { id: chain, agent: name, task: 't', from: 'schedule', chainId: chain, hop: 0, createdAt: ago(min) }, status, summary);
+  const q = (chain, name, status, summary, min) => Q.complete(R, { id: chain, agent: name, task: TASKS[name], from: 'schedule', chainId: chain, hop: 0, createdAt: ago(min) }, status, summary);
   w(R, 'src/app.js', 'x');
   run('c1', 'daily-report', 190, 'done', [{ name: 'run_command', input: { command: 'git log --since="1 day ago" --stat' }, result: '[exit 0]\n12 commits' }, { name: 'write_file', input: { path: '.loop/outbox/daily-report/today.md' }, result: 'Wrote .loop/outbox/daily-report/today.md.' }], 'Report written: 12 commits across 3 areas.', ['.loop/outbox/daily-report/today.md']);
   w(R, '.loop/outbox/daily-report/today.md', '# Daily report\n\n- Payments: retry logic reworked (3 commits)\n- Docs: onboarding guide updated\n');
   run('c2', 'release-watch', 60, 'nothing_to_do', [{ name: 'run_command', input: { command: 'harbor status --json' } }], 'All releases healthy.');
   run('c3', 'release-watch', 30, 'blocked', [{ name: 'run_command', input: { command: 'curl https://api.example.com' }, decision: 'deny', result: 'REFUSED by policy (denyCommands). Retrying will fail the same way.' }], 'Could not reach the release API: curl is refused by policy.');
+  run('c4', 'daily-report', 3, null, [{ name: 'run_command', input: { command: 'git log --since="1 day ago" --stat' }, result: '[exit 0]' }, { name: 'read_file', input: { path: 'src/app.js' } }], '');
   q('c1', 'daily-report', 'done', 'Report written', 190); q('c2', 'release-watch', 'nothing_to_do', 'healthy', 60); q('c3', 'release-watch', 'blocked', 'refused', 30);
   Q.saveGate(R, { id: 'g1', kind: 'approval', agent: 'release-watch', itemId: 'i9', chainId: 'c9', title: 'Roll back payments-service to v1.4.2', body: 'Error rate on payments-service rose from 0.2% to 6% after the v1.5.0 rollout 14 minutes ago. Rolling back is the documented fix.', command: 'harbor rollback payments-service --to v1.4.2', files: ['.loop/outbox/release-watch/rollback-plan.md'], resume: true, status: 'pending', createdAt: ago(8) });
   w(R, '.loop/outbox/release-watch/rollback-plan.md', '# Rollback plan\n\n1. Roll back payments-service to v1.4.2\n2. Watch error rate for 10 minutes\n3. Post status to #releases\n');
@@ -54,7 +57,8 @@ const THEMES = {
   const scenes = [
     ['chat-needs-you', R, { running: true, active: undefined, tab: 'chat', agent: 'release-watch' }],
     ['chat-question', R, { running: true, active: undefined, tab: 'chat', agent: 'triage' }],
-    ['overview', R, { running: true, active: 'daily-report', tab: 'overview' }],
+    ['overview', R, { running: true, active: undefined, tab: 'overview' }],
+    ['chat-running', R, { running: true, active: 'daily-report', tab: 'chat', agent: 'daily-report' }],
     ['stopped', R, { running: false, tab: 'overview' }],
     ['empty-workspace', empty, { running: false, tab: 'chat' }]
   ];
