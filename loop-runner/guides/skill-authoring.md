@@ -9,7 +9,15 @@ A skill is what lets an unattended agent do something: query a system, aggregate
 3. Call `propose_skill` with `name`, `description`, `instructions` and the files. Every script and reference you create must be mentioned by name in `instructions`.
 4. If the tool says "Not written", fix every listed error and call again. Warnings are shown to the human: reduce them where you can, and say in your reply which ones remain and why.
 5. After the human applies it, wire it up with `propose_skills` (adds it to an agent's `loop.skills`). Say that the skill does nothing until an agent lists it.
-6. `propose_skill` only creates. It never overwrites or edits an existing skill; to change one, tell the human what to change.
+6. `propose_skill` only creates; it never overwrites. To change a skill that exists, use `propose_skill_edit` (below).
+
+## Changing a skill with `propose_skill_edit`
+
+1. `get_skill` first: it returns every file and the agents that use it. Never edit from memory.
+2. Make the smallest edit: `old_text` + `new_text` replaces exactly one occurrence (quote it exactly); `content` replaces or adds a whole file; `delete` removes one. Change `description` too when what the skill does or when to use it changes.
+3. Keep the contract (arguments, output shape, exit codes) unless the human asked to change it; if it must change, update `SKILL.md` and say who calls it.
+4. The card names the agents that use the skill: tell the human their next run will use the change. Only the scripts you changed are checked, so do not "fix" other files unasked.
+5. Skills outside `.github/skills`, and the shipped ones (`loop-memory`, `loop-team-authoring`, `loop-skill-authoring`), are not edited here; say so and tell the human what to change.
 
 A policy file is still the human's to write. If the skill needs commands the agent will call itself (not from your script), say so and suggest the narrow `allowCommands` rule instead of widening anything.
 
@@ -77,7 +85,18 @@ python3 .github/skills/<skill>/scripts/<script>.py --arg value
 
 Run each script by hand once with real arguments, in the workspace folder: check the output size, the exit codes (including a deliberate failure), that nothing prompts, and that it works with no secrets in your shell other than the ones it names. For a probe, check all of 0, 1 and 2. Then give it to one agent first.
 
-## 7. Checklist
+## 7. Changing an existing skill
+
+Agents rely on a skill's behaviour, and the change reaches their next unattended run with nobody watching. So:
+
+- **Make the smallest change that does the job.** Edit the lines that need it; do not rewrite a working script.
+- **Keep the contract.** The command line, the shape of the output and the exit codes are what agents and `wakeIf` probes depend on. If one must change, change `SKILL.md` and every place that calls it in the same step, and say so.
+- **Keep the description true.** If what the skill does or when to use it changes, update `description`, because it is how agents choose the skill.
+- **Know who uses it.** Check which agents list the skill before changing it, and tell the human.
+- **A changed script is re-judged.** The rules in section 4 apply to the new version, and a human reads the diff.
+- **Test again by hand** (section 6), including the failure path.
+
+## 8. Checklist
 
 - [ ] The description says what and when; the name equals the folder.
 - [ ] `SKILL.md` is under 500 lines, uses exact command lines, and mentions every file.
@@ -85,3 +104,4 @@ Run each script by hand once with real arguments, in the workspace folder: check
 - [ ] Nothing writes outside `.loop/outbox/`; nothing touches `.github/` or other `.loop/` state.
 - [ ] Anything that sends or publishes takes a draft file path.
 - [ ] You ran each script by hand, including a failure.
+- [ ] For a change: the contract (arguments, output, exit codes) still holds, or every caller was updated.

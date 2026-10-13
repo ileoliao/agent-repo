@@ -105,11 +105,50 @@ A skill is a folder with `SKILL.md` (frontmatter `name`, `description`; body: ho
 
 Every run starts from nothing. If a role should build on what it did before (not reopen something a human chose to watch, say what changed since last time), add the shared skill `loop-memory` (source: `skills/loop-memory/` in the Loop Runner repository; copy it into the workspace's `.github/skills/`) to its `loop.skills`, and give it two lines in the body: start with `now` and `recall --agent <name>`, finish with `note --agent <name>`. Use `check --key <subject> --value <number>` before acting on something that may already be known, and `track` when a subject should be followed or a human has decided about it. The skill's own SKILL.md carries the protocol, so the role file does not repeat it. Do not give a role its own note-taking instructions or file layout.
 
-## 7. Checklist before finishing
+## 7. Designing an effective agent
+
+An unattended agent starts every run knowing nothing, cannot ask a colleague, and is paid for by the model call. Design for that.
+
+### Principles
+
+1. **One role, one owner.** An agent is a role with a clear area of responsibility. Several standing responsibilities of the *same* role are goals of one agent. Split into separate agents when the **permissions or the trust level of the data** differ (one reads untrusted input and has narrow rights; another writes), because the policy is per agent.
+2. **Least privilege.** Give each agent its own policy with only the commands and paths it needs; read-only roles get `"writablePaths": []`. Give it only the skills it uses, and credentials only to the skills that need them. Loosen a policy only for an agent that reads nothing written by outsiders.
+3. **Cheap first.** Let a zero-token `wakeIf` probe decide whether the model runs at all; let scripts filter, count and aggregate so the model sees a short result; cap cost with `maxRunsPerDay` and `maxSteps`.
+4. **Decide in the instructions, don't hope.** Write the decision rules ("if X, do Y, otherwise Z"), the inputs it will have and the output it must produce. Say what it must never do and why.
+5. **Judgement goes to a human.** Unattended, a guess is worse than a pause. Where the right answer depends on preference or risk, instruct the agent to `ask_human` with the options. Anything with outside effects (sending, publishing, deploying, deleting) goes through `request_approval` with a draft file the human can read and edit.
+6. **A defined end.** Every run finishes with one of: `done`, `nothing_to_do`, `blocked` (say what is missing), or `open` with a `next` step when it is waiting for something. Name the file it should leave as a deliverable.
+7. **Small, explicit handoffs.** Hand off only to a teammate whose `description` says it handles this; put ids, paths and evidence in the handoff context, because the receiver sees nothing else. Expect a bounded number of hops (`loopRunner.maxHops`) and never design two agents to hand work back and forth.
+8. **Memory through the shared skill.** If it must build on earlier runs, use `loop-memory`; do not invent note files in the instructions.
+9. **Prove it manually, then schedule it.** Create it with no schedule, give it a one-off task, read what it did, fix the instructions, and only then add a schedule with a conservative cadence and a daily cap.
+10. **Facts live where they can be updated.** Put stable procedure in the instructions and changing facts (thresholds, owners, lists) in a skill reference file or in memory, so that updating them does not mean rewriting the role.
+
+### Anti-patterns
+
+| Anti-pattern | Why it hurts | Instead |
+|---|---|---|
+| **The do-everything agent** (many skills, many goals, a long prompt) | Instructions blur, mistakes are hard to trace, and one policy must cover every job | Split by role and by permission |
+| **One agent per tiny task** | Overhead, handoff chatter, nobody owns the outcome | Make it a goal of the role that owns the area |
+| **Vague mandate** ("monitor X and handle issues") | The model invents its own definition of "handle" | State the trigger, the decision rules, the output and the stopping point |
+| **Scheduling without a probe** | The model is called every interval to find nothing | Add a `wakeIf` probe, or lower the frequency |
+| **Using the model for arithmetic and filtering** | Slow, costly, and sometimes wrong | A skill script computes; the model interprets the result |
+| **"Use your best judgement" unattended** | A confident guess on a risky call | Tell it when to `ask_human` |
+| **Outside effects without approval**, or text embedded in the approval command | The human cannot review or edit what will happen | Draft in `.loop/outbox/`, approve a command that reads the draft |
+| **Instructions that copy or contradict a skill** | Two sources of truth drift apart | Name the skill and say when to use it; keep the how in the skill |
+| **Hard-coded business facts in the role** | The role goes stale silently | Move them to a skill reference or memory |
+| **Handoff ping-pong** | Loops until the hop limit | One direction, with a clear contract; the receiver finishes |
+| **Silent failure** (no data, then a confident answer) | Wrong output that looks right | Report a data gap and finish `blocked`; probes exit 2, not 1 |
+| **A broad shared policy** for every agent | One prompt injection reaches everything | A policy per agent |
+| **An open policy on an agent that reads outsiders' text** (customer messages, web pages, issue comments) | Injected instructions can run scripts | Keep it narrow; open policies are for agents that read only the owner's own files |
+| **Scheduling before the first manual run works** | Failures pile up unattended | Manual first, then schedule with a cap |
+| **Overlapping agents** with no owner of the overlap | Duplicate work, conflicting results | Give each responsibility exactly one agent |
+
+## 8. Checklist before finishing
 
 - [ ] Role file parses: run "Loop Runner: Reload & Validate Team" and fix every reported problem.
 - [ ] Every `loop.skills` entry exists, and the body names the skills for Chat mode.
 - [ ] Scheduled roles have a `task`; probes follow the exit-code contract and were run once by hand.
+- [ ] The instructions say what to do, what never to do, when to ask the human, and how to finish.
 - [ ] External effects go through approval with a draft in `.loop/outbox/`.
 - [ ] Scripts are non-interactive, read secrets from the environment, and print small JSON.
 - [ ] The policy grants only what the role needs.
+- [ ] It ran once by hand on a real task before it was scheduled, and has a `maxRunsPerDay`.

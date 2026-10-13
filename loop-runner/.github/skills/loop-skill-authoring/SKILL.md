@@ -65,7 +65,18 @@ python3 .github/skills/<skill>/scripts/<script>.py --arg value
 
 Run each script by hand once with real arguments, in the workspace folder: check the output size, the exit codes (including a deliberate failure), that nothing prompts, and that it works with no secrets in your shell other than the ones it names. For a probe, check all of 0, 1 and 2. Then give it to one agent first.
 
-## 7. Checklist
+## 7. Changing an existing skill
+
+Agents rely on a skill's behaviour, and the change reaches their next unattended run with nobody watching. So:
+
+- **Make the smallest change that does the job.** Edit the lines that need it; do not rewrite a working script.
+- **Keep the contract.** The command line, the shape of the output and the exit codes are what agents and `wakeIf` probes depend on. If one must change, change `SKILL.md` and every place that calls it in the same step, and say so.
+- **Keep the description true.** If what the skill does or when to use it changes, update `description`, because it is how agents choose the skill.
+- **Know who uses it.** Check which agents list the skill before changing it, and tell the human.
+- **A changed script is re-judged.** The rules in section 4 apply to the new version, and a human reads the diff.
+- **Test again by hand** (section 6), including the failure path.
+
+## 8. Checklist
 
 - [ ] The description says what and when; the name equals the folder.
 - [ ] `SKILL.md` is under 500 lines, uses exact command lines, and mentions every file.
@@ -73,3 +84,4 @@ Run each script by hand once with real arguments, in the workspace folder: check
 - [ ] Nothing writes outside `.loop/outbox/`; nothing touches `.github/` or other `.loop/` state.
 - [ ] Anything that sends or publishes takes a draft file path.
 - [ ] You ran each script by hand, including a failure.
+- [ ] For a change: the contract (arguments, output, exit codes) still holds, or every caller was updated.

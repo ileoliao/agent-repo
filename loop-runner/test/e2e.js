@@ -1270,7 +1270,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
       power: async on => { calls.power.push(on); }, reload: async () => { calls.reload++; return []; } };
     const list = JSON.parse((await runChatTool('list_agents', {}, host)).text);
     ok(list.agents.length === 2 && list.agents.find(a => a.name === 'sentinel').schedule === '0 9 * * *' && list.agents.find(a => a.name === 'planner').runsUnattended === false, 'list_agents tells team agents from chat-only ones');
-    ok(CHAT_TOOLS.every(t => t.name && t.description && t.inputSchema.type === 'object') && CHAT_TOOLS.filter(t => t.name.startsWith('propose_')).length === 11, 'every change goes through a propose_ tool');
+    ok(CHAT_TOOLS.every(t => t.name && t.description && t.inputSchema.type === 'object') && CHAT_TOOLS.filter(t => t.name.startsWith('propose_')).length === 12, 'every change goes through a propose_ tool');
 
     const sched = await runChatTool('propose_schedule', { agent: 'sentinel', schedule: '*/30 9-18 * * 1-5' }, host);
     ok(sched.proposal && sched.proposal.detail.includes('+  schedule: "*/30 9-18 * * 1-5"') && fs.readFileSync(file, 'utf8') === src, 'a schedule request becomes a diff and writes nothing');
@@ -1530,6 +1530,81 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(skillGuide.includes('propose_skill') && skillGuide.includes('500 lines') && skillGuide.includes('Use when'), 'the skills guide is served by topic');
     ok(!guideDefaultIsSkills(skillGuide, (await cardOf('get_authoring_guide', {})).text), 'the default topic is still the agents guide');
     function guideDefaultIsSkills(a, b) { return a === b; }
+
+    // ---- changing skills ----
+    const gs = (await cardOf('get_skill', { skill: 'release-check' })).text;
+    ok(gs.includes('scripts/status.py') && gs.includes('references/fields.md') && gs.includes('subprocess.run') && /Used by: no agent yet|Used by:/.test(gs), 'get_skill shows every file and who uses it');
+    ok((await cardOf('get_skill', { skill: 'nope' })).text.startsWith('No skill named'), 'an unknown skill is named');
+    // give it a user, and extra frontmatter that must survive
+    const mdPath = path.join(SK('release-check'), 'SKILL.md');
+    fs.writeFileSync(mdPath, fs.readFileSync(mdPath, 'utf8').replace('---\n\n', 'allowed-tools: none\n---\n\n'));
+    fs.writeFileSync(A('sentinel'), src.replace('skills: [probe]', 'skills: [probe, release-check]'));
+    const ed = await cardOf('propose_skill_edit', { skill: 'release-check', description: 'Summarises release health for one service. Use when a task mentions release health, a rollout or a deploy check.', edits: [{ file: 'scripts/status.py', old_text: 'timeout=60', new_text: 'timeout=30' }, { file: 'references/fields.md', old_text: '- code: harbor exit code', new_text: '- code: harbor exit code (0 = reachable)' }] });
+    ok(ed.proposal && ed.proposal.detail.includes('Used by sentinel') && ed.proposal.detail.includes('next run') && ed.proposal.detail.includes('-out = subprocess.run') && ed.proposal.detail.includes('+out = subprocess.run'), 'the card names the agents the change reaches and shows the diff of each file');
+    ok(fs.readFileSync(path.join(SK('release-check'), 'scripts', 'status.py'), 'utf8') === okScript, 'proposing an edit writes nothing');
+    await ed.proposal.apply();
+    const edited = fs.readFileSync(mdPath, 'utf8');
+    ok(fs.readFileSync(path.join(SK('release-check'), 'scripts', 'status.py'), 'utf8') === okScript.replace('timeout=60', 'timeout=30') && edited.includes('allowed-tools: none') && edited.includes('a rollout or a deploy check') && require(`${OUT}/team.js`).loadSkills(R).get('release-check').description.includes('a rollout'), 'Apply changes only what was asked; other frontmatter is kept and the new description is read back');
+    const body = await cardOf('propose_skill_edit', { skill: 'release-check', edits: [{ file: 'SKILL.md', old_text: 'exit 2 means harbor could not be reached', new_text: 'exit 2 means harbor could not be reached (report a data gap)' }] });
+    ok(body.proposal && body.proposal.detail.includes('report a data gap'), 'an edit to the instructions is a one-occurrence replace');
+    const addF = await cardOf('propose_skill_edit', { skill: 'release-check', edits: [{ file: 'scripts/list.py', content: 'import json\nprint(json.dumps([]))\n' }, { file: 'SKILL.md', old_text: 'Read references/fields.md if a field is unclear.', new_text: 'Read references/fields.md if a field is unclear. `list.py` prints the services.' }] });
+    ok(addF.proposal && addF.proposal.detail.includes('scripts/list.py'), 'a new script can be added with its mention in the instructions');
+    await addF.proposal.apply();
+    const delF = await cardOf('propose_skill_edit', { skill: 'release-check', edits: [{ file: 'scripts/list.py', delete: true }, { file: 'SKILL.md', old_text: ' `list.py` prints the services.', new_text: '' }] });
+    ok(delF.proposal && delF.proposal.detail.includes('(deleted)'), 'a file can be deleted, and the card says so');
+    await delF.proposal.apply();
+    ok(!fs.existsSync(path.join(SK('release-check'), 'scripts', 'list.py')), 'Apply removes it');
+    // a pre-existing bad script does not block an unrelated edit; a bad new version does
+    fs.writeFileSync(path.join(SK('release-check'), 'scripts', 'old.py'), 'name = input("x")\n');
+    const unrelated = await cardOf('propose_skill_edit', { skill: 'release-check', edits: [{ file: 'SKILL.md', old_text: '# Release check', new_text: '# Release check (status)' }] });
+    ok(unrelated.proposal, 'an old script that would fail today does not block an edit to something else');
+    fs.rmSync(path.join(SK('release-check'), 'scripts', 'old.py'));
+    for (const [input, why] of [
+      [{ skill: 'release-check', edits: [{ file: 'scripts/status.py', old_text: 'timeout=30', new_text: 'timeout=30); TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789' }] }, 'a pasted token in a changed script'],
+      [{ skill: 'release-check', edits: [{ file: 'scripts/status.py', content: 'print(input("x"))\n' }] }, 'a changed script that prompts'],
+      [{ skill: 'release-check', edits: [{ file: 'scripts/status.py', old_text: 'nothing like this', new_text: 'x' }] }, 'text that is not there'],
+      [{ skill: 'release-check', edits: [{ file: 'scripts/status.py', old_text: 'sys', new_text: 'x' }] }, 'text that appears more than once'],
+      [{ skill: 'release-check', edits: [{ file: 'scripts/missing.py', old_text: 'a', new_text: 'b' }] }, 'editing a file that does not exist'],
+      [{ skill: 'release-check', edits: [{ file: 'scripts/../../x.py', content: 'x' }] }, 'a path that climbs out'],
+      [{ skill: 'release-check', edits: [{ file: 'SKILL.md', delete: true }] }, 'deleting SKILL.md'],
+      [{ skill: 'release-check', edits: [{ file: 'SKILL.md', content: 'x\n'.repeat(600) }] }, 'instructions over 500 lines'],
+      [{ skill: 'release-check', description: '' }, 'an empty description'],
+      [{ skill: 'release-check' }, 'no change'],
+      [{ skill: 'loop-memory', description: 'x' }, 'a shipped skill'],
+      [{ skill: 'nope', description: 'x' }, 'a skill that does not exist'],
+      [{ skill: 'release-check', edits: 'x' }, 'edits as text'],
+      [{ skill: 5 }, 'a numeric skill name']
+    ]) {
+      const r = await cardOf('propose_skill_edit', input);
+      ok(r.text.startsWith('Not proposed'), `skill edit: ${why} is refused with a reason`);
+    }
+    // all or nothing: a file that changed under the proposal stops the whole thing and nothing is half-applied
+    const two = await cardOf('propose_skill_edit', { skill: 'release-check', edits: [{ file: 'SKILL.md', old_text: '# Release check', new_text: '# Release check v2' }, { file: 'references/fields.md', old_text: '(0 = reachable)', new_text: '(0 = ok)' }] });
+    const refPath = path.join(SK('release-check'), 'references', 'fields.md');
+    const refBefore = fs.readFileSync(refPath, 'utf8');
+    fs.writeFileSync(refPath, refBefore + 'someone edited this\n');
+    let stopped = false; try { await two.proposal.apply(); } catch (e) { stopped = /changed since/.test(e.message); }
+    ok(stopped && !fs.readFileSync(mdPath, 'utf8').includes('v2') && fs.readFileSync(refPath, 'utf8').endsWith('someone edited this\n'), 'if one file changed after the proposal, none of the files is written');
+    // a skill outside .github/skills is not edited here
+    fs.mkdirSync(path.join(R, '.agents', 'skills', 'elsewhere'), { recursive: true });
+    fs.writeFileSync(path.join(R, '.agents', 'skills', 'elsewhere', 'SKILL.md'), '---\nname: elsewhere\ndescription: x\n---\nBody\n');
+    ok((await cardOf('propose_skill_edit', { skill: 'elsewhere', description: 'y' })).text.includes('outside .github/skills'), 'a skill outside .github/skills is left to the human');
+
+    // ---- design review on the card ----
+    const designOf = async input => (await cardOf('propose_agent', input)).proposal?.detail ?? '';
+    const bare = await designOf({ name: 'd1', description: 'Does things.', instructions: 'Handle issues as appropriate.', skills: ['probe'], schedule: '*/2 * * * *', task: 'Run.' });
+    ok(bare.includes('Design review') && /very short/.test(bare) && /never name the skill probe/.test(bare) && /no wakeIf probe/.test(bare) && /every 5 minutes/.test(bare) && /No maxRunsPerDay/.test(bare) && /leave judgement calls/.test(bare), 'a thin, frequent, probe-less agent gets the design warnings');
+    const risky = await designOf({ name: 'd2', description: 'Posts updates.', instructions: 'Use probe to check the status and then post a summary to the channel for the team every time something changes. '.repeat(3) });
+    ok(/outside effects/.test(risky) && !/very short/.test(risky), 'an agent that posts without any mention of approval is flagged');
+    const good = await designOf({ name: 'd3', description: 'Checks releases.', instructions: 'You check release health with the probe skill. '.repeat(6) + 'When a call depends on risk, ask the human with ask_human. Finish with done, or blocked and say what is missing.', skills: ['probe'], schedule: '0 9 * * *', task: 'Check.', maxRunsPerDay: 2 });
+    ok(good.includes('Will run on its own') && /no wakeIf probe/.test(good) && !/very short|never name|No maxRunsPerDay|leave judgement|outside effects/.test(good), 'a careful agent is only told about what is left (here, the missing wakeIf probe)');
+    const many = await designOf({ name: 'd4', description: 'Does a lot.', instructions: 'Use the probe skill. '.repeat(20), skills: ['probe', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'].filter((x, i) => i === 0) });
+    ok(!/skills\. An agent that needs this many/.test(many), 'a normal number of skills is not flagged');
+    const goalAdd = await cardOf('propose_goals', { agent: 'sentinel', op: 'add', id: 'quick', text: 'Check often', schedule: '* * * * *' });
+    ok(goalAdd.proposal && /every 5 minutes/.test(goalAdd.proposal.detail) && !/very short/.test(goalAdd.proposal.detail), 'a goal edit shows only the warnings the change introduces');
+    const dw = require(`${OUT}/manage.js`).designWarnings;
+    ok(dw({ name: 'x', description: '', body: 'x'.repeat(200), handoffs: ['a', 'b', 'c', 'd'], models: [], skills: ['s1', 's2', 's3', 's4', 's5', 's6', 's7'], goals: [], file: 'f' }).filter(w => /7 skills|4 agents/.test(w)).length === 2, 'too many skills or handoffs are flagged');
+    fs.writeFileSync(A('sentinel'), src);
 
     // guide
     const guide = (await cardOf('get_authoring_guide', {})).text;

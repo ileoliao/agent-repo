@@ -19,6 +19,8 @@ export interface Change {
   summary: string;
   /** What the human most needs to know before applying (for example whether it will run on its own), shown above the diff. */
   notes?: string;
+  /** Remove the file (its `after` is empty). */
+  delete?: boolean;
 }
 
 export type Proposed = { change: Change } | { error: string };
@@ -282,6 +284,31 @@ function runNotes(a: AgentDef): string {
   return `${when}\nPolicy: ${a.policy ?? 'default'}.${a.goals.some(g => g.policy) ? ' Some goals use their own policy.' : ''}`;
 }
 
+/**
+ * Design problems worth a second look in an agent as it would be written. These are judgement calls, so they are shown to the
+ * human on the card and never block. The thinking behind each is in the authoring guide ("Designing an effective agent").
+ */
+export function designWarnings(a: AgentDef): string[] {
+  const w: string[] = [];
+  const body = a.body ?? '';
+  if (body.trim().length < 150) { w.push('The role instructions are very short. An unattended agent needs: what to do, step by step; what it must never do; when to ask the human; and how to finish (done, open with a next step, or blocked).'); }
+  const unnamed = a.skills.filter(s => !body.includes(s));
+  if (unnamed.length) { w.push(`The instructions never name ${unnamed.length === 1 ? 'the skill' : 'the skills'} ${unnamed.join(', ')}. Chat mode does not read loop.skills, and an agent uses a skill more reliably when told to by name.`); }
+  const sched = a.goals.filter(g => g.schedule);
+  const noProbe = sched.filter(g => !g.wakeIf);
+  if (noProbe.length) { w.push(`${noProbe.length === 1 ? 'A schedule has' : `${noProbe.length} schedules have`} no wakeIf probe, so the model runs every time even when there is nothing to do. If most runs would find nothing, add a zero-token probe.`); }
+  const everyMinutes = (cron: string) => { const m = /^(\*|\*\/(\d+))\s+\*\s+\*\s+\*\s+\*$/.exec(cron.trim()); return m ? (m[2] ? Number(m[2]) : 1) : undefined; };
+  const fast = sched.filter(g => { const n = everyMinutes(g.schedule!); return n !== undefined && n < 5; });
+  if (fast.length) { w.push(`Runs more often than every 5 minutes (${fast.map(g => g.schedule).join(', ')}). Each run costs model calls; check the cadence is really needed.`); }
+  if (sched.length && a.maxRunsPerDay === undefined && sched.every(g => g.maxRunsPerDay === undefined)) { w.push('No maxRunsPerDay cap on a scheduled agent. A cap bounds the cost if a probe misfires.'); }
+  if (a.skills.length > 6) { w.push(`${a.skills.length} skills. An agent that needs this many is probably doing more than one job; consider splitting by role.`); }
+  if (a.goals.filter(g => g.id !== 'default').length > 4) { w.push('More than 4 goals. One agent holding this many responsibilities is hard to instruct and to review; consider splitting by role.'); }
+  if (a.handoffs.length > 3) { w.push(`Can hand off to ${a.handoffs.length} agents. Every handoff target needs a clear contract; keep the list short.`); }
+  if (/\b(use your (best )?judg(e)?ment|as appropriate|if necessary)\b/i.test(body) && !/ask[_ ]human|ask the human/i.test(body)) { w.push('The instructions leave judgement calls to the model ("as appropriate", "your judgement"). Unattended, such a call should go to the human with ask_human.'); }
+  if (/\b(send|post|publish|deploy|delete|reply|comment on|merge)\b/i.test(body) && !/approval|request_approval/i.test(body)) { w.push('The instructions describe an action with outside effects (send, publish, deploy, delete, ...) but never mention approval. Such actions should go through request_approval with a draft file.'); }
+  return w;
+}
+
 const policiesOf = (a: AgentDef) => [a.policy, ...a.goals.map(g => g.policy)].filter((p): p is string => !!p);
 
 /** The checks every proposed agent file passes before a diff is shown. */
@@ -296,7 +323,10 @@ function checked(root: string, file: string, before: string | null, after: strin
   for (const p of policiesOf(read).filter(x => !had.has(x))) { const e = policyError(root, p); if (e) { return { error: e }; } }
   const problems = problemsIfWritten(root, base, after);
   if (problems.length) { return { error: `This would leave the team with problems, so nothing is proposed:\n${problems.join('\n')}` }; }
-  return { change: { file, before, after, summary, notes: runNotes(read) } };
+  const had2 = new Set(before === null ? [] : designWarnings(agentFromText(base, before)));
+  const design = designWarnings(read).filter(x => !had2.has(x));
+  const notes = runNotes(read) + (design.length ? `\n\nDesign review (judgement calls, not errors):\n${design.map(x => `- ${x}`).join('\n')}` : '');
+  return { change: { file, before, after, summary, notes } };
 }
 
 export interface GoalInput {
@@ -554,5 +584,5 @@ export function applyChange(root: string, c: Change): void {
   const now = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;
   if (now !== c.before) { throw new Error(`${c.file} changed since this was proposed. Ask again so the change is built on the current file.`); }
   fs.mkdirSync(path.dirname(abs), { recursive: true });
-  if (c.after === '' && c.file.startsWith(MEMORY_DIR)) { fs.rmSync(abs, { force: true }); } else { fs.writeFileSync(abs, c.after); }
+  if (c.delete || (c.after === '' && c.file.startsWith(MEMORY_DIR))) { fs.rmSync(abs, { force: true }); } else { fs.writeFileSync(abs, c.after); }
 }
