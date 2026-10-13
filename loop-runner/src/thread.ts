@@ -87,7 +87,7 @@ export type ThreadEvent =
   | { kind: 'answer'; ts: string; title: string; text: string; tone: Tone };
 
 const END_LABEL: Record<string, [string, Tone]> = {
-  done: ['Finished', 'ok'], open: ['Not finished: continues later', 'info'], blocked: ['Blocked', 'warn'], nothing_to_do: ['Nothing to do', 'mute'], max_steps: ['Reached its step limit', 'warn'],
+  done: ['Finished', 'ok'], open: ['Not finished: continues later', 'info'], blocked: ['Blocked', 'warn'], nothing_to_do: ['Checked, nothing found', 'mute'], max_steps: ['Reached its step limit', 'warn'],
   stalled: ['Stopped: going in circles or out of time', 'bad'], cancelled: ['Cancelled', 'mute'], error: ['Failed', 'bad']
 };
 

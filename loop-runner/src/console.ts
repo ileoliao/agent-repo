@@ -188,7 +188,7 @@ const copy = (text: string, label: string) => `<button class="btn ghost" data-co
 function gateCard(g: GateView): string {
   const isQ = g.kind === 'question';
   const head = `<div class="card-head">${icon(isQ ? 'help' : 'bell', 'lead warn')}<div class="grow"><div class="card-title">${esc(g.title)}</div>
-    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span><span class="muted mono" title="The run that asked. Its steps are in Overview, Recent runs.">run ${esc(String(g.chainId).slice(-6))}</span></div></div></div>`;
+    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span><span class="muted" title="Asked in run ${esc(String(g.chainId))}. Its steps are under Overview, Recent runs.">see run log</span></div></div></div>`;
   const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
   const previews = g.previews ?? [];
   const missing = previews.filter(p => p.sha256 === 'missing').map(p => p.path);
@@ -206,7 +206,7 @@ function gateCard(g: GateView): string {
   const notes = [
     missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '',
     previews.length && !missing.length ? `<div class="note">Your approval covers ${truncated ? 'the whole of each file (only the first part of a long one is shown above; open it to read the rest)' : 'the file contents shown above'}. If a file changes before it runs, nothing runs and you review again.</div>` : '',
-    '<div class="note">Runs in the workspace folder, not in a sandbox.</div>'
+    '<div class="note">Runs as your user account in the workspace folder, not in a sandbox. Only the secrets you gave this agent are available to it.</div>'
   ].join('');
   return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${body}
     <div class="label">This exact command runs when you approve</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${files}${notes}
@@ -234,7 +234,7 @@ function taskCard(t: Task): string {
   const nexts = t.holders.map(h => `<dt>${esc(h)}</dt><dd>${esc(t.next?.[h] ?? '(no next step recorded)')}</dd>`).join('');
   return `<div class="card" data-task="${esc(t.id)}"><div class="card-head">${icon('clock', 'lead')}<div class="grow"><div class="card-title">${esc(t.title)}</div>
     <div class="meta">${t.holders.map(h => `<span class="tag">${esc(h)}</span>`).join('')}<span class="mono">${esc(t.id)}</span><span>${stamp(t.updatedAt, ago(t.updatedAt))}</span></div></div>
-    ${btn('Close', `data-close-task="${esc(t.id)}" title="Drop this task: nobody holds it any more"`, 'secondary', 'x')}</div>
+    ${btn('Drop task', `data-close-task="${esc(t.id)}" title="Stop tracking this task. Agents holding it let go of it; nothing is deleted."`, 'secondary', 'x')}</div>
     ${nexts ? `<dl class="kv">${nexts}</dl>` : ''}</div>`;
 }
 
@@ -270,10 +270,14 @@ function agentRow(a: AgentRow): string {
 }
 
 /** What a brand-new user sees: a way forward, not a note about config files. */
-const getStartedCard = () => `<div class="empty start">${icon('bot', 'big')}<div class="empty-title">Set up your first agent</div>
-  <div class="muted">An agent does a job for you on its own and only stops to ask when it needs you. Pick a starter and it is ready in a minute, or just say what you want.</div>
-  <div class="start-actions">${btn('Add a starter agent', 'data-cmd="getStarted"', 'primary', 'play')}${btn('Describe what you want', 'data-cmd="describeAgent"', 'secondary', 'send')}</div>
-  <div class="muted tiny">Starters: a morning report of what changed in your repo, and a folder watcher. Nothing runs on a schedule until you start the team.</div></div>`;
+const getStartedCard = () => `<div class="start-wrap"><div class="start-head">${icon('bot', 'big')}<div class="empty-title">Set up your first agent</div>
+  <div class="muted">An agent does a job for you on its own and only stops to ask when it needs you.</div></div>
+  <ol class="steps"><li><b>Add</b> a starter below, or say what you want.</li><li><b>Check</b> it: we confirm it can run, before it ever does.</li><li><b>Start</b> the agents. You decide anything risky; they never do it alone.</li></ol>
+  <div class="starters">
+    <div class="starter"><div class="starter-title">Daily report</div><div class="muted">Every weekday at 09:00 it reads yesterday's commits and writes a one-page summary: what changed, and what is risky.</div><div class="muted tiny">Writes <code>.loop/outbox/daily-report/&lt;date&gt;.md</code>. Reads only; needs no setup.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="daily-report"', 'primary', 'play')}</div>
+    <div class="starter"><div class="starter-title">Folder watch</div><div class="muted">Every 10 minutes it checks <code>drop/</code> for new files, at no model cost, and summarises each one when it finds some.</div><div class="muted tiny">Shows how a cheap pre-check works. Writes summaries to <code>.loop/outbox/folder-watch/</code>.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="folder-watch"', 'primary', 'play')}</div>
+    <div class="starter"><div class="starter-title">Your own</div><div class="muted">Tell the <code>@mate</code> assistant in Chat what you want in plain words. It builds the agent and checks it can run.</div><div class="muted tiny">For example: watch my build every hour and ask me before it re-runs anything.</div>${btn('Describe what you want', 'data-cmd="describeAgent"', 'secondary', 'send')}</div>
+  </div></div>`;
 
 /** `hint` is trusted markup: callers pass only fixed strings. */
 const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
@@ -420,9 +424,9 @@ function renderTabs(m: ConsoleModel): string {
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
   const live = m.runs.find(r => r.status === 'running' && isActive(m.active, r.agent));
-  const state = !m.running ? `<span class="state off">${icon('stop')}Team stopped</span>`
+  const state = !m.running ? `<span class="state off">${icon('stop')}Agents off</span>`
     : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
-    : `<span class="state idle">${icon('clock')}Team on · idle${m.next ? ` · next wake ${esc(when(m.next.at))}` : ''}</span>`;
+    : `<span class="state idle">${icon('clock')}Agents on · idle${m.next ? ` · next run ${esc(when(m.next.at))}` : ''}</span>`;
   // A brand-new workspace gets only the way forward: no tabs, no team controls that would do nothing.
   const hasAgents = m.agents.length > 0 || m.runs.length > 0 || m.pending.length > 0 || (m.tasks ?? []).length > 0;
   const actions = !hasAgents ? '' : (m.running ? btn('Stop team', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
@@ -432,7 +436,7 @@ export function renderBody(m: ConsoleModel): string {
     { k: 'Needs you', v: String(m.pending.length), tone: m.pending.length ? 'warn' : '', sub: m.pending.length ? 'waiting for your decision' : 'all clear' },
     { k: 'Agents', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
     { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}` : 'no runs yet' },
-    { k: 'Next wake', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
+    { k: 'Next run', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
   ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
   const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
   const tasks = m.tasks ?? [];
@@ -445,7 +449,7 @@ export function renderBody(m: ConsoleModel): string {
     : getStartedCard();
   const stoppedWithWork = !m.running && m.pending.length > 0;
   const stoppedNote = stoppedWithWork ? `<div class="alert info" role="status">${icon('alert')}<span>The team is stopped. Your answer or approval is saved, but the agent only carries on once you start the team.</span>${btn('Start team', 'data-cmd="startTeam"', 'primary', 'play')}</div>` : '';
-  const tools = hasAgents ? `<div class="tools" role="group" aria-label="Tools"><span class="muted">Tools</span>${btn('Check agents', 'data-cmd="runDoctor" title="Check that every agent can run, and run their pre-checks once"', 'ghost', 'check')}${btn('Health report', 'data-cmd="showHealth" title="How each agent has been doing, and what to improve"', 'ghost', 'file')}${btn('Add an agent', 'data-cmd="getStarted" title="Add a starter agent"', 'ghost', 'play')}${btn('Clean up', 'data-cmd="cleanUp" title="Delete finished work you no longer need"', 'ghost', 'x')}</div>` : '';
+  const tools = hasAgents ? `<div class="tools" role="group" aria-label="Tools"><span class="muted tools-label">Tools</span>${btn('Check agents', 'data-cmd="runDoctor" title="Check that every agent can run, and run their pre-checks once"', 'secondary', 'check')}${btn('Health report', 'data-cmd="showHealth" title="How each agent has been doing, and what to improve"', 'secondary', 'file')}${btn('Add an agent', 'data-cmd="getStarted" title="Add a starter agent"', 'secondary', 'play')}${btn('Clean up', 'data-cmd="cleanUp" title="Delete finished work you no longer need"', 'secondary', 'x')}<span class="muted tools-hint">Or ask <code>@mate</code> in Chat for anything here.</span></div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
   return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
     ${note}${stoppedNote}${hasAgents ? renderTabs(m) : ''}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
@@ -458,7 +462,7 @@ const STYLE = `
 *{box-sizing:border-box}
 body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);line-height:1.45}
 .mono,code,pre{font-family:var(--vscode-editor-font-family,monospace);font-size:.92em}
-.start{padding:28px 20px;gap:10px}.start .empty-title{font-size:1.15em}.start-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:6px 0}.tools{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin:12px 0 14px}.alert .btn{margin-left:auto}textarea{border:1px solid var(--vscode-input-border,var(--vscode-panel-border))}.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none!important}
+.start-wrap{margin-top:12px;padding:24px 20px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);display:flex;flex-direction:column;gap:16px}.start-head{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center}.start-head .empty-title{font-size:1.25em}.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 18px;margin:0;padding:0;list-style:none;counter-reset:s}.steps li{counter-increment:s;display:block;position:relative;padding-left:30px}.steps li:before{content:counter(s);position:absolute;left:0;top:0;flex:none;width:20px;height:20px;border-radius:50%;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);display:inline-flex;align-items:center;justify-content:center;font-size:.85em}.starters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.starter{display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background)}.starter .btn{margin-top:auto;align-self:flex-start}.starter .tiny{margin:0}.starter-title{font-weight:600;font-size:1.05em}.tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:12px 0 14px;padding:8px 10px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background)}.tools-label{font-size:.8em;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}.tools-hint{margin-left:auto;font-size:.85em}.alert .btn{margin-left:auto}textarea{border:1px solid var(--vscode-input-border,var(--vscode-panel-border))}.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none!important}
 .ic{flex:none}.big{width:28px;height:28px}.lead{width:18px;height:18px;margin-top:2px}.spin{animation:sp 1.2s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;padding:12px 0;margin-bottom:4px;background:var(--vscode-editor-background);border-bottom:1px solid var(--vscode-panel-border)}
@@ -509,7 +513,8 @@ a{color:var(--vscode-textLink-foreground)}
 .agent{border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:12px;margin-bottom:8px;background:var(--vscode-sideBar-background,transparent)}
 .agent-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.agent-name{font-weight:600;flex:1;text-decoration:none}.agent-name:hover{text-decoration:underline}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0 0;font-size:.92em}.kv dt{color:var(--vscode-descriptionForeground)}.kv dd{margin:0;overflow-wrap:anywhere}
-.empty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 12px;text-align:center;border:1px dashed var(--vscode-panel-border);border-radius:var(--r);color:var(--vscode-descriptionForeground)}.empty-title{color:var(--vscode-foreground);font-weight:600}
+
+.empty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 12px;text-align:center;border:1px dashed color-mix(in srgb,var(--vscode-foreground) 30%,transparent);border-radius:var(--r);color:var(--vscode-descriptionForeground)}.empty-title{color:var(--vscode-foreground);font-weight:600}
 .stale{margin:8px 0}.link{font-size:.9em}
 .tabs{display:flex;gap:4px;margin:12px 0 0;border-bottom:1px solid var(--vscode-panel-border)}
 .tab{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:transparent;color:var(--vscode-descriptionForeground);border:0;border-bottom:2px solid transparent;font:inherit;cursor:pointer}
@@ -534,7 +539,7 @@ a{color:var(--vscode-textLink-foreground)}
 @media (prefers-reduced-motion:reduce){.av.working::after,.av.waiting::after,.av.working .pupil{animation:none}}
 .chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--vscode-editor-background)}
 .chat-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--vscode-panel-border)}.ch-name{font-weight:600;font-size:1.05em}.ch-sub{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.thread{flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}.center{text-align:center}
+.thread{flex:1;min-height:0;overflow-y:auto;padding:16px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 16px);mask-image:linear-gradient(to bottom,transparent 0,#000 16px);display:flex;flex-direction:column;gap:12px}.center{text-align:center}
 .msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.bot{justify-content:flex-start;align-items:flex-start}
 .bubble{max-width:78%;padding:8px 14px;border-radius:18px;overflow-wrap:anywhere}
 .human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-bottom-right-radius:5px}
@@ -561,7 +566,7 @@ time{font-weight:400}
 .sline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-left:38px;font-size:.88em;color:var(--vscode-descriptionForeground)}
 .sline .chip.info{color:var(--vscode-descriptionForeground)}.sline .chip{font-size:.82em;padding:0 7px;font-weight:500}.sline .sdetail{color:var(--vscode-foreground);min-width:0;flex:1 1 200px}.sline .stime{margin-left:auto;font-size:.9em}
 .thread-gates{width:100%;margin-top:6px}.thread-gates .card{margin-bottom:8px}
-.composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.75em;margin:6px 6px 0}
+.composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.82em;margin:6px 6px 0}.row.wrap{margin-bottom:8px}
 .inputbar{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:24px;background:var(--vscode-input-background);padding:6px 8px 6px 16px}
 .inputbar:focus-within{border-color:var(--vscode-focusBorder)}
 .inputbar textarea{flex:1;border:0;background:transparent;color:var(--vscode-input-foreground);resize:none;padding:6px 0;max-height:160px;outline:none;font:inherit}
@@ -641,7 +646,7 @@ document.addEventListener('click', e => {
   e.preventDefault(); const d = t.dataset;
   if (d.open) vs.postMessage({ type:'open', path:d.open });
   else if (d.openAbs) vs.postMessage({ type:'openAbs', path:d.openAbs });
-  else if (d.cmd) vs.postMessage({ type:'cmd', name:d.cmd });
+  else if (d.cmd) vs.postMessage({ type:'cmd', name:d.cmd, arg:d.arg });
   else if (d.pick) { const ta = document.querySelector('[data-input="' + CSS.escape(d.pick) + '"]'); if (ta) { ta.value = d.text; ta.focus(); } document.querySelectorAll(q(d.pick) + ' [data-pick]').forEach(b => b.classList.toggle('picked', b === t)); }
   else if (d.send) { const text = val(d.send).trim(); if (text) vs.postMessage({ type:'answer', id:d.send, text }); }
   else if (d.approve) { if (busy.has(d.approve) || t.disabled) return; busy.add(d.approve); scan(); vs.postMessage({ type:'approve', id:d.approve, seen:hashes(d.approve) }); }

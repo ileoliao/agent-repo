@@ -1,3 +1,4 @@
+import { TEMPLATES } from './templates';
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as path from 'path';
@@ -91,7 +92,7 @@ export class ConsolePanel {
     try {
       switch (m?.type) {
         case 'ready': this.refresh(true); return;
-        case 'cmd': if (COMMANDS[m.name]) { await vscode.commands.executeCommand(COMMANDS[m.name]); } break;
+        case 'cmd': if (COMMANDS[m.name]) { await vscode.commands.executeCommand(COMMANDS[m.name], m.name === 'getStarted' && typeof m.arg === 'string' && TEMPLATES.some(t => t.id === m.arg) ? m.arg : undefined); } break;
         case 'answer': this.a.answer(String(m.id), String(m.text)); break;
         case 'approve': {
           const id = String(m.id);

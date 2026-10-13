@@ -1700,7 +1700,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     const cut = consoleModel(R, { running: false, tab: 'overview' });
     ok(cut.runs[0].status === 'interrupted', 'a run no worker owns is shown as interrupted, not running forever');
     ok(consoleModel(R, { running: true, active: 'a1', tab: 'overview' }).runs[0].status === 'running', 'the active agent\'s run stays running');
-    ok(renderBody(cut).includes('Interrupted') && renderBody(cut).includes('Team stopped'), 'the page says so');
+    ok(renderBody(cut).includes('Interrupted') && renderBody(cut).includes('Agents off'), 'the page says so');
 
     const F = path.join(R, '.loop', 'outbox'); fs.mkdirSync(F, { recursive: true });
     fs.writeFileSync(path.join(F, 'd.md'), 'draft v1');
@@ -1718,7 +1718,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('Open full file'), 'a long draft offers the full file and says approval covers all of it');
     const banner = renderBody({ ...m, note: { tone: 'bad', text: '<b>boom</b>' } });
     ok(banner.includes('role="alert"') && banner.includes('&lt;b&gt;boom') && !banner.includes('<b>boom'), 'a page-level error is shown, escaped');
-    ok(renderBody({ ...m, running: true, active: undefined }).includes('Team on · idle'), 'a running team with no active agent is labelled idle, not stopped');
+    ok(renderBody({ ...m, running: true, active: undefined }).includes('Agents on · idle'), 'a running team with no active agent is labelled idle, not stopped');
     fs.rmSync(R, { recursive: true, force: true });
   }
 

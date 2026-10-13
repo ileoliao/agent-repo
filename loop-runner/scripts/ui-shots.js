@@ -61,7 +61,7 @@ const THEMES = {
   const browser = await chromium.launch();
   const shots = [];
   for (const [theme, vars] of Object.entries(THEMES)) {
-    const ctx = await browser.newContext({ viewport: { width: 900, height: 1000 } });
+    const ctx = await browser.newContext({ viewport: { width: 900, height: 1400 } });
     for (const [name, root, st] of scenes) {
       const page = await ctx.newPage();
       const model = consoleModel(root, st, now);

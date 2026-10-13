@@ -695,13 +695,13 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (task) { svc.submit(pick.label, task); }
     }),
     vscode.commands.registerCommand('harborMate.describeAgent', () => vscode.commands.executeCommand('workbench.action.chat.open', { query: '@mate I want an agent that ', isPartialQuery: true })),
-    vscode.commands.registerCommand('harborMate.getStarted', async () => {
+    vscode.commands.registerCommand('harborMate.getStarted', async (preset?: string) => {
       const r = root();
       const items = [
         ...TEMPLATES.map(t => ({ label: t.label, description: t.id, detail: t.detail, id: t.id })),
         { label: 'Describe what you want', description: 'ask @mate', detail: 'Open Chat and tell @mate in your own words; it builds the agent and checks it can run.', id: '' }
       ];
-      const pick = await vscode.window.showQuickPick(items, { title: 'Harbor Mate: Get Started', placeHolder: 'Pick a starting point. Nothing runs on a schedule until you start the team.' });
+      const pick = preset && TEMPLATES.some(t => t.id === preset) ? items.find(i => (i as { id?: string }).id === preset) : await vscode.window.showQuickPick(items, { title: 'Harbor Mate: Get Started', placeHolder: 'Pick a starting point. Nothing runs on a schedule until you start the team.' });
       if (!pick) { return; }
       if (!pick.id) { await vscode.commands.executeCommand('harborMate.describeAgent'); return; }
       const res = installTemplate(r, pick.id);
