@@ -1492,7 +1492,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     const racedSkill = await cardOf('propose_skill', { ...skillIn, name: 'raced-skill', instructions: skillIn.instructions.replace(/release-check/g, 'raced-skill') });
     fs.mkdirSync(path.join(SK('raced-skill'), 'scripts'), { recursive: true }); fs.writeFileSync(path.join(SK('raced-skill'), 'scripts', 'status.py'), 'mine\n');
     let skillBlocked = false; try { await racedSkill.proposal.apply(); } catch (e) { skillBlocked = /changed since/.test(e.message); }
-    ok(skillBlocked && fs.readFileSync(path.join(SK('raced-skill'), 'scripts', 'status.py'), 'utf8') === 'mine\n', 'if a file appears before Apply, nothing is overwritten and the skill is not half-written');
+    ok(skillBlocked && fs.readFileSync(path.join(SK('raced-skill'), 'scripts', 'status.py'), 'utf8') === 'mine\n' && !fs.existsSync(path.join(SK('raced-skill'), 'SKILL.md')), 'if a file appears before Apply, nothing is overwritten and the skill is not half-written');
     const mk2 = (over, scriptContent) => ({ ...skillIn, name: 'sk-' + Math.random().toString(36).slice(2, 8), scripts: [{ name: 'status.py', content: scriptContent ?? okScript }], references: [], ...over });
     const fix = s => ({ ...s, instructions: s.instructions.replace(/release-check/g, s.name) });
     for (const [input, why] of [
