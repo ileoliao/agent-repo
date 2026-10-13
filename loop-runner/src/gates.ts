@@ -70,7 +70,7 @@ export async function approveAndRun(root: string, id: string, policy: Policy, se
 }
 
 export interface LoopEvent {
-  kind: 'question' | 'approval' | 'blocked' | 'error' | 'max_steps' | 'stalled';
+  kind: 'question' | 'approval' | 'blocked' | 'error' | 'max_steps' | 'stalled' | 'alert' | 'goal_silent';
   agent: string;
   title: string;
   detail?: string;

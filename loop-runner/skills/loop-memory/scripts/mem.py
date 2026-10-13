@@ -19,10 +19,16 @@ Exit codes: 0 ok, 2 bad arguments.
 """
 import argparse
 import datetime as dt
+import contextlib
 import json
 import os
 import re
 import sys
+
+try:
+    import fcntl
+except ImportError:  # Windows: no advisory lock; the atomic rename below still keeps the file whole
+    fcntl = None
 
 ROOT = os.path.join('.loop', 'outbox', 'memory')
 TRACKED = os.path.join(ROOT, 'tracked.json')
@@ -66,10 +72,24 @@ def load():
 
 def save(data):
     os.makedirs(ROOT, exist_ok=True)
-    tmp = TRACKED + '.tmp'
+    tmp = f'{TRACKED}.{os.getpid()}.tmp'  # a name of its own, so two processes never write the same temp file
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
     os.replace(tmp, TRACKED)
+
+
+@contextlib.contextmanager
+def locked():
+    """Two runs can now work at once: hold an exclusive lock around read-modify-write of tracked.json."""
+    os.makedirs(ROOT, exist_ok=True)
+    with open(TRACKED + '.lock', 'a') as lock:
+        if fcntl:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def expired(entry, today):
@@ -158,22 +178,24 @@ def cmd_track(a):
         until = (today + dt.timedelta(days=DEFAULT_WATCH_DAYS)).isoformat()
     if a.state != 'watching':
         until = None
-    data = load()
-    old = data.get(key, {})
-    data[key] = {'state': a.state, 'until': until, 'ref': a.ref if a.ref is not None else old.get('ref'),
-                 'note': clean(a.note, 200) if a.note is not None else old.get('note', ''),
-                 'by': a.agent or old.get('by', ''), 'updated': clock(a).isoformat(timespec='minutes')}
-    save(data)
+    with locked():
+        data = load()
+        old = data.get(key, {})
+        data[key] = {'state': a.state, 'until': until, 'ref': a.ref if a.ref is not None else old.get('ref'),
+                     'note': clean(a.note, 200) if a.note is not None else old.get('note', ''),
+                     'by': a.agent or old.get('by', ''), 'updated': clock(a).isoformat(timespec='minutes')}
+        save(data)
     print(json.dumps({key: data[key]}, ensure_ascii=False))
 
 
 def cmd_forget(a):
     key = need(a.key, r'[\w.:/ -]{1,80}', '--key')
-    data = load()
-    if key not in data:
-        raise Bad(f'{key} is not tracked')
-    del data[key]
-    save(data)
+    with locked():
+        data = load()
+        if key not in data:
+            raise Bad(f'{key} is not tracked')
+        del data[key]
+        save(data)
     print(f'forgot {key}')
 
 

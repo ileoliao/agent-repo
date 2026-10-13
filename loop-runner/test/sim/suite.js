@@ -178,6 +178,68 @@ async function phaseResume(check) {
   await vscode.commands.executeCommand('loopRunner.startTeam');
   const afterCancel = await poll('cancel retry', () => listJson(path.join(WS, '.loop', 'queue', '_done')).find(d => d.id === keptCancel.id) || null);
   check('the next Start Team retries the cancelled item', afterCancel.status === 'done' && afterCancel.summary === 'finished after cancel', JSON.stringify(afterCancel));
+
+  // ---- chat with an agent ----
+  const chatFiles = agent => { const d = path.join(WS, '.loop', 'chat', agent); return fs.existsSync(d) ? fs.readdirSync(d).filter(f => f.endsWith('.json')).map(f => readJson(path.join(d, f))) : []; };
+  const doneItems = () => listJson(path.join(WS, '.loop', 'queue', '_done'));
+  const fin = summary => ({ calls: [{ name: 'finish', input: { status: 'done', summary } }] });
+
+  // an idle agent: your message starts a run
+  writeScript({ scout: [], clerk: [fin('answered the chat')] });
+  await vscode.commands.executeCommand('loopRunner._sim.chatSend', 'clerk', 'hello from the chat window');
+  const fromChat = await poll('chat starts a run', () => doneItems().find(d => d.from === 'chat' && d.task === 'hello from the chat window') || null);
+  check('chat: a message to an idle agent starts a run with that message as the task', fromChat.status === 'done' && fromChat.agent === 'clerk', JSON.stringify(fromChat));
+  const m1 = chatFiles('clerk').find(m => m.text === 'hello from the chat window');
+  check('chat: that message is marked delivered, as a task', m1 && m1.status === 'delivered' && m1.via === 'task' && !chatFiles('clerk').some(m => m.status === 'pending'), JSON.stringify(m1));
+
+  // a working agent: it reads your message at its next step
+  writeScript({ scout: [], clerk: [{ delay: 2500, calls: [{ name: 'list_dir', input: { path: '.' } }] }, fin('saw the message')] });
+  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'long task');
+  await poll('delay started', () => readTrace().some(e => e.event === 'delay-started' && e.agent === 'clerk') ? true : null);
+  await vscode.commands.executeCommand('loopRunner._sim.chatSend', 'clerk', 'change of plan: only look at the root');
+  const midRun = await poll('delivered in run', () => chatFiles('clerk').find(m => m.text.startsWith('change of plan') && m.status === 'delivered') || null);
+  check('chat: a message to a working agent is read at its next step, in the same run', midRun.via === 'turn' && !!midRun.itemId, JSON.stringify(midRun));
+  const longDone = await poll('long task done', () => doneItems().find(d => d.task === 'long task') || null);
+  check('chat: and that run finishes as one run (no second run was started for it)', longDone.status === 'done' && longDone.id === midRun.itemId && !doneItems().some(d => d.from === 'chat' && d.task.startsWith('change of plan')), JSON.stringify(longDone));
+  check('chat: the audit shows the agent was given it', audits().some(e => e.type === 'human' && e.via === 'turn' && e.itemId === midRun.itemId), midRun.itemId);
+
+  // an agent waiting for you: it reads your message when it continues
+  writeScript({ scout: [], clerk: [{ calls: [{ name: 'ask_human', input: { question: 'Which colour?', context: 'pick', options: ['red', 'blue'] } }] }, fin('continued')] });
+  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'needs an answer');
+  const gateQ = await poll('chat gate', () => listJson(path.join(WS, '.loop', 'gates')).find(g => g.title === 'Which colour?' && g.status === 'pending') || null);
+  await vscode.commands.executeCommand('loopRunner._sim.chatSend', 'clerk', 'by the way, blue is the brand colour');
+  const whileWaiting = chatFiles('clerk').find(m => m.text.startsWith('by the way'));
+  check('chat: a message while it waits for you is not delivered yet', whileWaiting && whileWaiting.status === 'pending', JSON.stringify(whileWaiting));
+  await vscode.commands.executeCommand('loopRunner._sim.answer', gateQ.id, 'blue');
+  const afterWait = await poll('delivered on resume', () => chatFiles('clerk').find(m => m.text.startsWith('by the way') && m.status === 'delivered') || null);
+  check('chat: it is delivered when the agent resumes, with your answer', afterWait.via === 'resume', JSON.stringify(afterWait));
+
+  // cancel this run: ended for good, not retried
+  writeScript({ scout: [], clerk: [{ hold: true, calls: [{ name: 'finish', input: { status: 'done', summary: 'must not finish' } }] }, fin('next run is fine')] });
+  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'cancel this one');
+  await poll('hold again', () => readTrace().filter(e => e.event === 'hold-started').length >= 2 ? true : null);
+  const cancelled = await vscode.commands.executeCommand('loopRunner._sim.cancelRun', 'clerk');
+  const cancelledItem = await poll('cancelled done', () => doneItems().find(d => d.task === 'cancel this one') || null);
+  check('chat: Cancel this run ends the run as cancelled, not queued for a retry', cancelled === true && cancelledItem.status === 'cancelled' && cancelledItem.summary === 'cancelled by the human' && !fs.existsSync(path.join(WS, '.loop', 'queue', 'clerk', `${cancelledItem.id}.json`)), JSON.stringify(cancelledItem));
+  check('chat: the audit closes it with an end event', audits().some(e => e.type === 'end' && e.itemId === cancelledItem.id && e.status === 'cancelled'), cancelledItem.id);
+  check('chat: cancelling an agent that is not running says so', (await vscode.commands.executeCommand('loopRunner._sim.cancelRun', 'clerk')) === false, '');
+  // The held turn stays at the head of the script (that is what a retry needs); this run was dropped, so clear it.
+  writeScript({ scout: [], clerk: [fin('next run is fine')] });
+  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'after the cancel');
+  const after = await poll('after cancel', () => doneItems().find(d => d.task === 'after the cancel') || null);
+  check('chat: the team carries on with the next work after a cancel', after.status === 'done' && after.summary === 'next run is fine', JSON.stringify(after));
+
+  // a run that fails while you were writing: your words are not lost, they start a follow-up run
+  writeScript({ scout: [], clerk: [{ delay: 2000, error: 'boom: the model failed' }, fin('handled the follow-up')] });
+  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'this one will fail');
+  await poll('delay again', () => readTrace().filter(e => e.event === 'delay-started').length >= 2 ? true : null);
+  await vscode.commands.executeCommand('loopRunner._sim.chatSend', 'clerk', 'please also tidy up afterwards');
+  const failed = await poll('failed done', () => doneItems().find(d => d.task === 'this one will fail') || null);
+  check('chat: the run that failed is closed as an error', failed.status === 'error', JSON.stringify(failed));
+  const followUp = await poll('follow-up', () => doneItems().find(d => d.from === 'chat' && d.task === 'please also tidy up afterwards') || null);
+  check('chat: your message, which the failed run never read, starts a follow-up run', followUp.status === 'done' && followUp.summary === 'handled the follow-up', JSON.stringify(followUp));
+  const lastMsg = chatFiles('clerk').find(m => m.text === 'please also tidy up afterwards');
+  check('chat: and is then marked delivered, as a task', lastMsg.status === 'delivered' && lastMsg.via === 'task', JSON.stringify(lastMsg));
 }
 
 function writeResult(phase, failures, evidence) {

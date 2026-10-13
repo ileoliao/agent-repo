@@ -12,6 +12,28 @@ export interface SkillDef {
 }
 
 /**
+ * One standing responsibility of an agent, with its own trigger. The agent's single `schedule`/`wakeIf`/`task`/
+ * `maxRunsPerDay` is read as one goal with the id `default`.
+ */
+export interface GoalDef {
+  id: string;
+  text: string;
+  schedule?: string;
+  wakeIf?: string;
+  /** What the run is asked to do; defaults to `text`. */
+  task: string;
+  /** Added to the agent's skills for runs of this goal only. */
+  skills: string[];
+  /** Overrides the agent's policy for runs of this goal. */
+  policy?: string;
+  /** The human is told as soon as the probe finds something, and the run may use the reserved worker. */
+  urgent?: boolean;
+  /** Milliseconds without a wake check that ran before the human is told. */
+  maxSilenceMs?: number;
+  maxRunsPerDay?: number;
+}
+
+/**
  * A role, defined in VS Code's own custom-agent format (.github/agents/*.agent.md) so the same file
  * works interactively in Copilot Chat and unattended in Loop Runner. Native fields are reused
  * (name, description, model, handoffs); loop-only settings live under a `loop:` block, which
@@ -37,6 +59,8 @@ export interface AgentDef {
   /** Scheduled wakes allowed per local day (all outcomes count). Unset = no cap. */
   maxRunsPerDay?: number;
   policy?: string;
+  /** Standing responsibilities: `loop.goals`, plus the legacy single schedule as `default`. */
+  goals: GoalDef[];
   file: string;
 }
 
@@ -71,6 +95,12 @@ export function loadAllAgents(root: string): Map<string, AgentDef & { inLoop: bo
     const { meta, body } = parseFrontmatter(fs.readFileSync(path.join(abs, f), 'utf8'));
     const loop = meta.loop && typeof meta.loop === 'object' && !Array.isArray(meta.loop) ? meta.loop : undefined;
     const name = String(meta.name ?? f.replace(/(\.agent)?\.md$/, ''));
+    const task = loop?.task ? String(loop.task) : undefined;
+    const goals = [
+      ...(loop?.schedule ? [{ id: 'default', text: task ?? '', schedule: String(loop.schedule), wakeIf: loop.wakeIf ? String(loop.wakeIf) : undefined, task: task ?? '', skills: [],
+        maxRunsPerDay: typeof loop.maxRunsPerDay === 'number' ? loop.maxRunsPerDay : undefined } as GoalDef] : []),
+      ...list(loop?.goals).map(readGoal)
+    ];
     agents.set(name, {
       name,
       description: String(meta.description ?? ''),
@@ -85,11 +115,45 @@ export function loadAllAgents(root: string): Map<string, AgentDef & { inLoop: bo
       maxSteps: typeof loop?.maxSteps === 'number' ? loop.maxSteps : undefined,
       maxRunsPerDay: typeof loop?.maxRunsPerDay === 'number' ? loop.maxRunsPerDay : undefined,
       policy: loop?.policy ? String(loop.policy) : undefined,
+      goals,
       file: path.posix.join(AGENT_DIR, f),
       inLoop: !!loop
     });
   }
   return agents;
+}
+
+function readGoal(g: any): GoalDef {
+  const o = g && typeof g === 'object' ? g : {};
+  const text = String(o.text ?? '');
+  return {
+    id: String(o.id ?? ''), text,
+    schedule: o.schedule ? String(o.schedule) : undefined,
+    wakeIf: o.wakeIf ? String(o.wakeIf) : undefined,
+    task: o.task ? String(o.task) : text,
+    skills: list(o.skills).map(String),
+    policy: o.policy ? String(o.policy) : undefined,
+    urgent: o.urgent === true || o.urgent === 'true' ? true : undefined,
+    maxSilenceMs: o.maxSilence !== undefined ? parseSilence(String(o.maxSilence)) ?? NaN : undefined,
+    maxRunsPerDay: typeof o.maxRunsPerDay === 'number' ? o.maxRunsPerDay : undefined
+  };
+}
+
+/** `30m` or `2h` as milliseconds. */
+export function parseSilence(s: string): number | undefined {
+  const m = /^(\d+)\s*([mh])$/.exec(s.trim());
+  return m && Number(m[1]) > 0 ? Number(m[1]) * (m[2] === 'h' ? 3600_000 : 60_000) : undefined;
+}
+
+/** Skills for a run: the agent's, plus the triggering goal's own. */
+export function skillsFor(agent: AgentDef, goalId?: string): string[] {
+  const g = goalId ? agent.goals.find(x => x.id === goalId) : undefined;
+  return [...new Set([...agent.skills, ...(g?.skills ?? [])])];
+}
+
+/** Policy file for a run: the goal's, else the agent's, else the setting's default. */
+export function policyPathFor(agent: AgentDef, goalId: string | undefined, fallback: string): string {
+  return agent.goals.find(x => x.id === goalId)?.policy ?? agent.policy ?? fallback;
 }
 
 /** The team: agents that opted in with a `loop:` block. */
@@ -121,6 +185,20 @@ export function validateTeam(team: Map<string, AgentDef>, skills: Map<string, Sk
       if (!a.task) { errors.push(`${a.name}: loop.schedule is set but loop.task is missing`); }
     }
     if (a.maxRunsPerDay !== undefined && (!Number.isInteger(a.maxRunsPerDay) || a.maxRunsPerDay < 1)) { errors.push(`${a.name}: loop.maxRunsPerDay must be a whole number of at least 1`); }
+    const seen = new Set<string>(a.schedule ? ['default'] : []);
+    for (const g of a.goals.filter(x => !(x.id === 'default' && a.schedule && x === a.goals[0]))) {
+      const w = `${a.name}: goal "${g.id}"`;
+      if (!/^[a-z0-9-]+$/.test(g.id)) { errors.push(`${a.name}: goal id "${g.id}" must match [a-z0-9-]+`); continue; }
+      if (seen.has(g.id)) { errors.push(`${w}: id is used twice (or clashes with the legacy schedule, which is the goal "default")`); }
+      seen.add(g.id);
+      if (!g.text.trim()) { errors.push(`${w}: text is missing`); }
+      if (g.schedule) { const e = validateCron(g.schedule); if (e) { errors.push(`${w}: ${e}`); } }
+      if (g.wakeIf && !g.schedule) { errors.push(`${w}: wakeIf only applies to scheduled runs; add schedule`); }
+      if (g.maxSilenceMs !== undefined && !(g.maxSilenceMs > 0)) { errors.push(`${w}: maxSilence must look like 30m or 2h`); }
+      if (g.maxSilenceMs !== undefined && !g.schedule) { errors.push(`${w}: maxSilence needs a schedule`); }
+      if (g.maxRunsPerDay !== undefined && (!Number.isInteger(g.maxRunsPerDay) || g.maxRunsPerDay < 1)) { errors.push(`${w}: maxRunsPerDay must be a whole number of at least 1`); }
+      for (const s of g.skills) { if (!skills.has(s)) { errors.push(`${w}: skill "${s}" not found in ${SKILL_DIRS.join(', ')}`); } }
+    }
     if (a.wakeIf && !a.schedule) { errors.push(`${a.name}: loop.wakeIf only applies to scheduled runs; add loop.schedule`); }
   }
   return errors;

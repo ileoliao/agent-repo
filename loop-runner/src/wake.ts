@@ -1,4 +1,3 @@
-import { AgentDef } from './team';
 import { Policy, decideCommand } from './policy';
 import { exec } from './exec';
 
@@ -19,7 +18,7 @@ export interface WakeResult {
  */
 export async function checkWake(
   root: string,
-  agent: AgentDef,
+  agent: { wakeIf?: string },
   policy: Policy,
   extraAllow: string[],
   secrets: Record<string, string>

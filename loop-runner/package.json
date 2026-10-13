@@ -209,6 +209,12 @@
           "default": 30,
           "description": "Wall-clock cap for one run, in minutes. The run ends as stalled when it is exceeded."
         },
+        "loopRunner.workers": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "description": "How many work items run at the same time. With more than one, one slot is kept free for urgent items. 1 = one at a time."
+        },
         "loopRunner.maxHops": {
           "type": "number",
           "default": 5,
@@ -263,8 +269,6 @@
     "typescript": "^5.5.0"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "1.1.0",
-    "@earendil-works/pi-ai": "1.1.0",
     "diff": "^8.0.4"
   }
 }

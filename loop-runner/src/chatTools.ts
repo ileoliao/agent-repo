@@ -5,6 +5,8 @@ import { loadAllAgents } from './team';
 import { listGates } from './queue';
 import { recentRuns } from './runs';
 import { agentRows } from './status';
+import { listTasks } from './tasks';
+import { Active } from './textutil';
 
 /**
  * The tools behind `@loop` in the Chat window. Reading tools answer at once. Everything that changes something
@@ -14,7 +16,7 @@ import { agentRows } from './status';
  */
 export interface ChatHost {
   root: string;
-  state(): { running: boolean; active?: string };
+  state(): { running: boolean; active?: Active };
   /** Queue a task for a team agent. */
   submit(agent: string, task: string): void;
   /** Answer a pending question gate. */
@@ -44,6 +46,7 @@ export const CHAT_TOOLS: ChatTool[] = [
   { name: 'get_agent', description: "Read an agent file (its loop: settings and role instructions).", inputSchema: obj({ agent: str('Agent name') }, ['agent']) },
   { name: 'list_pending', description: 'List the questions and approvals waiting for the human, with their ids.', inputSchema: obj({}, []) },
   { name: 'recent_runs', description: 'Recent runs with status, summary, steps and the files they wrote.', inputSchema: obj({ agent: str('Only this agent (optional)') }, []) },
+  { name: 'list_tasks', description: 'List the tasks agents have in progress: who holds each, what each holder will do next, and the last update.', inputSchema: obj({ agent: str('Only tasks this agent holds (optional)') }, []) },
   { name: 'get_memory', description: "Read the standing notes the human has given an agent (or 'all').", inputSchema: obj({ agent: str("Agent name or 'all'") }, ['agent']) },
   {
     name: 'propose_schedule',
@@ -89,7 +92,7 @@ export async function runChatTool(name: string, input: any, host: ChatHost): Pro
     case 'list_agents': {
       const rows = new Map(agentRows(root, host.state().active).map(r => [r.name, r]));
       return { text: json({ teamRunning: host.state().running, agents: [...agents.values()].map(a => ({
-        name: a.name, description: a.description, runsUnattended: a.inLoop, state: rows.get(a.name)?.state, schedule: a.schedule, task: a.task && clip(a.task, 200),
+        name: a.name, description: a.description, runsUnattended: a.inLoop, state: rows.get(a.name)?.state, schedule: a.schedule, task: a.task && clip(a.task, 200), goals: a.goals.map(g => ({ id: g.id, text: clip(g.text, 150), schedule: g.schedule, urgent: g.urgent })),
         model: a.modelFamily ?? a.models[0], nextWake: rows.get(a.name)?.next?.toLocaleString(), file: a.file })) }) };
     }
     case 'get_agent': {
@@ -102,6 +105,9 @@ export async function runChatTool(name: string, input: any, host: ChatHost): Pro
       const runs = recentRuns(root, 12).filter(r => !input.agent || r.agent === input.agent);
       return { text: json(runs.map(r => ({ agent: r.agent, status: r.status, summary: clip(r.summary, 200), steps: r.step, started: r.started, outputs: r.outputs }))) };
     }
+    case 'list_tasks':
+      return { text: json(listTasks(root).filter(t => t.state === 'open' && (!input.agent || t.holders.includes(String(input.agent)))).map(t => ({
+        id: t.id, title: t.title, holders: t.holders, next: t.next, updated: t.updatedAt, recent: t.log.slice(-3).map(e => ({ agent: e.agent, event: e.event, status: e.status, text: e.text && clip(e.text, 150) })) }))) };
     case 'get_memory':
       return { text: memoryFor(root, String(input.agent)) || '(nothing remembered)' };
     case 'propose_schedule':

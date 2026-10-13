@@ -5,6 +5,7 @@ import { Policy, decideCommand, decideWrite, hardReject } from './policy';
 import { AgentDef } from './team';
 import { WorkItem, enqueue, newId, saveGate } from './queue';
 import { exec, redact } from './exec';
+import { taskOnHandoff, updateTask } from './tasks';
 import { createEditToolDefinition } from './vendor/pi/tools/edit';
 import { createLsToolDefinition } from './vendor/pi/tools/ls';
 import { createReadToolDefinition } from './vendor/pi/tools/read';
@@ -26,7 +27,7 @@ export interface ToolContext {
 export interface ToolOutcome {
   text: string;
   decision?: string;
-  finished?: { status: string; summary: string };
+  finished?: { status: string; summary: string; next?: string; deliverables?: string[] };
   /** Gate id: the item parks here and resumes when the human resolves the gate. */
   park?: string;
 }
@@ -119,11 +120,34 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
     },
     {
       name: 'finish',
-      description: 'End this work item with a short summary.',
+      description:
+        'End this work item with a short summary. done = resolved; nothing_to_do = nothing needed doing; blocked = you cannot proceed. ' +
+        'open = this task is NOT finished and you will continue it later (for example you are waiting for a teammate); ' +
+        'it stays on your list of open tasks and you must say in next what the next step is and what you are waiting for.',
       inputSchema: {
         type: 'object',
-        properties: { status: { type: 'string', enum: ['done', 'blocked', 'nothing_to_do'] }, summary: { type: 'string' } },
+        properties: {
+          status: { type: 'string', enum: ['done', 'blocked', 'nothing_to_do', 'open'] },
+          summary: { type: 'string' },
+          next: { type: 'string', description: 'For status open: the next step and what you are waiting for.' },
+          deliverables: { type: 'array', items: { type: 'string' }, description: 'Workspace files you produced for the human to read, such as the report. Not notes or intermediate files.' }
+        },
         required: ['status', 'summary']
+      }
+    },
+    {
+      name: 'update_task',
+      description:
+        'Update an open task you hold, which need not be the one you are working on now (see "Your open tasks"). ' +
+        'state open + note: it is still open, note says what remains. state done or dropped: you no longer hold it; note says why.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Task id from your open tasks' },
+          state: { type: 'string', enum: ['open', 'done', 'dropped'] },
+          note: { type: 'string' }
+        },
+        required: ['id', 'state', 'note']
       }
     }
   ];
@@ -235,6 +259,7 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
         agent: ctx.agent.name,
         itemId: ctx.item.id,
         chainId: ctx.item.chainId,
+        goal: ctx.item.goal,
         title: isApproval ? input.title : input.question,
         body: isApproval ? input.summary : input.context,
         options: isApproval ? undefined : input.options,
@@ -260,12 +285,31 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
       const id = newId();
       enqueue(ctx.root, {
         id, agent: input.to, task: input.task, context: input.context, from: ctx.agent.name,
-        chainId: ctx.item.chainId, hop: ctx.item.hop + 1, createdAt: new Date().toISOString()
+        chainId: ctx.item.chainId, hop: ctx.item.hop + 1, createdAt: new Date().toISOString(),
+        ...(ctx.item.urgent ? { urgent: true } : {})
       });
+      taskOnHandoff(ctx.root, ctx.item, input.to, String(input.task ?? ''));
       return { text: `Handed off to ${input.to} as ${id}.`, decision: 'allow' };
     }
     case 'finish':
-      return { text: 'ok', finished: { status: input.status, summary: input.summary } };
+      if (input.status === 'open' && !String(input.next ?? '').trim()) {
+        return { text: 'Not finished: status open needs next (the next step and what you are waiting for). Call finish again with next, or use another status.' };
+      }
+      {
+        const kept: string[] = [], dropped: string[] = [];
+        for (const raw of Array.isArray(input.deliverables) ? input.deliverables.slice(0, 20) : []) {
+          try {
+            const rel = workspaceRel(ctx.root, String(raw));
+            if (rel !== '.' && fs.existsSync(path.resolve(ctx.root, rel)) && fs.statSync(path.resolve(ctx.root, rel)).isFile()) { if (!kept.includes(rel)) { kept.push(rel); } } else { dropped.push(String(raw)); }
+          } catch { dropped.push(String(raw)); }
+        }
+        return { text: dropped.length ? `ok. Not recorded as deliverables (missing or outside the workspace): ${dropped.join(', ')}` : 'ok',
+          finished: { status: input.status, summary: input.summary, ...(input.status === 'open' ? { next: String(input.next) } : {}), ...(kept.length ? { deliverables: kept } : {}) } };
+      }
+    case 'update_task': {
+      const text = updateTask(ctx.root, String(input.id ?? ''), ctx.agent.name, String(input.state ?? ''), String(input.note ?? ''));
+      return { text, decision: text.startsWith('REFUSED') ? 'deny' : 'allow' };
+    }
     default:
       return { text: `Unknown tool ${name}` };
   }

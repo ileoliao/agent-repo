@@ -1,14 +1,17 @@
 import * as vscode from 'vscode';
-import { AgentDef, SkillDef } from './team';
+import { AgentDef, SkillDef, skillsFor } from './team';
 import { Policy, skillScriptRule } from './policy';
-import { PlainMsg, PlainPart, WorkItem, audit, getGate, loadCheckpoint, saveCheckpoint } from './queue';
+import { PlainMsg, PlainPart, WorkItem, audit, getGate, keepQueued, loadCheckpoint, saveCheckpoint } from './queue';
+import { Task, TaskLogEntry, getTask, openTasksFor, taskOnEnd, taskOnStart } from './tasks';
 import { redact } from './exec';
 import { buildTools, runTool, ToolOutcome } from './tools';
+import { clip } from './textutil';
 import { outputsFrom, wroteFromAudit } from './runs';
 import { changedFiles, snapshotOutbox } from './outbox';
 import { memoryFor } from './manage';
-import type { Agent as PiAgent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
+import { HumanMessage, formatForModel, markDelivered, pendingMessages } from './thread';
+import { Agent, AgentMessage, AgentTool } from './vendor/pi-agent';
+import { AssistantMessage, Message, createAssistantMessageEventStream } from './vendor/pi-agent/ai';
 
 export interface RunDeps {
   root: string;
@@ -21,6 +24,8 @@ export interface RunDeps {
   maxHops: number;
   /** Wall-clock cap for one run, counted from this call (so a resume gets a fresh allowance). Unset = none. */
   maxMs?: number;
+  /** Whether this run is the one that reads the human's messages for its agent (several runs of one agent may be live). Default yes. */
+  takesMessages?: () => boolean;
   out: vscode.OutputChannel;
   token: vscode.CancellationToken;
 }
@@ -29,6 +34,8 @@ export interface RunResult {
   /** done | blocked | nothing_to_do | waiting | max_steps | stalled | cancelled | error */
   status: string;
   summary?: string;
+  /** finish status open: the agent's next step. */
+  next?: string;
   steps: number;
   gateId?: string;
 }
@@ -41,13 +48,22 @@ You run unattended inside a policy. The human is not watching this conversation,
 - Actions that need human sign-off go through request_approval.
 - Hand work outside your role to a teammate with handoff, including all context they need.
 - Commands are non-interactive. Never start servers, watchers or anything that does not exit.
+- The human may send you a message while you work. It is an instruction from the person who owns this work: follow it within your policy. If it changes your task, say so in your next step and carry on from there.
+- Your open tasks are listed under "Your open tasks". Continue them when they are relevant to this run.
+- When the work is not done yet (you are waiting for a teammate or for time to pass), finish with status open and say in next what remains. Use update_task to close a task you hold that is already resolved.
+- When you produce something for the human to read (a report, a write-up, a brief), list its path in finish deliverables.
 - Keep going until the work item is resolved, then call finish. If there is nothing to do, finish with nothing_to_do.`;
 
-export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps, 'team' | 'skills'>, memory = ''): string {
+export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps, 'team' | 'skills'>, memory = '', human: HumanMessage[] = [], tasks: Task[] = [], history: TaskLogEntry[] = []): string {
   const parts = [RUNTIME_RULES, `# Your role: ${agent.name}\n${agent.description}\n\n${agent.body}`];
-  if (agent.skills.length) {
+  // Standing responsibilities (static per agent). Which one triggered this run is said in the work item header.
+  if (agent.goals.some(g => g.id !== 'default')) {
+    parts.push('# Your responsibilities\n' + agent.goals.map(g => `- ${g.id}: ${g.text}`).join('\n'));
+  }
+  const skillNames = skillsFor(agent, item.goal);
+  if (skillNames.length) {
     parts.push('# Your skills');
-    for (const s of agent.skills) {
+    for (const s of skillNames) {
       const sk = deps.skills.get(s);
       if (sk) { parts.push(`## Skill: ${sk.name}\nDirectory: ${sk.relDir}\n${sk.description}\n\n${sk.body}`); }
     }
@@ -57,8 +73,19 @@ export function buildPrompt(agent: AgentDef, item: WorkItem, deps: Pick<RunDeps,
   }
   // Standing notes the human gave in conversation. Sits after the static parts and before the per-run item, so the prefix stays stable.
   if (memory.trim()) { parts.push(`# Standing instructions from the human (follow them in every run)\n${memory.trim()}`); }
-  parts.push(`# Work item ${item.id}\nfrom: ${item.from} | chain: ${item.chainId} | hop: ${item.hop}\n\n${item.task}` +
-    (item.context ? `\n\n## Context\n${item.context}` : ''));
+  // The agent's other unfinished tasks. Per-run data, so it sits after the static parts, next to the standing notes.
+  const mine = tasks.filter(t => t.id !== item.chainId).slice(0, 10);
+  if (mine.length) {
+    parts.push('# Your open tasks (continue them when relevant; close them with update_task)\n' + mine.map(t => {
+      const others = t.holders.filter(h => h !== agent.name);
+      return `- ${t.id}: ${t.title}${others.length ? ` | also held by: ${others.join(', ')}` : ''} | your next step: ${t.next?.[agent.name] ?? '(none recorded)'} | updated ${t.updatedAt.slice(0, 10)}`;
+    }).join('\n'));
+  }
+  parts.push(`# Work item ${item.id}\nfrom: ${item.from} | chain: ${item.chainId} | hop: ${item.hop}${item.goal ? ` | goal: ${item.goal}` : ''}\n\n${item.task}` +
+    (item.context ? `\n\n## Context\n${item.context}` : '') +
+    (history.length ? `\n\n## Task history\n${history.slice(-6).map(e => `- ${e.agent} ${e.event}${e.status ? ` (${e.status})` : ''}${e.to ? ` -> ${e.to}` : ''}${e.text ? `: ${clip(e.text, 200)}` : ''}`).join('\n')}` : ''));
+  // Anything the human said before this run began comes last, after the per-run item, so the static prefix is untouched.
+  if (human.length) { parts.push(formatForModel(human, 'start')); }
   return parts.join('\n\n');
 }
 
@@ -120,19 +147,46 @@ function piToPlain(msgs: readonly (AgentMessage | Message)[]): PlainMsg[] {
   return out;
 }
 
+/**
+ * Runs one item, then records how it ended in the task ledger (every terminal path, errors included). A parked item,
+ * a cancelled one and a transient error that will be retried are still live, so the ledger is left alone.
+ */
 export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult> {
-  // pi ships as ESM only; a dynamic import works from the compiled CommonJS output and from the esbuild bundle.
-  const { Agent } = await import('@earendil-works/pi-agent-core');
-  const { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai/utils/event-stream');
+  const r = await runItemInner(item, deps);
+  if (r.status !== 'waiting' && !keepQueued(r.status, r.summary)) {
+    const effect = taskOnEnd(deps.root, item, r.status, r.summary, r.next, deps.maxHops);
+    if (effect.skipped) { audit(deps.root, item.chainId, { type: 'notify', agent: item.agent, itemId: item.id, kind: 'task', title: effect.skipped }); }
+  }
+  return r;
+}
 
+async function runItemInner(item: WorkItem, deps: RunDeps): Promise<RunResult> {
   const agent = deps.team.get(item.agent)!;
-  const extraAllow = agent.skills
+  const extraAllow = skillsFor(agent, item.goal)
     .map(s => deps.skills.get(s))
     .filter((s): s is SkillDef => !!s)
     .map(s => skillScriptRule(s.relDir));
   const tools = buildTools(agent);
   const maxSteps = agent.maxSteps ?? deps.maxSteps;
   const log = (ev: Record<string, unknown>) => audit(deps.root, item.chainId, { agent: agent.name, itemId: item.id, ...ev });
+
+  // What the human said and the model has been given. It is marked delivered only once the turn that carried it is done and
+  // checkpointed, so an interruption in between delivers it again instead of losing it.
+  const inFlight: { id: string; via: NonNullable<HumanMessage['via']> }[] = [];
+  const commitHuman = () => {
+    for (const via of ['start', 'turn', 'resume'] as const) {
+      const ids = inFlight.filter(i => i.via === via).map(i => i.id);
+      if (ids.length) { markDelivered(deps.root, agent.name, ids, { itemId: item.id, via }); }
+    }
+    inFlight.length = 0;
+  };
+  const claim = (msgs: HumanMessage[], via: NonNullable<HumanMessage['via']>) => {
+    if (!msgs.length) { return msgs; }
+    inFlight.push(...msgs.map(m => ({ id: m.id, via })));
+    log({ type: 'human', via, ids: msgs.map(m => m.id), text: msgs.map(m => m.text).join(' / ').slice(0, 500) });
+    return msgs;
+  };
+  const unclaimed = () => (deps.takesMessages && !deps.takesMessages() ? [] : pendingMessages(deps.root, agent.name)).filter(m => !inFlight.some(i => i.id === m.id));
 
   let transcript: PlainMsg[];
   let step = 0;
@@ -152,26 +206,41 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
       if (!gate || gate.outcome === undefined) {
         return { status: 'error', summary: `cannot resume: checkpoint or gate outcome missing (${item.resumeGate})`, steps: 0 };
       }
+      const said = unclaimed();
       transcript.push({
         role: 'user',
-        parts: cp.turnResults.map(r => ({ t: 'result', callId: r.callId, text: r.callId === cp.parkedCallId ? gate.outcome! : r.text }))
+        parts: [
+          ...cp.turnResults.map((r): PlainPart => ({ t: 'result', callId: r.callId, text: r.callId === cp.parkedCallId ? gate.outcome! : r.text })),
+          ...(said.length ? [{ t: 'text', v: formatForModel(said) } as PlainPart] : [])
+        ]
       });
       limit = Math.max(maxSteps, step + 1);
       deps.out.appendLine(`\n▶ ${agent.name} resumes ${item.id} after ${gate.kind} ${gate.id}`);
       log({ type: 'resume', gateId: gate.id, kind: gate.kind, outcome: gate.outcome.slice(0, 2000) });
+      claim(said, 'resume');
     } else {
       deps.out.appendLine(`\n▶ ${agent.name} continues ${item.id} from its last completed step (${step})`);
       log({ type: 'resume', from: 'checkpoint', step });
+      const said = unclaimed();
+      if (said.length) { transcript.push({ role: 'user', parts: [{ t: 'text', v: formatForModel(said) }] }); claim(said, 'resume'); }
     }
   } else if (item.resumeGate) {
     return { status: 'error', summary: `cannot resume: checkpoint or gate outcome missing (${item.resumeGate})`, steps: 0 };
   } else {
-    transcript = [{ role: 'user', parts: [{ t: 'text', v: buildPrompt(agent, item, deps, memoryFor(deps.root, agent.name)) }] }];
+    const said = unclaimed();
+    // The task history is read before this run adds its own start to the ledger.
+    const prior = getTask(deps.root, item.chainId);
+    const history = prior && (item.hop > 0 || item.from === 'task') ? prior.log : [];
+    const tasks = openTasksFor(deps.root, agent.name);
+    transcript = [{ role: 'user', parts: [{ t: 'text', v: buildPrompt(agent, item, deps, memoryFor(deps.root, agent.name), said, tasks, history) }] }];
+    taskOnStart(deps.root, item);
     deps.out.appendLine(`\n▶ ${agent.name} ← ${item.from} | ${item.id} | ${deps.model.family}`);
     log({ type: 'start', from: item.from, hop: item.hop, task: item.task, model: deps.model.id });
+    claim(said, 'start');
   }
 
-  let finished: { status: string; summary: string } | undefined;
+  let finished: { status: string; summary: string; next?: string; deliverables?: string[] } | undefined;
+  let finishedByTool = false;
   let parked: { gateId: string; callId: string } | undefined;
   let modelError: any;
   let hitLimit = false;
@@ -247,7 +316,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
       const wrote = before ? changedFiles(before, snapshotOutbox(deps.root)) : [];
       log({ type: 'tool', step, name: t.name, input, decision: o.decision, gateId: o.park, ms: Date.now() - t1, result: o.text.slice(0, 2000), ...(wrote.length ? { wrote } : {}) });
       if (o.park && !parked) { parked = { gateId: o.park, callId }; parkedThisTurn = true; }
-      if (o.finished) { finished = o.finished; }
+      if (o.finished) { finished = o.finished; finishedByTool = true; }
       const sig = `${t.name}\n${JSON.stringify(input)}\n${o.text}`;
       repeats = sig === lastSig ? repeats + 1 : 1;
       lastSig = sig;
@@ -258,13 +327,21 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
     }
   }));
 
-  const pi: PiAgent = new Agent({
+  const pi = new Agent({
     initialState: { systemPrompt: '', model: { id: deps.model.id, name: deps.model.family, ...API, contextWindow: 128000, maxTokens: 4096, reasoning: false, input: ['text'], cost: ZERO_USAGE.cost } as any, tools: piTools, messages: resuming ? plainToPi(transcript, deps.model.id) : [] },
     streamFn: streamFn as any,
     toolExecution: 'sequential',
     // Runs after every completed turn, before the next request: where the old loop's bookkeeping lived.
+    // Between two turns: anything the human said meanwhile reaches the model before its next request.
+    prepareNextTurn: () => {
+      if (parked) { return undefined; }
+      const msgs = claim(unclaimed(), 'turn');
+      return msgs.length ? { messages: [{ role: 'user', content: [{ type: 'text', text: formatForModel(msgs) }], timestamp: Date.now() } as any] } : undefined;
+    },
     finishTurn: async turn => {
       parkedThisTurn = false;
+      // A turn that failed or was cancelled never carried the human's words to a finished answer: keep them pending.
+      if (turn.message.stopReason !== 'error' && turn.message.stopReason !== 'aborted') { commitHuman(); }
       if (parked) {
         // Snapshot the conversation up to the assistant message; the gate's outcome becomes the parked call's result on resume.
         const all = turn.context.messages as any[];
@@ -275,6 +352,8 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
         deps.out.appendLine(`⏸ ${agent.name} waiting on ${parked.gateId}`);
         return { action: 'end' };
       }
+      // The agent said it was finished, but the human wrote while it was finishing: let it read that before it stops.
+      if (finished && finishedByTool && unclaimed().length && step < limit && !deps.token.isCancellationRequested) { finished = undefined; finishedByTool = false; }
       if (finished) { return { action: 'end' }; }
       if (deps.maxMs && Date.now() - startedAt > deps.maxMs) {
         finished = { status: 'stalled', summary: `stopped after ${Math.round(deps.maxMs / 60000)} minutes (wall-clock cap)` };
@@ -286,6 +365,7 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
         saveCheckpoint(deps.root, { itemId: item.id, gateId: '', messages: piToPlain(turn.context.messages as any[]), turnResults: [], parkedCallId: '', step });
       }
       if (step >= limit) { hitLimit = true; return { action: 'end' }; }
+      if (unclaimed().length) { return { action: 'continue' }; }
       return undefined;
     }
   });
@@ -326,10 +406,10 @@ export async function runItem(item: WorkItem, deps: RunDeps): Promise<RunResult>
   // Every successful write in the transcript, including turns before a resume.
   const transcriptNow = piToPlain(pi.state.messages as any[]);
   const results = transcriptNow.flatMap(m => m.parts.flatMap(p => (p.t === 'result' ? [p.text] : [])));
-  const done = finished as { status: string; summary: string } | undefined;
-  log({ type: 'end', step, status, summary: done?.summary, outputs: [...new Set([...outputsFrom(results), ...wroteFromAudit(deps.root, item.chainId, item.id)])] });
+  const done = finished as { status: string; summary: string; next?: string; deliverables?: string[] } | undefined;
+  log({ type: 'end', step, status, summary: done?.summary, outputs: [...new Set([...outputsFrom(results), ...wroteFromAudit(deps.root, item.chainId, item.id)])], ...(done?.deliverables?.length ? { deliverables: done.deliverables } : {}) });
   deps.out.appendLine(`■ ${agent.name}: ${status}${done ? ` — ${done.summary}` : ''}`);
-  return { status, summary: done?.summary, steps: step };
+  return { status, summary: done?.summary, next: done?.next, steps: step };
 }
 
 function brief(input: unknown): string {

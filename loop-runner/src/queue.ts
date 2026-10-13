@@ -16,8 +16,12 @@ export interface WorkItem {
   agent: string;
   task: string;
   context?: string;
-  /** 'schedule' | 'user' | <agent name> */
+  /** 'schedule' | 'user' | 'chat' | 'task' | <agent name> */
   from: string;
+  /** The goal (see `GoalDef`) that triggered a scheduled run. */
+  goal?: string;
+  /** May use the reserved worker slot and goes before other items. Inherited by handoffs and return wakes. */
+  urgent?: boolean;
   /** Shared by every item spawned from the same origin, across handoffs. Becomes the trace id later. */
   chainId: string;
   hop: number;
@@ -38,6 +42,8 @@ export interface Gate {
   agent: string;
   itemId: string;
   chainId: string;
+  /** Goal of the run that asked, so an approval is executed under that goal's policy. */
+  goal?: string;
   title: string;
   /** question: what the agent asks. approval: what and why. */
   body: string;
@@ -97,26 +103,37 @@ export function waiting(root: string): WorkItem[] {
   return readDir<WorkItem>(L(root, 'queue', '_waiting'));
 }
 
-/** Oldest runnable item across the given agents (FIFO, one worker). Resumed items keep their original age. */
-export function nextItem(root: string, agents: string[]): WorkItem | undefined {
-  let best: WorkItem | undefined;
-  for (const a of agents) {
-    const p = pending(root, a)[0];
-    if (p && (!best || p.createdAt < best.createdAt)) { best = p; }
-  }
-  return best;
+/**
+ * Which queued item may start now, given what is running. Pure.
+ *  - never an item whose chain already has a running item;
+ *  - with more than one worker, non-urgent items may fill at most `workers - 1` slots, so one is left for urgent work;
+ *  - among the eligible, urgent first, then oldest first (resumed items keep their original age).
+ * With one worker and no urgent items this is plain FIFO.
+ */
+export function pickItem(queued: WorkItem[], running: WorkItem[], workers = 1): WorkItem | undefined {
+  if (running.length >= workers) { return undefined; }
+  const busy = new Set(running.map(r => r.chainId));
+  const plain = running.filter(r => !r.urgent).length;
+  const eligible = queued.filter(i => !busy.has(i.chainId) && (i.urgent || workers <= 1 || plain < workers - 1));
+  return eligible.sort((a, b) => (a.urgent ? 0 : 1) - (b.urgent ? 0 : 1) || a.createdAt.localeCompare(b.createdAt))[0];
+}
+
+/** Next runnable item across the given agents (see `pickItem`). */
+export function nextItem(root: string, agents: string[], running: WorkItem[] = [], workers = 1): WorkItem | undefined {
+  return pickItem(agents.flatMap(a => pending(root, a)), running, workers);
 }
 
 /** A scheduled item for this agent is still queued or parked on a gate; a new wake would duplicate it. */
-export function hasOpenScheduled(root: string, agent: string): boolean {
-  return pending(root, agent).some(i => i.from === 'schedule') || waiting(root).some(i => i.agent === agent && i.from === 'schedule');
+export function hasOpenScheduled(root: string, agent: string, goal = 'default'): boolean {
+  const mine = (i: WorkItem) => i.from === 'schedule' && (i.goal ?? 'default') === goal;
+  return pending(root, agent).some(mine) || waiting(root).some(i => i.agent === agent && mine(i));
 }
 
 /** Scheduled items this agent already had today (local date), whether queued, parked or finished. */
-export function scheduledToday(root: string, agent: string, now = new Date()): number {
+export function scheduledToday(root: string, agent: string, now = new Date(), goal = 'default'): number {
   const day = now.toDateString();
   const mine = [...pending(root, agent), ...waiting(root).filter(i => i.agent === agent), ...readDir<WorkItem>(L(root, 'queue', '_done')).filter(i => i.agent === agent)];
-  return mine.filter(i => i.from === 'schedule' && new Date(i.createdAt).toDateString() === day).length;
+  return mine.filter(i => i.from === 'schedule' && (i.goal ?? 'default') === goal && new Date(i.createdAt).toDateString() === day).length;
 }
 
 /**
@@ -166,4 +183,16 @@ export function audit(root: string, chainId: string, ev: Record<string, unknown>
   const d = L(root, 'runs', day);
   fs.mkdirSync(d, { recursive: true });
   fs.appendFileSync(path.join(d, `${chainId}.jsonl`), JSON.stringify({ ts: new Date().toISOString(), chainId, ...ev }) + '\n');
+}
+
+// ---- retry policy ----
+const TRANSIENT = /rate.?limit|quota|exhausted|too many requests|temporarily blocked/i;
+
+/**
+ * Cancelled work and temporary quota/rate-limit errors stay in the agent queue so the next start retries them.
+ * A context overflow ("Message exceeds token limit.") is permanent for that item: retrying it would loop forever.
+ */
+export function keepQueued(status: string, summary?: string): boolean {
+  const s = summary ?? '';
+  return status === 'cancelled' || (status === 'error' && TRANSIENT.test(s) && !/token limit/i.test(s));
 }

@@ -4,6 +4,9 @@ import { sha256Of } from './gates';
 import * as path from 'path';
 import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
+import { Active, brief, clip, firstLine, isActive } from './textutil';
+import { Task, listTasks } from './tasks';
+import { AvatarState, ChatState, ThreadEvent, ThreadStep, Tone, buildThread, glance } from './thread';
 
 /** One line of a run's story: what the agent did at a step. */
 export interface Step {
@@ -32,28 +35,36 @@ function previewsOf(root: string, g: Gate): GateView['previews'] {
   });
 }
 
+export interface ChatModel {
+  agents: { name: string; description: string; state: ChatState; avatar: AvatarState; line: string; at?: string; pendingMessages: number; needsYou: number }[];
+  selected?: string;
+  events: ThreadEvent[];
+  /** Earlier events that are not shown. */
+  hidden: number;
+  /** The selected agent's open questions and approvals, shown at the end of the conversation. */
+  gates: GateView[];
+}
+
 export interface ConsoleModel {
   running: boolean;
-  active?: string;
+  active?: Active;
   next?: { agent: string; at: string };
   pending: GateView[];
+  /** Tasks agents have in progress (state open). Absent in older callers. */
+  tasks?: Task[];
   agents: AgentRow[];
   runs: ConsoleRun[];
+  /** Which page is showing. Chat is the default. */
+  tab: 'chat' | 'overview';
+  /** The conversation with one agent; only built while the chat tab is showing. */
+  chat?: ChatModel;
   /** ISO time this view was built. */
   updatedAt: string;
   /** Page-level message: no workspace, or the data could not be read. */
   note?: { tone: 'bad' | 'info'; text: string };
 }
 
-const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
-const firstLine = (s: string) => s.split('\n').find(l => l.trim()) ?? '';
-
-function brief(input: unknown): string {
-  if (!input || typeof input !== 'object') { return ''; }
-  const o = input as Record<string, unknown>;
-  const v = o.path ?? o.command ?? o.pattern ?? o.title ?? Object.values(o).find(x => typeof x === 'string');
-  return typeof v === 'string' ? clip(firstLine(v), 90) : '';
-}
+// clip, firstLine and brief live in textutil.ts so the chat thread can use them too.
 
 /** A run's audit file as a short list of steps. Read-only; torn lines are skipped. */
 export function stepsOf(file: string): Step[] {
@@ -80,20 +91,32 @@ export function stepsOf(file: string): Step[] {
 }
 
 /** Everything the console shows, as plain data. Pure and read-only: the same files the sidebar reads. */
-export function consoleModel(root: string, state: { running: boolean; active?: string }, now = new Date(), runLimit = 10): ConsoleModel {
+export function consoleModel(root: string, state: { running: boolean; active?: Active; tab?: 'chat' | 'overview'; agent?: string }, now = new Date(), runLimit = 10): ConsoleModel {
   const agents = agentRows(root, state.active, now);
   const nw = nextWake(agents);
+  const tab = state.tab ?? 'chat';
+  const pending = listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) }));
+  let chat: ChatModel | undefined;
+  if (tab === 'chat') {
+    const rows = agents.map(a => ({ name: a.name, description: a.description, ...glance(root, a.name, a.description, state.active, now) }));
+    const selected = rows.find(r => r.name === state.agent)?.name ?? rows.find(r => r.needsYou)?.name ?? rows.find(r => r.state === 'running')?.name ?? rows[0]?.name;
+    const th = selected ? buildThread(root, selected) : { events: [], hidden: 0 };
+    chat = { agents: rows, selected, events: th.events, hidden: th.hidden, gates: pending.filter(g => g.agent === selected) };
+  }
   return {
+    tab,
+    chat,
     running: state.running,
     active: state.active,
     next: nw ? { agent: nw.agent, at: nw.at.toISOString() } : undefined,
-    pending: listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) })),
+    pending,
+    tasks: listTasks(root).filter(t => t.state === 'open').slice(0, 30),
     agents,
     // A run whose last event says "running" but that no live worker owns (team stopped, or another agent is active)
     // was cut off, for example when VS Code closed. Say so instead of showing it as running forever.
     runs: recentRuns(root, runLimit).map(r => ({
       ...r,
-      status: r.status === 'running' && !(state.running && state.active === r.agent) ? 'interrupted' : r.status,
+      status: r.status === 'running' && !(state.running && isActive(state.active, r.agent)) ? 'interrupted' : r.status,
       steps: stepsOf(r.file)
     })),
     updatedAt: now.toISOString()
@@ -107,6 +130,12 @@ const when = (iso: string) => {
   const d = new Date(iso);
   if (isNaN(d.getTime())) { return ''; }
   return d.toDateString() === new Date().toDateString() ? time(iso) : `${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${time(iso)}`;
+};
+/** hh:mm today; month/day and hh:mm on another day. Short enough for a chat. */
+const whenShort = (iso: string) => {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) { return ''; }
+  return d.toDateString() === new Date().toDateString() ? time(iso) : `${d.toLocaleDateString([], { month: 'numeric', day: 'numeric' })} ${time(iso)}`;
 };
 /** A time with its exact value on hover. */
 const stamp = (iso: string, text: string) => `<time datetime="${esc(iso)}" title="${esc(new Date(iso).toLocaleString())}">${esc(text)}</time>`;
@@ -136,6 +165,7 @@ const ICONS: Record<string, string> = {
   bot: 'M4 6h8v6H4V6zM8 6V3.5M6.2 8.8v.4M9.8 8.8v.4',
   chevron: 'M6 4l4 4-4 4',
   send: 'M2.5 8l11-5-4 10-2.5-4L2.5 8z',
+  up: 'M8 13V3M4 7l4-4 4 4',
   copy: 'M5.5 5.5h7v8h-7v-8zM3.5 10.5v-8h7',
   dot: 'M8 6a2 2 0 100 4 2 2 0 000-4z'
 };
@@ -147,7 +177,7 @@ const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
   retry: { label: 'Will retry', tone: 'warn', ic: 'clock' }, blocked: { label: 'Blocked', tone: 'warn', ic: 'alert' },
   max_steps: { label: 'Step limit', tone: 'warn', ic: 'alert' }, stalled: { label: 'Stalled', tone: 'bad', ic: 'alert' },
   interrupted: { label: 'Interrupted', tone: 'warn', ic: 'alert' },
-  nothing_to_do: { label: 'Nothing to do', tone: 'mute', ic: 'check' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
+  nothing_to_do: { label: 'Nothing to do', tone: 'mute', ic: 'check' }, open: { label: 'Not finished', tone: 'info', ic: 'clock' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
 };
 /** Statuses the "Problems" filter shows. */
 const PROBLEMS = new Set(['error', 'stalled', 'blocked', 'max_steps', 'interrupted', 'retry']);
@@ -200,6 +230,14 @@ function runCard(r: ConsoleRun): string {
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
 
+function taskCard(t: Task): string {
+  const nexts = t.holders.map(h => `<dt>${esc(h)}</dt><dd>${esc(t.next?.[h] ?? '(no next step recorded)')}</dd>`).join('');
+  return `<div class="card" data-task="${esc(t.id)}"><div class="card-head">${icon('clock', 'lead')}<div class="grow"><div class="card-title">${esc(t.title)}</div>
+    <div class="meta">${t.holders.map(h => `<span class="tag">${esc(h)}</span>`).join('')}<span class="mono">${esc(t.id)}</span><span>${stamp(t.updatedAt, ago(t.updatedAt))}</span></div></div>
+    ${btn('Close', `data-close-task="${esc(t.id)}" title="Drop this task: nobody holds it any more"`, 'secondary', 'x')}</div>
+    ${nexts ? `<dl class="kv">${nexts}</dl>` : ''}</div>`;
+}
+
 function agentRow(a: AgentRow): string {
   const label = a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
   const tone = a.state === 'running' ? 'info' : a.state === 'waiting' ? 'warn' : 'mute';
@@ -217,11 +255,150 @@ function agentRow(a: AgentRow): string {
 /** `hint` is trusted markup: callers pass only fixed strings. */
 const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
 
+
+const DELIVERY: Record<string, string> = { start: 'read when the run started', turn: 'read at its next step', resume: 'read when it resumed', task: 'started a run' };
+const toneOf = (t: Tone) => (t === 'mute' ? 'mute' : t);
+
+
+const stepLi = (s: ThreadStep) => `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.ok ? 'dot' : 'x')}</span><div class="grow"><div class="step-title"><span class="mono small">${esc(s.title)}</span></div>${s.detail && !/^(\[exit 0\]|ok)$/.test(s.detail) ? `<div class="${s.ok ? 'muted' : 'result-bad'} small wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`;
+const badWord = (s: ThreadStep) => (/^REFUSED/.test(s.detail ?? '') ? 'refused' : /^ERROR/.test(s.detail ?? '') ? 'error' : 'failed');
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** What a folded group of routine calls says in one line: "loop-memory ×4 · read 2 files". */
+function groupLine(g: ThreadStep[]): string {
+  if (g.length === 1) { return g[0].phrase; }
+  const skills = new Map<string, number>();
+  let reads = 0, lists = 0;
+  for (const s of g) {
+    if (s.famKind === 'read') { reads++; } else if (s.famKind === 'list') { lists++; } else { skills.set(s.fam ?? s.phrase, (skills.get(s.fam ?? s.phrase) ?? 0) + 1); }
+  }
+  return [...[...skills].map(([k, n]) => `${k} ×${n}`), ...(reads ? [plural(reads, 'file', 'files').replace(/^/, 'read ')] : []), ...(lists ? [`listed ${plural(lists, 'folder', 'folders')}`] : [])].join(' · ');
+}
+
+/**
+ * Tool calls as quiet lines. Consecutive routine calls (skill scripts, reads, listings) fold into one line; every other call is one line.
+ * A refused or failed call is never folded away: it stays visible, with its full result, and the line counts it in the warning colour.
+ */
+function stepsBlock(steps: ThreadStep[], ts: string): string {
+  const segs: ThreadStep[][] = [];
+  for (const s of steps) {
+    const last = segs[segs.length - 1];
+    if (s.routine && last && last[0].routine) { last.push(s); } else { segs.push([s]); }
+  }
+  return segs.map((g, i) => {
+    const bad = g.filter(s => !s.ok), good = g.filter(s => s.ok);
+    const word = bad.length ? [...new Set(bad.map(badWord))].join('/') : '';
+    const tag = bad.length ? `<span class="bad-count">· ${bad.length} ${esc(word)}</span>` : '';
+    const text = groupLine(g);
+    const full = g.map(s => s.title).join('\n');
+    const wraps = !g[0].routine && /^(handed|asked)/.test(g[0].phrase);
+    const head = `<span class="steps-sum ${wraps ? 'wrap-text' : 'ell'}" title="${esc(full)}">${esc(text)}</span>${tag}`;
+    const body = g.filter(s => s.ok || good.length).map(stepLi).join('');
+    const line = good.length
+      ? `<details class="msg steps" data-k="st-${esc(ts)}-${i}"><summary>${icon('chevron', 'chev')}${head}</summary><ol class="timeline">${body}</ol></details>`
+      : g.length > 1 ? `<div class="msg steps flat"><span class="chev-pad"></span>${head}</div>` : '';
+    const shown = bad.map(s => `<div class="msg steps badcall" title="${esc(s.title)}"><span class="node">${icon('x')}</span><div class="grow"><div class="small"><span class="steps-sum">${esc(s.phrase)}</span>${g.length === 1 ? ' <span class="bad-count">· ' + esc(badWord(s)) + '</span>' : ''}</div>${s.detail ? `<div class="result-bad small wrap-text">${esc(s.detail)}</div>` : ''}</div></div>`).join('');
+    return line + shown;
+  }).join('');
+}
+
+function threadEvent(e: ThreadEvent, agent: string): string {
+  if (e.kind === 'human') {
+    const seen = e.status === 'pending' ? `waiting for ${esc(agent)} to read it` : esc(DELIVERY[e.via ?? ''] ?? 'read');
+    return `<div class="msg human"><div class="bubble"><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))} · ${seen}</div></div></div>`;
+  }
+  if (e.kind === 'answer') {
+    return `<div class="msg human"><div class="bubble answer ${e.tone}"><div class="mkind">You answered “${esc(clip(e.title, 80))}”</div><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}</div></div></div>`;
+  }
+  if (e.kind === 'agent') {
+    return `<div class="msg bot">${avatar(agent, 'idle', 28)}<div class="bubble"><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))}</div></div></div>`;
+  }
+  if (e.kind === 'steps') { return stepsBlock(e.steps, e.ts); }
+  if (e.kind === 'result') {
+    const inner = e.fold.map(f => threadEvent(f, agent)).join('');
+    const label = e.stepCount ? `Show ${plural(e.stepCount, 'step', 'steps')}` : 'Show details';
+    const fold = inner ? `<details class="rfold" data-k="rf-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${esc(label)}</span></summary><div class="rfold-body">${inner}</div></details>` : '';
+    const pr = e.problems, probs = [pr.refused ? `${pr.refused} refused` : '', pr.error ? `${pr.error} error${pr.error === 1 ? '' : 's'}` : '', pr.failed ? `${pr.failed} failed` : ''].filter(Boolean).join(' · ');
+    if (e.status === 'nothing_to_do') {
+      return `<div class="rquiet" data-result="nothing_to_do"><div class="rtop"><span class="chip mute">${esc(e.label)}</span>${e.detail ? `<span class="rgoal ell" title="${esc(e.detail)}">${esc(e.detail)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${probs ? `<div class="rprob">${esc(probs)}</div>` : ''}${fold}</div>`;
+    }
+    const row = (d: { path: string; preview?: string }) => { const i = d.path.lastIndexOf('/'); return `<a class="deliv" href="#" data-open="${esc(d.path)}" title="${esc(d.path)}">${icon('file')}<span class="dtext"><span class="dline"><span class="dname">${esc(d.path.slice(i + 1))}</span>${i > 0 ? `<span class="ddir ell">${esc(d.path.slice(0, i))}</span>` : ''}</span>${d.preview ? `<span class="dprev ell">${esc(d.preview)}</span>` : ''}</span></a>`; };
+    const sup = e.supporting.length ? `<details class="rsup" data-k="rs-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${plural(e.supporting.length, 'supporting file', 'supporting files')}</span></summary><div class="rfiles">${e.supporting.map(o => `<a class="filechip" href="#" data-open="${esc(o)}" title="${esc(o)}">${icon('file')}<span class="ell">${esc(o)}</span></a>`).join('')}</div></details>` : '';
+    const files = e.deliverables.map(row).join('');
+    const line = (k: string, v: string) => `<div class="rline wrap-text"><span class="rk">${esc(k)}</span> ${esc(v)}</div>`;
+    return `<div class="rcard ${esc(e.status)} ${toneOf(e.tone)}" data-result="${esc(e.status)}"><div class="rtop"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.goal ? `<span class="rgoal ell" title="${esc(e.goal)}">${esc(e.goal)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`
+      + (e.detail ? `<div class="rsum wrap-text">${esc(e.detail)}</div>` : '')
+      + (e.next ? line('Next:', e.next) : '') + (e.handoff ? line(`Handed to ${e.handoff.to}:`, e.handoff.task) : '')
+      + (e.approvals ?? []).map(a => line('Approved:', a)).join('')
+      + (files ? `<div class="rdelivs">${files}</div>` : '') + sup + (probs ? `<div class="rprob">${esc(probs)}</div>` : '') + fold + '</div>';
+  }
+  const outs = (e.outputs ?? []).map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
+  return `<div class="sline"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.detail ? `<span class="sdetail wrap-text">${esc(e.detail)}</span>` : ''}${outs}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`;
+}
+
+function composerHint(name: string, state: ChatState, running: boolean): string {
+  switch (state) {
+    case 'running': return `${name} is working. It reads this at its next step, and can change course.`;
+    case 'waiting': return `${name} is waiting for your answer above. It reads this when it continues.`;
+    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The team is stopped.'}`;
+    default: return running ? `${name} is idle. This starts a new run.` : `The team is stopped. This is saved, and starts a run when you start the team.`;
+  }
+}
+
+const STATE_LABEL: Record<ChatState, string> = { running: 'working', waiting: 'waiting for you', queued: 'queued', idle: 'idle' };
+
+const hash = (s: string) => { let h = 2166136261; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
+const AVATAR_TITLE: Record<AvatarState, string> = { idle: 'idle', working: 'working', waiting: 'waiting for you', blocked: 'blocked', done: 'finished' };
+
+/**
+ * A small geometric face, different for every agent (colour, shape, eyes), so a roster is scannable at a glance.
+ * The state is carried by motion around it, not by a separate status light: idle is still, working turns, waiting pulses,
+ * blocked is red, done has a check.
+ */
+function avatar(name: string, state: AvatarState, size = 38): string {
+  const h = hash(name), hue = h % 360, shape = (h >> 9) % 3, eyes = (h >> 12) % 3;
+  const body = shape === 0 ? '<circle cx="20" cy="20" r="17"/>' : shape === 1 ? '<rect x="4" y="4" width="32" height="32" rx="11"/>' : '<rect x="7" y="7" width="26" height="26" rx="6" transform="rotate(45 20 20)"/>';
+  const eye = (cx: number) => eyes === 2
+    ? `<ellipse cx="${cx}" cy="19" rx="3.2" ry="4.6" fill="#fff"/><circle class="pupil" cx="${cx}" cy="20" r="1.8" fill="#222"/>`
+    : `<circle cx="${cx}" cy="19" r="${eyes === 0 ? 4.2 : 3.4}" fill="#fff"/><circle class="pupil" cx="${cx}" cy="19.5" r="${eyes === 0 ? 2 : 1.7}" fill="#222"/>`;
+  return `<span class="av ${state}" style="--h:${hue};--sz:${size}px" aria-hidden="true"><svg viewBox="0 0 40 40" width="${size}" height="${size}"><g fill="hsl(${hue} 55% 42%)">${body}</g>${eye(14)}${eye(26)}</svg></span>`;
+}
+
+function renderChat(m: ConsoleModel): string {
+  const c = m.chat!;
+  if (!c.agents.length) { return empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.'); }
+  const sel = c.agents.find(a => a.name === c.selected)!;
+  const list = c.agents.map(a => `<button class="roster-row ${a.name === sel.name ? 'on' : ''}" data-agent="${esc(a.name)}" aria-pressed="${a.name === sel.name}" title="${esc(a.name)} is ${AVATAR_TITLE[a.avatar]}: ${esc(a.line)}">${avatar(a.name, a.avatar)}`
+    + `<span class="rr-main"><span class="rr-top"><span class="rr-name">${esc(a.name)}</span>${a.at ? `<span class="muted rr-time">${stamp(a.at, whenShort(a.at))}</span>` : ''}</span><span class="rr-line ${a.avatar === 'waiting' ? 'warn' : a.avatar === 'blocked' ? 'bad' : 'muted'}">${esc(a.line)}</span></span>`
+    + `${a.needsYou ? `<span class="count warn" title="needs you">${a.needsYou}</span>` : a.pendingMessages ? '<span class="unread" title="your message has not been read yet"></span>' : ''}</button>`).join('');
+  const events = c.events.map(e => threadEvent(e, sel.name)).join('');
+  const gates = c.gates.length ? `<div class="thread-gates">${c.gates.map(gateCard).join('')}</div>` : '';
+  const empty0 = !c.events.length && !c.gates.length ? empty('send', `Nothing yet with ${sel.name}`, 'Say what you want below. If it is idle, this starts a run; if it is working, it will read it at its next step.') : '';
+  const running = sel.state === 'running';
+  return `<div class="chat">
+    <nav class="roster" aria-label="Agents">${list}</nav>
+    <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
+      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(STATE_LABEL[sel.state])} · ${esc(sel.line)}</div></div></header>
+      <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${gates}</div>
+      <div class="composer ${running ? 'running' : ''}"><div class="muted hint">${esc(composerHint(sel.name, sel.state, m.running))}</div>
+        <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}" aria-label="Message ${esc(sel.name)}" placeholder="Message ${esc(sel.name)}…"></textarea>`
+    + `<button class="roundbtn stop" data-chat-cancel="${esc(sel.name)}" title="Stop this run" aria-label="Stop this run">${icon('stop')}<span class="stoplabel">Stop</span></button>`
+    + `<button class="roundbtn send" data-chat-send="${esc(sel.name)}" title="Send" aria-label="Send">${icon('up')}</button></div>
+        <div class="muted tiny">Enter sends · Shift+Enter new line · @name writes to another agent · /stop ends the current run</div></div>
+    </section></div>`;
+}
+
+function renderTabs(m: ConsoleModel): string {
+  const tab = (id: string, label: string, extra = '') => `<button role="tab" class="tab ${m.tab === id ? 'on' : ''}" aria-selected="${m.tab === id}" data-tab="${id}">${label}${extra}</button>`;
+  const needs = m.pending.length ? `<span class="count warn" title="needs you">${m.pending.length}</span>` : '';
+  return `<nav class="tabs" role="tablist">${tab('chat', 'Chat', needs)}${tab('overview', 'Overview')}</nav>`;
+}
+
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
-  const live = m.runs.find(r => r.status === 'running' && r.agent === m.active);
+  const live = m.runs.find(r => r.status === 'running' && isActive(m.active, r.agent));
   const state = !m.running ? `<span class="state off">${icon('stop')}Team stopped</span>`
-    : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc(m.active)}${live ? ` · step ${live.step}` : ''}</span>`
+    : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
     : `<span class="state idle">${icon('clock')}Team on · idle${m.next ? ` · next wake ${esc(when(m.next.at))}` : ''}</span>`;
   const actions = (m.running ? btn('Stop team', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
     + btn('Give a task', 'data-cmd="runAgent"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult"', 'secondary', 'file');
@@ -233,6 +410,8 @@ export function renderBody(m: ConsoleModel): string {
     { k: 'Next wake', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
   ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
   const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
+  const tasks = m.tasks ?? [];
+  const openTasks = tasks.length ? `<h2>Open tasks<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
   const filter = m.runs.length ? `<label class="filter"><span class="muted">Show</span><select data-filter aria-label="Filter runs"><option value="all">All runs (${m.runs.length})</option><option value="problems">Problems (${problems})</option><option value="done">Done</option></select></label>` : '';
   const runs = m.runs.length ? `<div class="runs">${m.runs.map(runCard).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
@@ -241,9 +420,9 @@ export function renderBody(m: ConsoleModel): string {
     : empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.');
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
   return `<header class="bar"><div class="brand">Loop Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
-    ${note}<div class="tiles">${tiles}</div>
+    ${note}${renderTabs(m)}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
-    <h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`;
+    ${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
 }
 
 const STYLE = `
@@ -303,7 +482,68 @@ a{color:var(--vscode-textLink-foreground)}
 .agent-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.agent-name{font-weight:600;flex:1;text-decoration:none}.agent-name:hover{text-decoration:underline}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0 0;font-size:.92em}.kv dt{color:var(--vscode-descriptionForeground)}.kv dd{margin:0;overflow-wrap:anywhere}
 .empty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 12px;text-align:center;border:1px dashed var(--vscode-panel-border);border-radius:var(--r);color:var(--vscode-descriptionForeground)}.empty-title{color:var(--vscode-foreground);font-weight:600}
-.stale{margin:8px 0}.link{font-size:.9em}`;
+.stale{margin:8px 0}.link{font-size:.9em}
+.tabs{display:flex;gap:4px;margin:12px 0 0;border-bottom:1px solid var(--vscode-panel-border)}
+.tab{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:transparent;color:var(--vscode-descriptionForeground);border:0;border-bottom:2px solid transparent;font:inherit;cursor:pointer}
+.tab.on{color:var(--vscode-foreground);border-bottom-color:var(--vscode-focusBorder)}.tab:focus-visible{outline:1px solid var(--vscode-focusBorder)}
+.chat{display:grid;grid-template-columns:280px minmax(0,1fr);gap:0;margin-top:12px;height:calc(100vh - 170px);min-height:400px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);overflow:hidden}
+@media (max-width:760px){.chat{grid-template-columns:1fr;height:auto}.roster{max-height:220px;border-right:0;border-bottom:1px solid var(--vscode-panel-border)}}
+.roster{display:flex;flex-direction:column;overflow:auto;background:var(--vscode-sideBar-background,transparent);border-right:1px solid var(--vscode-panel-border)}
+.roster-row{display:flex;align-items:center;gap:12px;padding:10px 14px;text-align:left;background:transparent;color:var(--vscode-foreground);border:0;border-bottom:1px solid var(--vscode-panel-border);font:inherit;cursor:pointer;width:100%}
+.roster-row:hover{background:var(--vscode-list-hoverBackground)}.roster-row.on{background:var(--vscode-list-activeSelectionBackground,var(--vscode-list-hoverBackground))}
+.roster-row:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
+.rr-main{display:flex;flex-direction:column;min-width:0;flex:1;gap:2px}.rr-top{display:flex;align-items:baseline;gap:8px}.rr-name{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rr-time{font-size:.8em;white-space:nowrap}
+.rr-line{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rr-line.warn{color:var(--warn)}.rr-line.bad{color:var(--bad)}
+.unread{width:9px;height:9px;border-radius:50%;background:var(--vscode-focusBorder);flex:none}
+.av{position:relative;display:inline-flex;flex:none;width:var(--sz);height:var(--sz);border-radius:50%}
+.av::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:2px solid transparent;pointer-events:none}
+.av.working::after{border-color:var(--info) transparent var(--info) transparent;animation:sp 1.4s linear infinite}
+.av.waiting::after{border-color:var(--warn);animation:pulse 1.4s ease-in-out infinite}
+.av.blocked::after{border-color:var(--bad)}
+.av.done::after{border-color:var(--ok)}.av.done::before{content:"✓";position:absolute;right:-4px;bottom:-4px;width:15px;height:15px;border-radius:50%;background:var(--ok);color:var(--vscode-editor-background);font-size:10px;font-weight:700;line-height:15px;text-align:center;z-index:1}
+.av.working .pupil{animation:look 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(1.08)}}@keyframes look{0%,100%{transform:translateX(-1px)}50%{transform:translateX(1px)}}
+@media (prefers-reduced-motion:reduce){.av.working::after,.av.waiting::after,.av.working .pupil{animation:none}}
+.chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--vscode-editor-background)}
+.chat-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--vscode-panel-border)}.ch-name{font-weight:600;font-size:1.05em}.ch-sub{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thread{flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}.center{text-align:center}
+.msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.bot{justify-content:flex-start;align-items:flex-start}
+.bubble{max-width:78%;padding:8px 14px;border-radius:18px;overflow-wrap:anywhere}
+.human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-bottom-right-radius:5px}
+.human .bubble .mmeta{color:inherit;opacity:.8}.human .bubble.answer{background:var(--vscode-input-background);color:var(--vscode-foreground);border:1px solid var(--cab)}
+.bot .bubble{background:var(--vscode-input-background);border-bottom-left-radius:5px}
+.mtext{white-space:pre-wrap}.mkind{font-size:.85em;opacity:.8;margin-bottom:2px}.mmeta{font-size:.78em;color:var(--vscode-descriptionForeground);margin-top:3px}
+.small{font-size:.86em}
+.steps{display:block;width:calc(100% - 38px);margin-left:38px;padding:0;color:var(--vscode-descriptionForeground);font-size:.88em;min-width:0}.steps>summary{padding:1px 0;min-width:0}.steps .timeline{margin:4px 0 4px 6px}
+.steps-sum{min-width:0;overflow-wrap:anywhere}.steps-sum.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bad-count{color:var(--warn);white-space:nowrap;flex:none}
+.steps.flat{display:flex;align-items:center;gap:8px}.chev-pad{width:16px;flex:none}
+.steps.badcall{display:flex;gap:8px;align-items:flex-start;color:var(--vscode-foreground)}.steps.badcall .node{color:var(--bad);flex:none}.ell-inline{display:inline-block;max-width:100%;vertical-align:bottom;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+time{font-weight:400}
+.rcard{margin-left:38px;padding:2px 0 2px 12px;border-left:3px solid var(--vscode-panel-border);font-size:.92em;min-width:0}
+.rcard.done{border-color:color-mix(in srgb,var(--ok) 60%,transparent)}.rcard.open{border-color:var(--info)}.rcard.warn{border-color:var(--warn)}.rcard.bad{border-color:var(--bad)}
+.rtop{display:flex;align-items:center;gap:8px;min-width:0}.rtop .chip{font-size:.82em;padding:0 7px;font-weight:500;flex:none}.rtop .chip.info,.rtop .chip.ok{color:var(--vscode-descriptionForeground)}
+.rgoal{flex:1;min-width:0;color:var(--vscode-descriptionForeground)}.rgoal.ell,.rcard .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rtop .stime{margin-left:auto;font-size:.88em;color:var(--vscode-descriptionForeground)}
+.rquiet{margin-left:38px;padding-left:15px;font-size:.88em;min-width:0}.rprob{margin-top:3px;color:var(--warn);font-size:.9em}
+.rfold{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}.rfold>summary{padding:1px 0;width:fit-content}.rfold-body{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px -50px;padding-left:0;color:var(--vscode-foreground);font-size:1.08em}
+.rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
+.rdelivs{display:flex;flex-direction:column;gap:4px;margin-top:6px}.deliv{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:5px 8px;border-radius:6px;background:var(--vscode-input-background);color:var(--vscode-foreground);text-decoration:none}.deliv:hover{background:var(--vscode-list-hoverBackground)}.deliv svg{margin-top:2px;color:var(--vscode-textLink-foreground);flex:none}
+.dtext{display:flex;flex-direction:column;min-width:0;flex:1}.dline{display:flex;gap:8px;align-items:baseline;min-width:0}.dname{font-weight:600;color:var(--vscode-textLink-foreground);flex:none;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ddir{color:var(--vscode-descriptionForeground);font-size:.88em;min-width:0}.dprev{color:var(--vscode-descriptionForeground);font-size:.92em}
+.rsup{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}.rsup>summary{padding:1px 0;width:fit-content}
+.rfiles{display:flex;flex-wrap:wrap;gap:2px 6px;margin-top:4px}.rfiles .filechip{max-width:100%;min-width:0;margin:0}
+.sline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-left:38px;font-size:.88em;color:var(--vscode-descriptionForeground)}
+.sline .chip.info{color:var(--vscode-descriptionForeground)}.sline .chip{font-size:.82em;padding:0 7px;font-weight:500}.sline .sdetail{color:var(--vscode-foreground);min-width:0;flex:1 1 200px}.sline .stime{margin-left:auto;font-size:.9em}
+.thread-gates{width:100%;margin-top:6px}.thread-gates .card{margin-bottom:8px}
+.composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.75em;margin:6px 6px 0}
+.inputbar{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:24px;background:var(--vscode-input-background);padding:6px 8px 6px 16px}
+.inputbar:focus-within{border-color:var(--vscode-focusBorder)}
+.inputbar textarea{flex:1;border:0;background:transparent;color:var(--vscode-input-foreground);resize:none;padding:6px 0;max-height:160px;outline:none;font:inherit}
+.roundbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:34px;height:34px;border-radius:17px;border:1px solid var(--cb);cursor:pointer;font:inherit;padding:0 8px;flex:none}
+.roundbtn.send{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.roundbtn.send:hover{background:var(--vscode-button-hoverBackground)}
+.roundbtn.stop{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}.roundbtn.stop .stoplabel{display:none}.roundbtn.stop[data-armed] .stoplabel{display:inline}
+.roundbtn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+.composer:not(.running) .stop,.composer.running textarea:not(:placeholder-shown) ~ .stop{display:none}
+.composer.running textarea:placeholder-shown ~ .send{display:none}
+`;
 
 const SCRIPT = `
 const vs = acquireVsCodeApi(); const app = document.getElementById('app');
@@ -333,14 +573,43 @@ function scan() {
     ap.setAttribute('aria-busy', busy.has(id) ? 'true' : 'false');
     const label = ap.querySelector('span'); if (label) label.textContent = busy.has(id) ? 'Running…' : 'Approve and run';
   });
-  document.querySelectorAll('details.run').forEach(d => { d.classList.toggle('hidden', !(filter === 'all' || (filter === 'done' ? d.dataset.status === 'done' : !['done','running','waiting','nothing_to_do','cancelled'].includes(d.dataset.status)))); });
+  document.querySelectorAll('details.run').forEach(d => { d.classList.toggle('hidden', !(filter === 'all' || (filter === 'done' ? d.dataset.status === 'done' : !['done','running','waiting','nothing_to_do','cancelled','open'].includes(d.dataset.status)))); });
   const empty = document.querySelector('[data-filter-empty]');
   if (empty) empty.classList.toggle('hidden', !document.querySelectorAll('details.run').length || [...document.querySelectorAll('details.run')].some(d => !d.classList.contains('hidden')));
   const sel = document.querySelector('[data-filter]'); if (sel) sel.value = filter;
 }
+function autosize(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; }
+document.addEventListener('input', e => { if (e.target.matches && e.target.matches('textarea[data-chat-input]')) autosize(e.target); });
+function sendChat(agent) {
+  const ta = document.querySelector('[data-chat-input="' + CSS.escape(agent) + '"]');
+  let text = ta ? ta.value.trim() : '';
+  if (!text) return;
+  // /stop ends the current run, like telling it to stop.
+  if (/^\\/stop$/i.test(text)) { ta.value = ''; autosize(ta); vs.postMessage({ type:'chatCancel', agent }); return; }
+  // @name writes to another agent, and takes you to that conversation.
+  const known = new Set([...document.querySelectorAll('[data-agent]')].map(x => x.dataset.agent));
+  const at = /^@([\\w.-]+)\\s+([\\s\\S]+)$/.exec(text);
+  let target = agent;
+  if (at && known.has(at[1])) { target = at[1]; text = at[2].trim(); }
+  vs.postMessage({ type:'chatSend', agent: target, text });
+  ta.value = ''; autosize(ta);
+  if (target !== agent) vs.postMessage({ type:'view', tab:'chat', agent: target });
+}
+// Enter sends, Shift+Enter is a new line; Enter that confirms an input-method composition (Chinese, Japanese) must not send.
+// Cmd/Ctrl+Enter sends from anywhere on the page.
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) {
+    const ta = document.querySelector('textarea[data-chat-input]');
+    if (ta && ta.value.trim()) { e.preventDefault(); sendChat(ta.dataset.chatInput); }
+  }
+});
+document.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && t.matches && t.matches('textarea[data-chat-input]') && e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendChat(t.dataset.chatInput); }
+});
 document.addEventListener('change', e => { if (e.target.matches('[data-filter]')) { filter = e.target.value; scan(); } });
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel],[data-close-task]'); if (!t) return;
   e.preventDefault(); const d = t.dataset;
   if (d.open) vs.postMessage({ type:'open', path:d.open });
   else if (d.openAbs) vs.postMessage({ type:'openAbs', path:d.openAbs });
@@ -350,6 +619,15 @@ document.addEventListener('click', e => {
   else if (d.approve) { if (busy.has(d.approve) || t.disabled) return; busy.add(d.approve); scan(); vs.postMessage({ type:'approve', id:d.approve, seen:hashes(d.approve) }); }
   else if (d.reject) vs.postMessage({ type:'reject', id:d.reject, feedback:val(d.reject) });
   else if (d.ack) { reviewed[d.ack] = hashes(d.ack); scan(); }
+  else if (d.closeTask) vs.postMessage({ type:'closeTask', id:d.closeTask });
+  else if (d.tab) vs.postMessage({ type:'view', tab:d.tab });
+  else if (d.agent) vs.postMessage({ type:'view', tab:'chat', agent:d.agent });
+  else if (d.chatSend) sendChat(d.chatSend);
+  else if (d.chatCancel) {
+    // Cancelling ends the run for good, so it takes two clicks.
+    if (t.dataset.armed) { delete t.dataset.armed; vs.postMessage({ type:'chatCancel', agent:d.chatCancel }); }
+    else { t.dataset.armed = '1'; const label = t.querySelector('span'); const old = label ? label.textContent : ''; if (label) label.textContent = 'Click again to cancel the run'; setTimeout(() => { delete t.dataset.armed; if (label) label.textContent = old; }, 4000); }
+  }
   else if (d.copy != null) { const done = () => { t.classList.add('picked'); setTimeout(() => t.classList.remove('picked'), 900); }; try { navigator.clipboard.writeText(d.copy).then(done, () => {}); } catch (_) {} }
 });
 // Re-render without losing what the user is doing: open sections, typed text, focus, filter.
@@ -362,14 +640,21 @@ window.addEventListener('message', ev => {
   const f = document.activeElement; const fk = f && f.dataset ? Object.entries(f.dataset).find(([k]) => /^(input|approve|reject|send|cmd|pick|open|ack|copy)$/.test(k)) : undefined;
   const sel = f && f.selectionStart;
   const y = window.scrollY;
+  // A conversation stays pinned to its newest message, unless the reader has scrolled up to read.
+  const th = document.querySelector('[data-thread]');
+  const stick = !th || th.scrollHeight - th.scrollTop - th.clientHeight < 40;
+  const topBefore = th ? th.scrollTop : 0, whose = th ? th.dataset.thread : '';
   app.innerHTML = ev.data.html;
   document.querySelectorAll('details[data-k]').forEach(d => { if (closed.has(d.dataset.k)) d.open = false; else if (open.has(d.dataset.k)) d.open = true; });
-  document.querySelectorAll('textarea[data-input]').forEach(t => { if (typed[t.dataset.input]) t.value = typed[t.dataset.input]; });
+  document.querySelectorAll('textarea[data-input]').forEach(t => { if (typed[t.dataset.input]) t.value = typed[t.dataset.input]; if (t.dataset.chatInput) autosize(t); });
   scan();
   if (fk) { const t = document.querySelector('[data-' + fk[0].replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + '="' + CSS.escape(fk[1]) + '"]'); if (t) { t.focus(); if (sel != null && t.setSelectionRange) t.setSelectionRange(sel, sel); } }
   window.scrollTo(0, y);
+  const th2 = document.querySelector('[data-thread]');
+  if (th2) th2.scrollTop = (stick || th2.dataset.thread !== whose) ? th2.scrollHeight : topBefore;
 });
 scan();
+{ const th0 = document.querySelector('[data-thread]'); if (th0) th0.scrollTop = th0.scrollHeight; }
 vs.postMessage({ type:'ready' });`;
 
 /** Full page. The script is the only inline code and carries the nonce; everything shown is escaped. */

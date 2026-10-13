@@ -71,9 +71,47 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 
 **通知**：有新问题或审批、工作项 blocked 或出错、`wakeIf` 失败时，VS Code 会弹窗。要推到 VS Code 外，在用户设置里配置 `loopRunner.notifyCommand`，指向你的通知 skill 脚本；事件放在环境变量 `LOOP_EVENT`（JSON）里。
 
+## 进行中的任务
+
+agent 会记住自己手上还没做完的任务，可以同时有好几个，并且任务能通过 `handoff` 在 agent 之间转手。一个任务就是一条转交链（任务 id = `chainId`），记录在 `.loop/tasks/<chainId>.json`。只有任务跨出单次运行才会有记录：发生了 `handoff`，或某次运行不是以 `done`/`nothing_to_do` 结束。定时唤醒后什么都没发现的运行不留文件。你点 “Cancel this run” 结束的运行，该 agent 仍持有任务，下一步记为 “cancelled by the human”。
+
+- 运行时自己记录事实：谁在处理、转给了谁、每次运行怎么结束的。模型改不了这些
+- 模型只通过两个工具告诉运行时：`finish` 的状态 `open`（任务没做完，下次接着做；必须在 `next` 里写下一步和在等什么），以及 `update_task`（把自己手上某个已解决的旧任务标为 `done` 或 `dropped`，或更新下一步）
+- 每次新的运行，提示词里会有 “Your open tasks”：这个 agent 手上其他未完成的任务，含下一步。接手转交的 agent 还会看到 “Task history”
+- **回头叫醒**：A 把活转给 B，然后用 `open` 结束（“等 B 的分析出来再回复”）。B 以 `done` 结束后，A 会收到一个新的工作项（`from: task`），内容是 B 做了什么和 A 自己写下的下一步；受 `maxHops` 限制
+- 控制台的 Overview 页有 “Open tasks”，每个任务可以点 Close（记为 `dropped`，不再有人持有）；`@loop` 可以用 `list_tasks` 查看
+- 它和 `loop-memory` 不同：`loop-memory` 存知识和被跟踪的对象，任务是“进行中的承诺”，谁持有要随 `handoff` 变化，只有运行时看得见，所以由运行时记账
+
+## 多个目标与并发
+
+一个 agent 可以同时负责几件事（一个助手，多个长期目标），而不是一件事配一个 agent：
+
+```yaml
+loop:
+  goals:
+    - id: harborsense
+      text: HarborSense 线上问题被及时发现并上报
+      schedule: "*/15 * * * *"
+      wakeIf: <命令>          # 可选
+      task: <本次运行要做的事>  # 默认等于 text
+      skills: [harbor-anomaly-detect]   # 只在这个目标的运行里追加
+      policy: .loop/policies/x.json     # 可选，只对这个目标的运行生效
+      urgent: true            # 可选：探针发现问题时先通知你，再入队，并可使用预留的 worker
+      maxSilence: 2h          # 可选：太久没有一次有效的唤醒检查，就通知你一次（goal_silent）
+      maxRunsPerDay: 6
+```
+
+- 原来单个 `schedule`/`wakeIf`/`task` 的写法不变，等价于 id 为 `default` 的一个目标
+- 调度状态、补跑、每日上限、唤醒记录都按目标分开
+- 设置 `loopRunner.workers`（默认 2，最小 1）是同时运行的工作项数。同一条转交链永远不会同时跑两个；非 urgent 的最多占 `workers - 1` 个，留一个给 urgent。默认 2 即一个普通加一个 urgent；要两个普通一起跑请设 3。设为 1 就是原来的先来先处理
+- urgent 目标的探针，在它上一个工作项还没结束（比如夜里停在 `ask_human`）时也会继续跑：发现新问题照样先通知你（输出和上次通知完全相同则不重复），但不会再入队第二个工作项。所以这类探针必须是幂等的，不能消耗事件
+- 目标有未结束的工作项而跳过检查时，会记一次 `open` 检查，不会误报 `goal_silent`
+- 同一个 agent 有多个运行时，你发的消息给最早开始的那个
+- 探针约定：没拿到数据（认证失败、响应为空）要以退出码 `2` 结束，不要用 `1`。`1` 的意思是“看过了，一切正常”，`2` 才会被报告为探针坏了
+
 ## 运行时给 agent 的通用工具
 
-`read_file`、`list_dir`、`write_file`、`edit_file`、`run_command`、`ask_human`、`request_approval`、`handoff`、`finish`
+`read_file`、`list_dir`、`write_file`、`edit_file`、`run_command`、`ask_human`、`request_approval`、`handoff`、`finish`、`update_task`
 
 - 具体能做什么由 skill 决定；分配给某角色的 skill 的 `scripts/` 对它自动放行
 - 原生的 `tools` 字段只作用于 Chat 模式；无人值守时的权限由 policy 决定
@@ -88,6 +126,7 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 .loop/queue/<agent>|_waiting|_done   工作项
 .loop/gates/                         收件箱（问题、审批）
 .loop/checkpoints/                   暂停时的对话快照
+.loop/tasks/<chainId>.json           进行中的任务（谁持有、下一步、日志）
 .loop/runs/<date>/<chainId>.jsonl    审计，一条转交链一个文件；wake-<date>.jsonl 记录每次唤醒检查
 ```
 
@@ -105,6 +144,8 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 |---|---|---|
 | `frontmatter.ts` `team.ts` | 解析角色和 skill，校验团队，选择模型 | 否 |
 | `cron.ts` `wake.ts` | 定时匹配，按 wakeIf 退出码决定是否唤醒 | 否 |
+| `goals.ts` | 按目标调度：唤醒检查、每日上限、urgent 先通知、沉默提醒 | 否 |
+| `tasks.ts` | 任务账本：谁持有、下一步、回头叫醒 | 否 |
 | `queue.ts` | 工作项、闸门、checkpoint、审计，全部存为文件 | 否 |
 | `policy.ts` `exec.ts` | 命令和写入的准许或拒绝；执行、超时和杀进程树来自 pi，凭证注入、环境变量白名单和脱敏仍是这里的 | 否 |
 | `vendor/pi/` | 引入的 pi 本地工具（读、写、改、列目录、shell） | 否 |
@@ -120,10 +161,10 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 3. `runner` 循环：发请求、执行工具调用、把结果喂回，直到出现以下情况之一：
    - `handoff`：同一 `chainId` 进入队友的队列
    - 闸门：存 checkpoint，工作项进 `_waiting`
-   - `finish`：结束
+   - `finish`：结束；可选 `deliverables`：这次产出、要给人读的文件（报告等），由 agent 自己声明；不存在或在工作区外的路径会被丢弃并在结果里说明，并记录在 `end` 事件里。控制台的结果卡片把它们突出显示，其余输出文件折叠为“辅助文件”；没声明的老运行，则把 `.loop/outbox/` 下的文档（md/html/pdf/csv/xlsx/docx/txt）当作交付物
 4. 你在收件箱处理后，结果写入闸门，工作项被唤醒，从断点续跑
 
-**不能破坏的不变量**（完整的 11 条见 `AGENTS.md`）
+**不能破坏的不变量**（完整的 13 条见 `AGENTS.md`）
 
 - 拒绝是一个工具结果，不是异常或弹窗
 - 循环里永远不阻塞等人
@@ -210,3 +251,32 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 - **审批**不在聊天里决定:要在控制台看清完整命令和文件内容后再批准。
 - 它用的是 Chat 模型选择器里当前选中的模型,需要支持工具调用;不支持时用 `/status`、`/pending` 仍可用。
 - 改定时或角色指令后,团队会自动重新加载并校验;有配置错误会弹出提示。
+
+## 聊天:和每个 agent 对话,指挥正在运行的 agent
+
+控制台默认打开「Chat」页签(「Overview」页签保留原来的需要你处理、各 agent、运行记录)。界面参照 Grok Bot 这类「agent 名册」式的消息应用:
+
+- **左边是名册**,每个 agent 一行:一张只属于它的小脸(颜色、形状、眼睛不同)、名字、最近一次活动的时间,和**一行进展**:正在做什么(它用的工具)、需要你做什么、或上一次运行怎么结束的。鼠标悬停看完整的一句。
+- **状态用头像的动态表达**,没有单独的状态灯:空闲是静止的;**工作中**是蓝色圆环在转、眼睛左右看;**等你**是橙色脉冲;**被卡住**(上次运行 blocked、出错、停滞)是红圈,一天内有效;**刚完成**是绿圈加对勾,一小时后褪去。系统设置了「减少动画」时不会动。你的消息还没被读到时,右边有一个蓝点。
+- **右边是和选中 agent 的对话**:
+
+- **你说的话**在右边(蓝色),**agent 说的话和做的步骤**在左边,运行的开始和结束是中间的状态行(带产出文件)。步骤默认折叠,点开能看每一步。
+- **它问你的问题、申请的审批就在对话里**,直接回答、批准或拒绝(批准仍然显示完整命令和文件内容)。
+- 底下是圆角输入框:**Enter 发送,Shift+Enter 换行,Cmd/Ctrl+Enter 在页面任何位置都能发送**。中文输入法选字时按 Enter 不会误发送。
+- **`@名字 内容`** 把这句话发给另一个 agent,并切换到它的对话。
+- agent 正在工作而输入框是空的时候,发送箭头变成**停止**按钮(点两次确认);也可以直接输入 **`/stop`** 结束当前这次运行。
+
+**你发的消息什么时候被 agent 读到**(输入框上方会写明):
+
+| agent 现在 | 消息怎么送到 |
+|---|---|
+| 正在运行 | **下一步之前**读到。它可以据此改变做法;如果它刚好要结束,会先读完你的话再决定 |
+| 在等你回答 | 你回答之后它继续时,和你的回答**一起**读到 |
+| 排队中 | 开始运行时读到 |
+| 空闲 | **开始一次新的运行**,以你的话为任务,并带上最近几句对话作为背景 |
+
+不会丢:消息只有在读到它的那一轮正常结束后才标记为「已读」;模型中途失败,消息仍然是未读,会再给一次。运行结束后才到的消息,如果没有别的会读它,会自动开一次后续运行。
+
+**Cancel this run**(对话标题栏右侧,正在运行时出现,需要点两次确认):把当前这次运行**真正结束**,记为「已取消」,不会重试。这和 Stop team 不同,后者只是停下整个团队,被中断的任务下次启动会接着做。
+
+聊天记录存在 `.loop/chat/<agent>/`(你写的)和 `.loop/runs/`(agent 做的),都是普通文件。给 agent 的长期要求仍然用 `@loop`(「记住……」)或长期备忘,而不是聊天:聊天里说的话只对**这一次**运行和之后的对话有效。

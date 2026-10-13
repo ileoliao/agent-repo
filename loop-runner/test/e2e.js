@@ -16,8 +16,17 @@ const vscodeMock = {
   LanguageModelToolResultPart: ToolResultPart,
   LanguageModelChatMessage: { User: c => ({ role: 'user', content: c }), Assistant: c => ({ role: 'assistant', content: c }) },
   LanguageModelChatToolMode: { Auto: 1, Required: 2 },
-  LanguageModelError: class extends Error {}
+  LanguageModelError: class extends Error {},
+  // Just enough for TeamService (the worker pool test): a folder, settings, cancellation and an info message.
+  workspace: { workspaceFolders: undefined, getConfiguration: () => ({ get: (k, d) => (k in vscodeSettings ? vscodeSettings[k] : d) }) },
+  window: { showInformationMessage: () => Promise.resolve(undefined) },
+  CancellationTokenSource: class {
+    constructor() { this.cbs = []; this.token = { isCancellationRequested: false, onCancellationRequested: cb => { this.cbs.push(cb); return { dispose() {} }; } }; }
+    cancel() { this.token.isCancellationRequested = true; this.cbs.forEach(cb => cb()); }
+    dispose() {}
+  }
 };
+var vscodeSettings = {};
 const origLoad = Module._load;
 Module._load = function (req, ...rest) { return req === 'vscode' ? vscodeMock : origLoad.call(this, req, ...rest); };
 
@@ -355,6 +364,11 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(tail.text.includes('L2001') && tail.text.includes('L2005') && !tail.text.includes('L2000'), 'startLine continues where the hint said');
     const alias = await runTool('read_file', { path: 'long.txt', offset: 2001, endLine: 2002 }, ctx);
     ok(alias.text.includes('L2001') && alias.text.includes('L2002') && !alias.text.includes('L2003'), 'offset is accepted and endLine limits the window');
+    fs.mkdirSync(path.join(W, 'rep'), { recursive: true }); fs.writeFileSync(path.join(W, 'rep/out.md'), '# r');
+    const fd = await runTool('finish', { status: 'done', summary: 's', deliverables: ['./rep/../rep/out.md', 'rep/missing.md', '../outside.md', '/etc/passwd', 'rep/out.md'] }, ctx);
+    ok(fd.finished.deliverables.join() === 'rep/out.md', 'finish deliverables are normalized to workspace paths and deduplicated');
+    ok(/missing\.md/.test(fd.text) && /outside\.md/.test(fd.text) && /passwd/.test(fd.text) && !fd.finished.deliverables.some(d => /outside|passwd|missing/.test(d)), 'a missing file and paths outside the workspace are dropped, and the result text says which');
+    ok((await runTool('finish', { status: 'done', summary: 's' }, ctx)).finished.deliverables === undefined, 'deliverables are optional');
     const many = path.join(W, 'many');
     fs.mkdirSync(many);
     for (let i = 0; i < 501; i++) fs.writeFileSync(path.join(many, `f${String(i).padStart(3, '0')}.txt`), 'x');
@@ -519,6 +533,422 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(probs.length === 1 && probs[0].startsWith('C:') && probs[0].includes('NoPermissions'), 'a denied consent is reported as a start problem');
   }
 
+  console.log('task ledger');
+  {
+    const T = require(`${OUT}/tasks.js`);
+    const { runChatTool } = require(`${OUT}/chatTools.js`);
+    const { consoleModel, renderBody } = require(`${OUT}/console.js`);
+    const prompts = [];
+    const results = [];
+    const run = async (agent, chainId, task, script, o = {}) => {
+      const item = o.item ?? { id: Q.newId(), agent, task, from: o.from ?? 'user', chainId, hop: o.hop ?? 0, createdAt: new Date().toISOString() };
+      if (!o.item) { Q.enqueue(W, item); }
+      const model = { family: 'fake', id: 'fake-1', async sendRequest(messages) {
+        const turn = messages.filter(m => m.role === 'assistant').length;
+        if (turn === 0) { prompts.push(messages[0].content[0].value); }
+        const last = messages[messages.length - 1];
+        if (last.role === 'user' && last.content[0] instanceof ToolResultPart) { results.push(...last.content.map(r => r.content[0].value)); }
+        return { stream: (async function* () { yield* script[turn].map(([n, i], k) => new ToolCallPart(`t-${turn}-${k}`, n, i)); })() };
+      } };
+      const r = await runItem(item, { ...deps(agent), model, maxHops: o.maxHops ?? 5 });
+      Q.complete(W, item, r.status, r.summary, r.gateId);
+      return { item, r, prompt: prompts[prompts.length - 1] };
+    };
+    const fin = (status, summary, next) => [['finish', { status, summary, ...(next ? { next } : {}) }]];
+    const mine = (agent, chain) => Q.pending(W, agent).filter(i => i.chainId === chain);
+
+    const c1 = 'task-c1';
+    results.length = 0;
+    let x = await run('sentinel', 'task-c0', 'A one-run job', [fin('nothing_to_do', 'nothing')]);
+    ok(!T.getTask(W, 'task-c0') && !fs.existsSync(path.join(W, '.loop/tasks/task-c0.json')), 'a run that finishes done or nothing_to_do without a handoff leaves no task file');
+    fs.mkdirSync(path.join(W, 'rep'), { recursive: true }); fs.writeFileSync(path.join(W, 'rep/dl.md'), '# d');
+    await run('sentinel', 'dl-c', 'Report', [[['finish', { status: 'done', summary: 'ok', deliverables: ['rep/dl.md', 'nope.md'] }]]]);
+    { const f = fs.readdirSync(path.join(W, '.loop/runs')).map(d => path.join(W, '.loop/runs', d, 'dl-c.jsonl')).find(fs.existsSync);
+      const end = fs.readFileSync(f, 'utf8').trim().split('\n').map(JSON.parse).find(e => e.type === 'end');
+      ok(end && end.deliverables && end.deliverables.join() === 'rep/dl.md', 'the end audit event records the deliverables'); }
+    x = await run('sentinel', c1, 'Watch the backlog\nuntil it drops below 120', [fin('open', 'not yet'), fin('open', 'still above target', 'recheck after the next deploy')]);
+    ok(results[0].startsWith('Not finished') && x.r.status === 'open' && x.r.steps === 2, 'finish open without next is an error result; the run continues and finishes on the second try');
+    let t = T.getTask(W, c1);
+    ok(t && t.state === 'open' && t.title === 'Watch the backlog' && t.holders.join() === 'sentinel', 'a run that finishes open creates the task, titled from the first line');
+    ok(t.next.sentinel === 'recheck after the next deploy' && T.openTasksFor(W, 'sentinel').some(k => k.id === c1), 'finish open keeps it on the agent\'s list with its next step');
+    ok(t.log.filter(e => e.event === 'start').length === 1 && t.log.at(-1).event === 'end' && t.log.at(-1).status === 'open', 'start and end are logged');
+
+    x = await run('sentinel', 'task-c2', 'Another job', [fin('done', 'finished it')]);
+    ok(/# Your open tasks[\s\S]*task-c1: Watch the backlog[\s\S]*recheck after the next deploy[\s\S]*# Work item/.test(x.prompt), 'the next run\'s prompt lists the open task with its next step, before the work item');
+    ok(!/# Your open tasks[\s\S]*task-c2[\s\S]*# Work item/.test(x.prompt), 'and not the chain it is running');
+    ok(!T.getTask(W, 'task-c2'), 'a one-run job that finishes done leaves no record');
+    ok(!/# Your open tasks/.test(require(`${OUT}/runner.js`).buildPrompt(team.get('techlead'), { id: 'i', agent: 'techlead', task: 't', from: 'user', chainId: 'q', hop: 0, createdAt: '' }, { team, skills })), 'with no open tasks the section is left out');
+
+    // handoff and the return wake
+    const c3 = 'task-c3';
+    x = await run('sentinel', c3, 'Investigate checkout latency', [[['handoff', { to: 'techlead', task: 'Analyse the latency traces', context: 'trace abc' }]], fin('open', 'handed to techlead', 'reply to ops once techlead has analysed it')]);
+    t = T.getTask(W, c3);
+    ok(t.holders.join() === 'sentinel,techlead' && t.log.some(e => e.event === 'handoff' && e.to === 'techlead' && e.text.includes('Analyse')), 'handoff adds the receiver to the holders and logs it');
+    ok(mine('sentinel', c3).length === 0, 'nothing wakes sentinel while techlead has not finished');
+    const tlItem = mine('techlead', c3)[0];
+    x = await run('techlead', c3, '', [fin('done', 'p99 caused by pool size')], { item: tlItem });
+    ok(/## Task history[\s\S]*sentinel handoff -> techlead[\s\S]*Analyse the latency traces/.test(x.prompt), 'the receiver\'s prompt carries the task history');
+    t = T.getTask(W, c3);
+    ok(t.holders.join() === 'sentinel' && t.state === 'open', 'techlead finished done: it leaves the holders, the task stays open for sentinel');
+    const wk = mine('sentinel', c3);
+    ok(wk.length === 1 && wk[0].from === 'task' && wk[0].hop === tlItem.hop + 1 && wk[0].chainId === c3, 'return wake: an item for sentinel from "task" on the same chain, hop + 1');
+    ok(wk[0].task.includes(`Task ${c3} progressed: techlead finished: p99 caused by pool size.`) && wk[0].task.includes('Your next step was: reply to ops once techlead has analysed it'), 'the wake item names what progressed and the saved next step');
+    x = await run('sentinel', c3, '', [fin('done', 'replied to ops')], { item: wk[0] });
+    ok(/## Task history/.test(x.prompt) && T.getTask(W, c3).state === 'done' && mine('sentinel', c3).length === 0, 'the woken agent sees the history; finishing done by the last holder closes the task and wakes nobody');
+
+    // no wake when hops are used up
+    const c4 = 'task-c4';
+    await run('sentinel', c4, 'Hop limited', [[['handoff', { to: 'techlead', task: 'go', context: 'c' }]], fin('open', 'waiting', 'next')], { maxHops: 1 });
+    await run('techlead', c4, '', [fin('done', 'ok')], { item: mine('techlead', c4)[0], maxHops: 1 });
+    t = T.getTask(W, c4);
+    ok(mine('sentinel', c4).length === 0 && t.state === 'open' && t.holders.join() === 'sentinel' && t.log.some(e => /max hops/.test(e.text ?? '')), 'return wake is not enqueued past maxHops, and the task log says so');
+    const day4 = new Date().toISOString().slice(0, 10);
+    ok(fs.readFileSync(path.join(W, '.loop/runs', day4, `${c4}.jsonl`), 'utf8').includes('max hops'), 'and the audit trail does too');
+
+    // a wake is not due while another holder still has live work
+    const c5 = 'task-c5';
+    await run('sentinel', c5, 'Two helpers', [[['handoff', { to: 'techlead', task: 'a', context: 'c' }]], fin('open', 'waiting', 'collect')]);
+    T.taskOnHandoff(W, { id: 'x', agent: 'support', chainId: c5, hop: 0 }, 'support', 'b');
+    Q.enqueue(W, { id: Q.newId(), agent: 'support', task: 'b', from: 'sentinel', chainId: c5, hop: 1, createdAt: new Date().toISOString() });
+    await run('techlead', c5, '', [fin('done', 'a done')], { item: mine('techlead', c5)[0] });
+    ok(mine('sentinel', c5).length === 0, 'no wake while another holder still has a queued item in the chain');
+    Q.complete(W, mine('support', c5)[0], 'done', 'x');
+
+    // update_task
+    results.length = 0;
+    await run('techlead', 'task-c6', 'Unrelated', [[['update_task', { id: c1, state: 'done', note: 'not mine' }]], fin('done', 'ok')]);
+    ok(results[0].startsWith('REFUSED') && T.getTask(W, c1).state === 'open', 'update_task is refused for an agent that does not hold the task');
+    results.length = 0;
+    await run('sentinel', 'task-c7', 'Scheduled look', [[['update_task', { id: c1, state: 'open', note: 'recheck on Friday' }]], [['update_task', { id: c1, state: 'done', note: 'resolved' }]], [['update_task', { id: c1, state: 'done', note: 'again' }]], fin('done', 'ok')]);
+    ok(results[0].startsWith('Task task-c1 stays open') && results[1].startsWith('You no longer hold') && results[2].startsWith('REFUSED'), 'update_task works for a holder (open with a note, then done), and not twice');
+    ok(T.getTask(W, c1).state === 'done' && T.getTask(W, c1).holders.length === 0 && T.getTask(W, c1).log.some(e => e.event === 'update' && e.status === 'done'), 'done by the last holder closes the task');
+    ok(T.updateTask(W, '../../etc/passwd', 'sentinel', 'done', 'x').startsWith('REFUSED'), 'a task id cannot point outside the ledger');
+
+    // blocked keeps it; resume does not log a second start
+    const c8 = 'task-c8';
+    x = await run('techlead', c8, 'Needs an answer', [[['ask_human', { question: 'A or B?', context: 'c' }]], fin('blocked', 'cannot proceed without access')]);
+    ok(x.r.status === 'waiting' && !T.getTask(W, c8), 'parked on a gate: the ledger is unchanged');
+    const gate8 = Q.listGates(W).find(g => g.chainId === c8 && g.status === 'pending');
+    G.answerQuestion(W, gate8.id, 'A');
+    await run('techlead', c8, '', [[], fin('blocked', 'cannot proceed without access')], { item: Q.pending(W, 'techlead').find(i => i.chainId === c8) });
+    t = T.getTask(W, c8);
+    ok(t.log.filter(e => e.event === 'start').length === 1, 'resuming from a gate does not log a second start');
+    ok(t.state === 'open' && t.holders.join() === 'techlead' && t.next.techlead === 'cannot proceed without access' && t.log.at(-1).status === 'blocked', 'blocked keeps the agent as holder and records the summary as its next step');
+
+    // errors end in the ledger too
+    const c9 = 'task-c9';
+    const boom = { family: 'fake', id: 'f', async sendRequest() { throw new Error('model exploded'); } };
+    const it9 = { id: Q.newId(), agent: 'sentinel', task: 'Doomed', from: 'user', chainId: c9, hop: 0, createdAt: new Date().toISOString() };
+    Q.enqueue(W, it9);
+    const r9 = await runItem(it9, { ...deps('sentinel'), model: boom });
+    Q.complete(W, it9, r9.status, r9.summary);
+    ok(r9.status === 'error' && T.getTask(W, c9).log.at(-1).status === 'error' && T.getTask(W, c9).holders.join() === 'sentinel', 'an error keeps the holder and is logged');
+    const it9b = { id: Q.newId(), agent: 'sentinel', task: 'Doomed too', from: 'user', chainId: 'task-c9b', hop: 0, createdAt: new Date().toISOString() };
+    Q.enqueue(W, it9b);
+    const r9b = await runItem(it9b, { ...deps('sentinel'), model: { family: 'fake', id: 'f', async sendRequest() { throw new Error('rate limit exceeded'); } } });
+    ok(r9b.status === 'error' && !T.getTask(W, 'task-c9b'), 'a rate-limited item stays queued, so the ledger does not record an end');
+    fs.rmSync(path.join(W, '.loop/queue/sentinel', `${it9b.id}.json`), { force: true });
+
+    // a corrupt ledger never breaks a run
+    fs.mkdirSync(path.join(W, '.loop/tasks'), { recursive: true });
+    fs.writeFileSync(path.join(W, '.loop/tasks/task-bad.json'), '{ not json');
+    fs.writeFileSync(path.join(W, '.loop/tasks/zzz.json'), '[]');
+    x = await run('sentinel', 'task-bad', 'Survive a corrupt file', [fin('open', 'fine', 'again later')]);
+    ok(x.r.status === 'open' && T.getTask(W, 'task-bad').state === 'open', 'a corrupt task file is treated as absent, the run completes and the ledger is rewritten');
+    ok(T.listTasks(W).length > 0 && T.openTasksFor(W, 'sentinel') !== undefined, 'listing skips unreadable files');
+
+    // the human cancels a run for good: the agent stays a holder, with a next step
+    const c12 = 'task-c12';
+    const it12 = { id: Q.newId(), agent: 'sentinel', task: 'Cancelled by hand', from: 'user', chainId: c12, hop: 0, createdAt: new Date().toISOString() };
+    T.taskOnEnd(W, it12, 'cancelled', 'x', undefined, 5);
+    ok(!T.getTask(W, c12), 'a retried (cancelled) item changes nothing');
+    T.taskOnEnd(W, it12, 'cancelled_by_human', undefined, undefined, 5);
+    t = T.getTask(W, c12);
+    ok(t.state === 'open' && t.holders.join() === 'sentinel' && t.next.sentinel === 'cancelled by the human' && t.log.at(-1).event === 'end' && t.log.at(-1).status === 'cancelled', 'cancelled by the human: still a holder, next step recorded, end logged as cancelled');
+
+    // human close, console, @loop
+    const c10 = 'task-c10';
+    await run('sentinel', c10, '<img src=x onerror=alert(1)> evil title', [fin('open', 'later', 'do <b>it</b>')]);
+    const cm = consoleModel(W, { running: false, tab: 'overview' });
+    const html = renderBody(cm);
+    ok(cm.tasks.some(k => k.id === c10) && html.includes('data-close-task="task-c10"') && !html.includes('<img src=x') && html.includes('&lt;img src=x'), 'the overview lists open tasks, escaped, with a Close action');
+    const lt = JSON.parse((await runChatTool('list_tasks', { agent: 'sentinel' }, { root: W, state: () => ({ running: false }) })).text);
+    ok(lt.some(k => k.id === c10 && k.next.sentinel.includes('do')) && !lt.some(k => k.id === c1), '@loop list_tasks shows open tasks of an agent');
+    ok(T.closeTaskByHuman(W, c10) && !T.closeTaskByHuman(W, 'nope'), 'the human can close a task');
+    t = T.getTask(W, c10);
+    ok(t.state === 'dropped' && t.holders.length === 0 && !t.next && t.log.at(-1).event === 'human' && !T.openTasksFor(W, 'sentinel').some(k => k.id === c10), 'closed by the human: dropped, no holders, off every list');
+    ok(!consoleModel(W, { running: false, tab: 'overview' }).tasks.some(k => k.id === c10), 'and off the console');
+    ok(!/task-c10/.test((await run('sentinel', 'task-c11', 'later', [fin('done', 'ok')])).prompt), 'and out of the next prompt');
+    for (const agent of ['sentinel', 'techlead', 'support']) { for (const i of Q.pending(W, agent)) { Q.complete(W, i, 'done', 'cleanup'); } }
+  }
+
+  console.log('goals and the worker pool');
+  {
+    const { goalKey, goalsDue, fireGoal, checkSilence, lastCheck } = require(`${OUT}/goals.js`);
+    const { skillsFor, policyPathFor } = require(`${OUT}/team.js`);
+    const { buildPrompt } = require(`${OUT}/runner.js`);
+    const GW = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-goals-'));
+    fs.mkdirSync(path.join(GW, '.github/agents'), { recursive: true });
+    fs.cpSync(path.join(W, '.loop'), path.join(GW, '.loop'), { recursive: true, filter: src => !/[\\/](queue|runs|gates|checkpoints|tasks)([\\/]|$)/.test(src) });
+    const skill = (name, scripts) => {
+      const d = path.join(GW, '.github/skills', name, 'scripts'); fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(GW, '.github/skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} skill\n---\nBody of ${name}.\n`);
+      for (const [f, c] of Object.entries(scripts)) { fs.writeFileSync(path.join(d, f), c); }
+    };
+    skill('probes', { 'yes.sh': 'echo found\nexit 0\n', 'none.sh': 'exit 1\n' });
+    skill('alert-probe', { 'found.sh': 'echo disk almost full\nexit 0\n' });
+    const agent = (name, loop) => fs.writeFileSync(path.join(GW, '.github/agents', `${name}.agent.md`), `---\nname: ${name}\ndescription: ${name} agent\nloop:\n${loop}---\nRole of ${name}.\n`);
+    agent('legacy', '  skills: [probes]\n  schedule: "* * * * *"\n  wakeIf: bash .github/skills/probes/scripts/yes.sh\n  task: legacy task\n');
+    agent('multi', [
+      '  goals:',
+      '    - id: alerts', '      text: Production issues are found and reported in time', '      schedule: "* * * * *"',
+      '      wakeIf: bash .github/skills/alert-probe/scripts/found.sh', '      skills: [alert-probe]', '      policy: .loop/policies/support.json',
+      '      urgent: true', '      maxSilence: 2h', '      maxRunsPerDay: 2',
+      '    - id: release', '      text: Release runs normally', '      schedule: "* * * * *"', '      wakeIf: bash .github/skills/probes/scripts/none.sh', '      skills: [probes]', '      task: check the release', ''].join('\n'));
+    agent('quiet', '  goals:\n    - id: watch\n      text: Something that never gets checked\n      schedule: "0 3 1 1 *"\n      wakeIf: bash .github/skills/probes/scripts/none.sh\n      skills: [probes]\n      maxSilence: 30m\n');
+    const gTeam = loadAgents(GW), gSkills = loadSkills(GW);
+    const legacy = gTeam.get('legacy'), multi = gTeam.get('multi'), quiet = gTeam.get('quiet');
+    ok(validateTeam(gTeam, gSkills, loadAllAgents(GW)).length === 0, 'a team with goals validates clean: ' + JSON.stringify(validateTeam(gTeam, gSkills, loadAllAgents(GW))));
+    ok(legacy.goals.length === 1 && legacy.goals[0].id === 'default' && legacy.goals[0].task === 'legacy task' && goalKey('legacy', legacy.goals[0]) === 'legacy' && goalKey('multi', multi.goals[0]) === 'multi#alerts', 'a legacy schedule is one goal "default", keyed by the agent name; other goals by agent#goal');
+    ok(multi.goals[0].urgent === true && multi.goals[0].maxSilenceMs === 2 * 3600e3 && multi.goals[1].task === 'check the release' && multi.goals[0].task === multi.goals[0].text, 'goal fields are read; the task defaults to the text');
+    const bad = new Map([['x', { ...multi, name: 'x', goals: [{ ...multi.goals[0], id: 'Bad Id' }, { ...multi.goals[1] }, { ...multi.goals[1] }, { ...multi.goals[1], id: 'ok', maxSilenceMs: NaN }] }]]);
+    const badErrors = validateTeam(bad, gSkills).join('\n');
+    ok(/must match/.test(badErrors) && /used twice/.test(badErrors) && /maxSilence must look like/.test(badErrors), 'bad goal ids, duplicates and maxSilence are reported');
+
+    const events = [];
+    const fired = new Map();
+    const io = { lastFired: fired, save() {}, policy: () => loadPolicy(GW, '.loop/policy.json'), skills: gSkills, secrets: async () => ({}), alert: async ev => { events.push({ ev, queued: Q.pending(GW, 'multi').length }); }, wakeErrors: new Map(), lastAlert: new Map(), log() {} };
+    const now = new Date();
+    const wakes = () => { const dir = path.join(GW, '.loop/runs', now.toISOString().slice(0, 10)); return fs.readdirSync(dir).filter(n => n.startsWith('wake-')).flatMap(n => fs.readFileSync(path.join(dir, n), 'utf8').trim().split('\n').map(JSON.parse)); };
+
+    const due = goalsDue(gTeam.values(), new Map(), now, false);
+    ok(due.filter(d => d.agent.name === 'multi').map(d => d.goal.id).join() === 'alerts,release' && !due.some(d => d.agent.name === 'quiet'), 'each goal is due on its own schedule');
+    ok(goalsDue(gTeam.values(), new Map([['legacy', require(`${OUT}/cron.js`).minuteKey(now)]]), now, false).every(d => d.agent.name !== 'legacy'), 'a goal already handled this minute is not due again (state key unchanged for legacy)');
+
+    await fireGoal(GW, legacy, legacy.goals[0], now, io);
+    const li = Q.pending(GW, 'legacy')[0];
+    ok(fired.get('legacy') && li.from === 'schedule' && li.goal === undefined && !li.urgent && events.length === 0, 'legacy agent: one default goal, state under the agent name, no goal on the item, no alert');
+    ok(wakes().some(w => w.agent === 'legacy' && w.goal === 'default' && w.wake === true), 'the wake event names the goal');
+
+    // two goals, independent state and caps; the urgent one tells the human before its item exists
+    await fireGoal(GW, multi, multi.goals[0], now, io);
+    await fireGoal(GW, multi, multi.goals[1], now, io);
+    ok(fired.has('multi#alerts') && fired.has('multi#release'), 'each goal keeps its own schedule state');
+    ok(events.length === 1 && events[0].ev.kind === 'alert' && events[0].ev.title === 'multi/alerts: probe found something' && /disk almost full/.test(events[0].ev.detail) && events[0].queued === 0, 'an urgent probe alerts (kind alert) BEFORE its item is queued');
+    const ai = Q.pending(GW, 'multi')[0];
+    ok(Q.pending(GW, 'multi').length === 1 && ai.goal === 'alerts' && ai.urgent === true && ai.from === 'schedule', 'the item carries its goal and urgent');
+    ok(wakes().some(w => w.agent === 'multi' && w.goal === 'release' && w.wake === false), 'the other goal had its own check (nothing to do) and queued nothing');
+    await fireGoal(GW, multi, multi.goals[0], now, io);
+    ok(Q.pending(GW, 'multi').length === 1, 'a goal with a scheduled item still open is not woken twice');
+    Q.complete(GW, ai, 'done', 'x');
+    await fireGoal(GW, multi, multi.goals[0], now, io);
+    Q.complete(GW, Q.pending(GW, 'multi')[0], 'done', 'x');
+    const before = events.length;
+    await fireGoal(GW, multi, multi.goals[0], now, io);
+    ok(Q.pending(GW, 'multi').length === 0 && events.length === before + 1 && wakes().some(w => w.agent === 'multi' && w.goal === 'alerts' && w.capped === 2), 'the daily cap is per goal and limits runs, not probes: alerts is capped after 2 and queues nothing, but an urgent probe still alerts');
+    await fireGoal(GW, multi, multi.goals[1], now, io);
+    ok(wakes().filter(w => w.goal === 'release' && w.wake === false && !w.capped).length >= 2, 'while release (no cap) keeps checking');
+
+    // an open (parked) item must not silence an urgent goal, nor make a quiet goal look silent
+    const openItem = { id: Q.newId(), agent: 'multi', task: 'parked', from: 'schedule', goal: 'alerts', urgent: true, chainId: 'parked-chain', hop: 0, createdAt: new Date().toISOString() };
+    Q.enqueue(GW, openItem); Q.complete(GW, openItem, 'waiting', undefined);
+    io.lastAlert.clear();
+    const n0 = events.length;
+    await fireGoal(GW, multi, multi.goals[0], now, io);
+    ok(events.length === n0 + 1 && events.at(-1).ev.kind === 'alert' && Q.pending(GW, 'multi').length === 0, 'urgent goal with a parked item: the probe still runs and alerts, and no second item is queued');
+    await fireGoal(GW, multi, multi.goals[0], now, io);
+    ok(events.length === n0 + 1, 'the same finding is not announced again while the item is open');
+    const alertsProbe = path.join(GW, '.github/skills/alert-probe/scripts/found.sh');
+    fs.writeFileSync(alertsProbe, 'echo a different problem\nexit 0\n');
+    await fireGoal(GW, multi, multi.goals[0], now, io);
+    ok(events.length === n0 + 2 && /different problem/.test(events.at(-1).ev.detail) && Q.pending(GW, 'multi').length === 0, 'a changed finding is announced');
+    fs.writeFileSync(alertsProbe, 'echo disk almost full\nexit 0\n');
+    Q.complete(GW, openItem, 'done', 'x');
+    const relItem = { id: Q.newId(), agent: 'multi', task: 'parked', from: 'schedule', goal: 'release', chainId: 'parked-release', hop: 0, createdAt: new Date().toISOString() };
+    Q.enqueue(GW, relItem); Q.complete(GW, relItem, 'waiting', undefined);
+    const rel = multi.goals[1];
+    await fireGoal(GW, multi, rel, now, io);
+    ok(wakes().some(w => w.goal === 'release' && w.open === true && w.wake === false) && Q.pending(GW, 'multi').length === 0, 'a non-urgent goal with an open item skips its check but records it as open');
+    const silentRel = [];
+    await checkSilence(GW, [{ ...multi, goals: [{ ...rel, maxSilenceMs: 3600e3 }] }], new Date(Date.now() - 5 * 3600e3), new Date(Date.now() + 30 * 60e3), new Set(), async ev => { silentRel.push(ev); });
+    ok(silentRel.length === 0, 'an open item counts as a check: no goal_silent while the goal is being handled');
+    Q.complete(GW, relItem, 'done', 'x');
+
+    // skills and policy of a goal apply only to its runs
+    ok(skillsFor(multi, 'alerts').join() === 'alert-probe' && skillsFor(multi, 'release').join() === 'probes' && skillsFor(multi).length === 0 && skillsFor(legacy, 'default').join() === 'probes', 'a goal adds its skills to the agent\'s, for its own runs only');
+    ok(policyPathFor(multi, 'alerts', '.loop/policy.json') === '.loop/policies/support.json' && policyPathFor(multi, 'release', '.loop/policy.json') === '.loop/policy.json' && policyPathFor(multi, undefined, 'd') === 'd', 'a goal\'s policy overrides the default for its own runs only');
+    const mk = goal => ({ id: 'i', agent: 'multi', task: 't', from: 'schedule', chainId: 'c', hop: 0, createdAt: '', ...(goal ? { goal } : {}) });
+    const pAlerts = buildPrompt(multi, mk('alerts'), { team: gTeam, skills: gSkills }), pRelease = buildPrompt(multi, mk('release'), { team: gTeam, skills: gSkills });
+    ok(/## Skill: alert-probe/.test(pAlerts) && !/## Skill: alert-probe/.test(pRelease) && /## Skill: probes/.test(pRelease) && !/## Skill: probes/.test(pAlerts), 'only the triggering goal\'s skills are expanded in the prompt');
+    ok(/# Your responsibilities\n- alerts: Production issues[^\n]*\n- release: Release runs normally/.test(pAlerts) && pAlerts.indexOf('# Your role') < pAlerts.indexOf('# Your responsibilities') && pAlerts.indexOf('# Your responsibilities') < pAlerts.indexOf('# Work item'), 'the prompt lists every responsibility after the role and before the work item');
+    ok(/hop: 0 \| goal: alerts/.test(pAlerts) && !/\| goal:/.test(pRelease.replace('goal: release', '')) , 'the work item header says which goal triggered it');
+    ok(!/# Your responsibilities/.test(buildPrompt(legacy, { ...mk(), agent: 'legacy' }, { team: gTeam, skills: gSkills })), 'a legacy agent\'s prompt is unchanged (no responsibilities section)');
+    const stat = (a, b) => a.slice(0, a.indexOf('# Work item')) === b.slice(0, b.indexOf('# Work item'));
+    ok(stat(buildPrompt(multi, mk('release'), { team: gTeam, skills: gSkills }), buildPrompt(multi, { ...mk('release'), chainId: 'other' }, { team: gTeam, skills: gSkills })), 'the part before the work item does not vary per run (prompt caching, invariant 8)');
+
+    // goal_silent: once, and again only after a check ran
+    const alerts = [];
+    const notified = new Set();
+    const t0 = new Date(Date.now() + 3 * 3600e3);
+    ok(lastCheck(GW, 'multi', 'alerts') instanceof Date && lastCheck(GW, 'quiet', 'watch') === undefined, 'the latest wake check that ran is read from the wake audit');
+    await checkSilence(GW, gTeam.values(), new Date(), t0, notified, async ev => { alerts.push(ev); });
+    ok(alerts.filter(a => a.agent === 'multi').length === 1 && alerts[0].kind === 'goal_silent' && /multi\/alerts/.test(alerts.find(a => a.agent === 'multi').title), 'a goal with no wake check for longer than maxSilence is announced (kind goal_silent)');
+    ok(alerts.filter(a => a.agent === 'quiet').length === 1, 'a goal that never had a check is measured from the team start');
+    await checkSilence(GW, gTeam.values(), new Date(), t0, notified, async ev => { alerts.push(ev); });
+    ok(alerts.filter(a => a.agent === 'multi').length === 1, 'and only once');
+    await checkSilence(GW, gTeam.values(), new Date(), new Date(Date.now() + 3600e3), notified, async ev => { alerts.push(ev); });
+    await checkSilence(GW, gTeam.values(), new Date(), t0, notified, async ev => { alerts.push(ev); });
+    ok(alerts.filter(a => a.agent === 'multi').length === 2, 'it resets when a check has run again, so a later silence is announced again');
+    const q2 = [];
+    await checkSilence(GW, [quiet], new Date(Date.now() - 10 * 60e3), new Date(), new Set(), async ev => { q2.push(ev); });
+    await checkSilence(GW, [quiet], new Date(Date.now() - 40 * 60e3), new Date(), new Set(), async ev => { q2.push(ev); });
+    ok(q2.length === 1, 'with no check at all, silence counts from the team start (10 minutes in: quiet, 40 minutes: announced)');
+
+    // handoffs keep urgency; tasks remember their goal
+    const uItem = { id: Q.newId(), agent: 'sentinel', task: 'urgent chain', from: 'schedule', goal: 'alerts', urgent: true, chainId: 'goal-chain', hop: 0, createdAt: new Date().toISOString() };
+    Q.enqueue(W, uItem);
+    const ur = await runItem(uItem, { ...deps('sentinel'), model: { family: 'fake', id: 'f', async sendRequest(m) { const t = m.filter(x => x.role === 'assistant').length; return { stream: (async function* () { yield t === 0 ? new ToolCallPart('u0', 'handoff', { to: 'techlead', task: 'go', context: 'c' }) : new ToolCallPart('u1', 'finish', { status: 'open', summary: 's', next: 'wait' }); })() }; } } });
+    Q.complete(W, uItem, ur.status, ur.summary);
+    const hand = Q.pending(W, 'techlead').find(i => i.chainId === 'goal-chain');
+    ok(hand && hand.urgent === true && !hand.goal, 'a handoff from an urgent run is urgent too');
+    ok(require(`${OUT}/tasks.js`).getTask(W, 'goal-chain').goal === 'alerts', 'a task created from a goal run records the goal');
+    Q.complete(W, hand, 'done', 'cleanup');
+
+    // the pool
+    const { pickItem } = Q;
+    const it = (chainId, createdAt, urgent) => ({ id: chainId + createdAt, agent: 'a', task: 't', from: 'user', chainId, hop: 0, createdAt, ...(urgent ? { urgent: true } : {}) });
+    const A = it('A', '1'), B = it('B', '2'), C = it('C', '3'), U = it('U', '4', true), A2 = { ...it('A', '5'), id: 'A-2' };
+    ok(pickItem([A, B], [], 1) === A && pickItem([B, A], [], 1) === A && pickItem([B], [A], 1) === undefined, 'one worker: plain FIFO, nothing starts while one runs (as before)');
+    ok(pickItem([A2, B], [A], 3) === B, 'two items of different chains run together; the same chain never does');
+    ok(pickItem([C], [A, B], 3) === undefined && pickItem([C], [A], 3) === C, 'non-urgent items cannot take the last slot');
+    ok(pickItem([C, U], [A, B], 3) === U && pickItem([C, U], [], 3) === U, 'an urgent item takes the reserved slot, and goes before older items');
+    ok(pickItem([B], [A], 2) === undefined && pickItem([U], [A], 2) === U, 'with two workers, one normal run and one urgent run at a time');
+    ok(pickItem([U], [A, it('V', '9', true)], 2) === undefined, 'no free slot, nothing starts');
+    ok(pickItem([U, it('U', '0', true)], [], 2) !== undefined && pickItem([A2, U], [A], 1) === undefined, 'the same chain, or a full pool, blocks even urgent items');
+    fs.rmSync(GW, { recursive: true, force: true });
+  }
+
+  console.log('worker pool: TeamService with overlapping runs');
+  {
+    const { TeamService } = require(`${OUT}/extension.js`);
+    const PW = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-pool-'));
+    fs.mkdirSync(path.join(PW, '.github/agents'), { recursive: true });
+    fs.mkdirSync(path.join(PW, '.loop'), { recursive: true });
+    fs.copyFileSync(path.join(W, '.loop/policy.json'), path.join(PW, '.loop/policy.json'));
+    for (const n of ['p1', 'p2', 'p3']) { fs.writeFileSync(path.join(PW, '.github/agents', `${n}.agent.md`), `---\nname: ${n}\ndescription: ${n}\nloop:\n  maxSteps: 6\n---\nRole of ${n}.\n`); }
+    vscodeMock.workspace.workspaceFolders = [{ uri: { fsPath: PW } }];
+    const mem = { get: (_k, d) => d, update: async () => {}, };
+    const svc = new TeamService({ workspaceState: mem, globalState: mem, secrets: { get: async () => undefined }, languageModelAccessInformation: {} }, { appendLine() {}, show() {} }, () => {}, () => {});
+    svc.reload();
+    svc.running = true;
+    svc.ratePauseMs = () => 400;
+
+    // The fake model: each item's first request waits on its own gate; later requests answer at once.
+    const gates = {}, started = [], sawText = {}, throwOnce = new Set();
+    const gate = id => (gates[id] ??= (() => { let open; const p = new Promise(r => { open = r; }); return { p, open }; })());
+    const model = {
+      family: 'fake', id: 'fake-1',
+      async sendRequest(messages, opts, tok) {
+        const id = /work item (\S+)/.exec(opts.justification)[1];
+        const turn = messages.filter(m => m.role === 'assistant').length;
+        (sawText[id] ??= []).push(JSON.stringify(messages));
+        if (turn === 0) {
+          started.push(id);
+          if (throwOnce.delete(id)) { throw new Error('rate limit exceeded'); }
+          await new Promise((res, rej) => { gate(id).p.then(res); tok.onCancellationRequested(() => rej(new Error('cancelled'))); if (tok.isCancellationRequested) { rej(new Error('cancelled')); } });
+          const talk = gate(id).talk;
+          if (talk) { return { stream: (async function* () { yield new ToolCallPart(`${id}-t`, 'list_dir', { path: '.' }); })() }; }
+        }
+        return { stream: (async function* () { yield new ToolCallPart(`${id}-f`, 'finish', { status: 'done', summary: 'ok' }); })() };
+      }
+    };
+    for (const n of ['p1', 'p2', 'p3']) { svc.models.set(n, model); }
+    const until = async (cond, what, ms = 4000) => { const t0 = Date.now(); while (!cond()) { if (Date.now() - t0 > ms) { throw new Error('timed out waiting for ' + what); } await new Promise(r => setTimeout(r, 10)); } };
+    const queue = (id, agent, chainId, o = {}) => Q.enqueue(PW, { id, agent, task: 'work', from: 'user', chainId, hop: 0, createdAt: new Date(Date.now() + o.age).toISOString(), ...(o.urgent ? { urgent: true } : {}) });
+    const settle = async () => { await until(() => { for (const id of Object.keys(gates)) { gate(id).open(); } return svc.live.size === 0 && !Q.nextItem(PW, ['p1', 'p2', 'p3']); }, 'the pool to drain'); };
+    const quiet = () => new Promise(r => setTimeout(r, 120));
+    const doneStatus = id => JSON.parse(fs.readFileSync(path.join(PW, '.loop/queue/_done', `${id}.json`), 'utf8')).status;
+
+    vscodeSettings.workers = 3;
+    queue('i1', 'p1', 'c1', { age: 0 }); queue('i2', 'p2', 'c2', { age: 1 });
+    void svc.tick();
+    await until(() => svc.live.size === 2, 'two runs together');
+    ok(svc.live.size === 2 && svc.activeAgents.sort().join() === 'p1,p2', 'workers=3: two items of different chains run at the same time');
+    await settle();
+    ok(doneStatus('i1') === 'done' && doneStatus('i2') === 'done', 'and both finish');
+
+    queue('i3', 'p1', 'c3', { age: 0 }); queue('i4', 'p2', 'c3', { age: 1 });
+    void svc.tick();
+    await until(() => svc.live.size === 1, 'the first of one chain');
+    await quiet();
+    ok(svc.live.size === 1 && !started.includes('i4') && [...svc.live.keys()].join() === 'i3', 'the same chain never runs two items at once');
+    gate('i3').open();
+    await until(() => started.includes('i4'), 'the second of that chain');
+    await settle();
+
+    vscodeSettings.workers = 2;
+    queue('n1', 'p1', 'c5', { age: 0 }); queue('n2', 'p2', 'c6', { age: 1 });
+    void svc.tick();
+    await until(() => svc.live.size === 1, 'one normal run');
+    await quiet();
+    ok(svc.live.size === 1 && !started.includes('n2'), 'workers=2: a second normal item waits (one slot is kept for urgent)');
+    queue('u1', 'p3', 'c7', { age: 2, urgent: true });
+    void svc.tick();
+    await until(() => svc.live.size === 2, 'normal and urgent together');
+    ok(svc.live.has('n1') && svc.live.has('u1') && !started.includes('n2'), 'an urgent item runs next to the normal one');
+    await settle();
+    ok(started.includes('n2'), 'and the waiting normal item runs once a slot frees');
+
+    // a rate limit stops new starts for the whole pool, not for runs already going
+    vscodeSettings.workers = 4;
+    queue('x1', 'p1', 'c8', { age: 0 });
+    void svc.tick();
+    await until(() => svc.live.has('x1'), 'x1 running');
+    throwOnce.add('r1');
+    queue('r1', 'p2', 'c9', { age: 1 });
+    void svc.tick();
+    await until(() => svc.paused, 'the pause');
+    queue('r2', 'p3', 'c10', { age: 2 });
+    void svc.tick();
+    await quiet();
+    ok(svc.paused && !started.includes('r2') && svc.live.has('x1'), 'a rate limit pauses the pool: nothing new starts, the run already going continues');
+    await until(() => !svc.paused && started.includes('r2'), 'the pause to end and r2 to start');
+    ok(started.filter(i => i === 'r1').length === 2, 'the rate-limited item stays queued and is retried after the pause');
+    await settle();
+    ok(doneStatus('r1') === 'done' && doneStatus('r2') === 'done' && doneStatus('x1') === 'done', 'everything finishes');
+
+    // Cancel this run stops one run only, for good
+    queue('k1', 'p1', 'c11', { age: 0 }); queue('k2', 'p2', 'c12', { age: 1 });
+    void svc.tick();
+    await until(() => svc.live.size === 2, 'two runs to cancel between');
+    ok(svc.cancelRun('p1') && !svc.cancelRun('p3'), 'cancelRun finds the agent\'s run, and says no for an idle agent');
+    await until(() => !svc.live.has('k1'), 'k1 to end');
+    ok(svc.live.has('k2') && doneStatus('k1') === 'cancelled' && Q.pending(PW, 'p1').length === 0, 'the cancelled run is closed as cancelled (not retried) and the other run keeps going');
+    await settle();
+    ok(doneStatus('k2') === 'done', 'the other run finishes normally');
+
+    // a message from the human goes to the earliest-started run of that agent only
+    const T2 = require(`${OUT}/thread.js`);
+    gate('m1').talk = true; gate('m2').talk = true;
+    queue('m1', 'p1', 'c13', { age: 0 });
+    void svc.tick();
+    await until(() => svc.live.has('m1'), 'm1 running');
+    queue('m2', 'p1', 'c14', { age: 1 });
+    void svc.tick();
+    await until(() => svc.live.has('m2'), 'm2 running');
+    T2.postHumanMessage(PW, 'p1', 'please also check the cache');
+    gate('m1').open();
+    await until(() => !svc.live.has('m1'), 'm1 to end');
+    gate('m2').open();
+    await until(() => svc.live.size === 0, 'm2 to end');
+    ok(sawText.m1.some(t => t.includes('please also check the cache')) && !sawText.m2.some(t => t.includes('please also check the cache')), 'two runs of one agent: the human\'s message reaches the earliest-started run only');
+    ok(T2.pendingMessages(PW, 'p1').length === 0, 'and it is marked delivered, not left for the other run');
+
+    svc.running = false;
+    fs.rmSync(PW, { recursive: true, force: true });
+    vscodeMock.workspace.workspaceFolders = undefined;
+  }
+
   console.log('smoke workspace (examples/smoke)');
   {
     const S = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-smoke-'));
@@ -677,7 +1107,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     const steps = stepsOf(wRun.file);
     ok(steps.some(s => s.kind === 'tool' && s.title.startsWith('write_file') && s.title.includes('report.md') && s.ok), 'a run shows its tool steps with what they touched');
     ok(steps[steps.length - 1].kind === 'end', 'a run ends with its outcome');
-    const m = consoleModel(W, { running: true, active: 'techlead' });
+    const m = consoleModel(W, { running: true, active: 'techlead', tab: 'overview' });
     ok(m.running && m.active === 'techlead' && m.runs.some(r => r.chainId === 'console-writer-chain' && r.steps.length > 0), 'the model carries state and run steps');
     const evil = { ...m, pending: [{ id: 'g<1>', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: '<img src=x onerror=alert(1)>', body: '</div><script>x</script>', command: 'rm -rf "<x>"', files: ['a"b.md'], resume: true, status: 'pending', createdAt: new Date().toISOString(), previews: [{ path: 'a"b.md', text: '<b>patch</b>', sha256: 'h"1', truncated: false }] }] };
     ok(renderBody(evil).includes('&lt;b&gt;patch&lt;/b&gt;') && renderBody(evil).includes('data-hash="h&quot;1"'), 'draft contents are shown escaped, with the hash the approval is bound to');
@@ -893,15 +1323,15 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ].join('\n'));
     const { recentRuns } = require(`${OUT}/runs.js`);
     ok(recentRuns(R)[0].status === 'running' && recentRuns(R)[0].updated === '2026-10-11T09:10:00Z', 'a run that resumed after a park is running again, with its last event time');
-    const cut = consoleModel(R, { running: false });
+    const cut = consoleModel(R, { running: false, tab: 'overview' });
     ok(cut.runs[0].status === 'interrupted', 'a run no worker owns is shown as interrupted, not running forever');
-    ok(consoleModel(R, { running: true, active: 'a1' }).runs[0].status === 'running', 'the active agent\'s run stays running');
+    ok(consoleModel(R, { running: true, active: 'a1', tab: 'overview' }).runs[0].status === 'running', 'the active agent\'s run stays running');
     ok(renderBody(cut).includes('Interrupted') && renderBody(cut).includes('Team stopped'), 'the page says so');
 
     const F = path.join(R, '.loop', 'outbox'); fs.mkdirSync(F, { recursive: true });
     fs.writeFileSync(path.join(F, 'd.md'), 'draft v1');
     Q.saveGate(R, { id: 'pg1', kind: 'approval', agent: 'a1', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'echo hi', files: ['.loop/outbox/d.md', '.loop/outbox/gone.md'], resume: false, status: 'pending', createdAt: new Date().toISOString() });
-    const m = consoleModel(R, { running: true });
+    const m = consoleModel(R, { running: true, tab: 'overview' });
     const pv = m.pending[0].previews;
     ok(pv[0].sha256 === G.fileSha256(R, '.loop/outbox/d.md') && pv[1].sha256 === 'missing', 'the shown draft and its hash come from the same bytes; a missing file is marked missing');
     const html = renderBody(m);
@@ -911,11 +1341,206 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(html.includes('data-copy="echo hi"') && html.includes('<time datetime='), 'the command can be copied and times carry their exact value');
     fs.writeFileSync(path.join(F, 'big.md'), 'x'.repeat(7000));
     Q.saveGate(R, { id: 'pg2', kind: 'approval', agent: 'a1', itemId: 'i', chainId: 'c', title: 't2', body: 'b', command: 'echo', files: ['.loop/outbox/big.md'], resume: false, status: 'pending', createdAt: new Date().toISOString() });
-    ok(renderBody(consoleModel(R, { running: true })).includes('Open full file'), 'a long draft offers the full file and says approval covers all of it');
+    ok(renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('Open full file'), 'a long draft offers the full file and says approval covers all of it');
     const banner = renderBody({ ...m, note: { tone: 'bad', text: '<b>boom</b>' } });
     ok(banner.includes('role="alert"') && banner.includes('&lt;b&gt;boom') && !banner.includes('<b>boom'), 'a page-level error is shown, escaped');
     ok(renderBody({ ...m, running: true, active: undefined }).includes('Team on · idle'), 'a running team with no active agent is labelled idle, not stopped');
     fs.rmSync(R, { recursive: true, force: true });
+  }
+
+  console.log('chat with an agent: messages reach a running agent');
+  {
+    const T = require(`${OUT}/thread.js`);
+    const policy = loadPolicy(W, '.loop/policy.json');
+    const texts = messages => messages.flatMap(m => m.content.map(c => (c instanceof ToolResultPart ? `[result] ${c.content[0].value}` : c.value ?? '')));
+    const all = reqs => reqs.map(r => texts(r).join('\n'));
+    let n = 0;
+    const model = (script, onRequest) => { const requests = []; let i = 0;
+      return { requests, family: 'fake', id: 'chat',
+        async sendRequest(messages) {
+          requests.push(messages); onRequest?.(requests.length, messages);
+          const t = script[Math.min(i++, script.length - 1)];
+          if (t === 'throw') { throw new Error('model unavailable'); }
+          return { stream: (async function* () { yield* t.map(([name, input], k) => new ToolCallPart(`ch-${++n}-${k}`, name, input)); })() };
+        } }; };
+    const item = id => ({ id, agent: 'techlead', task: 'Look at the queue.', from: 'user', chainId: `${id}-chain`, hop: 0, createdAt: new Date().toISOString() });
+    const run = (it, m) => runItem(it, { root: W, team, skills, model: m, secrets: {}, policy, maxSteps: 12, maxHops: 5, out, token });
+    const FIN = [['finish', { status: 'done', summary: 'ok' }]];
+    const mine = () => T.listMessages(W, 'techlead');
+
+    // 1. said before the run started: it is in the first prompt, after the work item
+    const m1 = T.postHumanMessage(W, 'techlead', 'Please focus on the backlog first.');
+    ok(m1.status === 'pending' && T.pendingMessages(W, 'techlead').length === 1, 'a message you send is pending until the agent has seen it');
+    const mod1 = model([FIN]);
+    await run(item('chat-start'), mod1);
+    const first = all(mod1.requests)[0];
+    ok(first.includes('Messages from the human, sent before this run started') && first.includes('Please focus on the backlog first.') && first.indexOf('# Work item') < first.indexOf('Please focus on the backlog'), 'said before the run started: in the first prompt, after the work item (the static prefix is untouched)');
+    const d1 = mine().find(m => m.id === m1.id);
+    ok(d1.status === 'delivered' && d1.via === 'start' && d1.itemId === 'chat-start' && T.pendingMessages(W, 'techlead').length === 0, 'and it is then marked delivered, with how and in which run');
+    ok(fs.readFileSync(path.join(W, '.loop/runs', new Date().toISOString().slice(0, 10), 'chat-start-chain.jsonl'), 'utf8').includes('"type":"human"'), 'the audit records that the agent was given it');
+    ok(first.includes('The human may send you a message while you work'), 'the runtime rules tell the agent such messages are instructions from the owner of the work');
+
+    // 2. said while it works: it is read before the next request
+    let m2;
+    const mod2 = model([[['list_dir', { path: '.' }]], FIN], count => { if (count === 1) { m2 = T.postHumanMessage(W, 'techlead', 'Actually, skip the docs folder.'); } });
+    const r2 = await run(item('chat-turn'), mod2);
+    const second = all(mod2.requests)[1];
+    ok(r2.status === 'done' && !all(mod2.requests)[0].includes('skip the docs folder') && second.includes('Message from the human, sent while you were working') && second.includes('Actually, skip the docs folder.'), 'said while it works: it reaches the model before its next request, not before the one already in flight');
+    ok(mine().find(m => m.id === m2.id).via === 'turn' && mine().find(m => m.id === m2.id).status === 'delivered', 'and is marked delivered once that turn is done');
+
+    // 3. said while it was finishing: it does not stop before reading it
+    const mod3 = model([FIN, FIN], count => { if (count === 1) { T.postHumanMessage(W, 'techlead', 'Wait, also check the backlog count.'); } });
+    const r3 = await run(item('chat-finish'), mod3);
+    ok(mod3.requests.length === 2 && all(mod3.requests)[1].includes('also check the backlog count') && r3.status === 'done', 'said while it was finishing: it reads the message before it stops, then finishes again');
+
+    // 4. said while it waits for you: it comes with your answer
+    const mod4 = model([[['ask_human', { question: 'Which queue?', context: 'two match' }]], FIN]);
+    const it4 = item('chat-wait');
+    Q.enqueue(W, it4);
+    const r4 = await run(it4, mod4);
+    ok(r4.status === 'waiting' && T.chatState(W, 'techlead').state === 'waiting', 'it parks on a question, and the chat says it is waiting for you');
+    const m4 = T.postHumanMessage(W, 'techlead', 'By the way, the blue queue is the one.');
+    ok(mod4.requests.length === 1 && T.pendingMessages(W, 'techlead').length === 1, 'a message sent now is not delivered yet');
+    Q.complete(W, it4, r4.status, r4.summary, r4.gateId);
+    G.answerQuestion(W, r4.gateId, 'blue');
+    const resumed = Q.nextItem(W, ['techlead']);
+    await run(resumed, mod4);
+    const afterWait = all(mod4.requests)[1];
+    ok(afterWait.includes('The human answered: blue') && afterWait.includes('the blue queue is the one'), 'it resumes with your answer and the message together');
+    ok(mine().find(m => m.id === m4.id).via === 'resume', 'delivered, as a resume');
+
+    // 5. an interruption between receiving and finishing the turn does not lose it
+    let m5;
+    const mod5 = model([[['list_dir', { path: '.' }]], 'throw'], count => { if (count === 1) { m5 = T.postHumanMessage(W, 'techlead', 'Remember to be brief.'); } });
+    const r5 = await run(item('chat-crash'), mod5);
+    ok(r5.status === 'error' && mine().find(m => m.id === m5.id).status === 'pending', 'if the model fails right after it was given, the message is still pending and will be given again');
+
+    // 6. said after the last turn: it stays pending for the follow-up
+    const mod6 = model([FIN]);
+    await run(item('chat-late'), mod6);
+    const late = T.postHumanMessage(W, 'techlead', 'One more thing for next time.');
+    ok(T.pendingMessages(W, 'techlead').some(m => m.id === late.id), 'a message that arrives after the run is still pending (the extension turns it into a follow-up run)');
+    for (const m of T.pendingMessages(W, 'techlead')) { T.markDelivered(W, 'techlead', [m.id], { via: 'task' }); }
+  }
+
+  console.log('chat with an agent: the thread and where a message goes');
+  {
+    const T = require(`${OUT}/thread.js`);
+    ok(T.cleanMessage('  hi\x00 there\x07\r\nbye  ') === 'hi there\nbye' && T.cleanMessage('x'.repeat(5000)).length === 4000, 'a message is stripped of control characters and bounded');
+    ok(!T.postHumanMessage.length || (() => { try { T.postHumanMessage(W, '../x', 'a'); } catch { return true; } return false; })(), 'a bad agent name is refused');
+    ok((() => { try { T.postHumanMessage(W, 'techlead', '   '); } catch { return true; } return false; })(), 'an empty message is refused');
+    const th = T.buildThread(W, 'techlead');
+    const flat = (evs) => evs.flatMap(e => e.kind === 'result' ? [e, ...flat(e.fold)] : [e]);
+    const all = flat(th.events);
+    const kinds = all.map(e => e.kind);
+    ok(kinds.includes('human') && kinds.includes('status') && kinds.includes('steps') && kinds.includes('answer') && kinds.includes('result'), 'the thread has your messages, the runs, the steps and your answers');
+    ok(th.events.every((e, i, a) => i === 0 || a[i - 1].ts <= e.ts), 'oldest first');
+    const turn = th.events.find(e => e.kind === 'human' && e.text.includes('skip the docs'));
+    ok(turn && turn.status === 'delivered' && turn.via === 'turn', 'a delivered message says how it was delivered');
+    const ans = all.find(e => e.kind === 'answer' && e.text === 'blue');
+    ok(ans && ans.title === 'Which queue?', 'your answer to a question appears with the question it answered');
+    const steps = all.find(e => e.kind === 'steps' && e.steps.some(s => s.title.startsWith('list_dir')));
+    ok(steps && !all.some(e => e.kind === 'steps' && e.steps.some(s => s.title.startsWith('finish'))), 'consecutive tool calls are one block, and finish is shown as the run\'s end instead');
+    ok(T.buildThread(W, 'techlead', { limit: 5 }).events.length === 5 && T.buildThread(W, 'techlead', { limit: 5 }).hidden > 0, 'the thread can be limited and says how much is hidden');
+    ok(T.buildThread(W, 'nobody-here').events.length === 0, 'an agent with no history has an empty thread');
+
+    const route = T.routeFor;
+    ok(route('running') === 'in-run' && route('waiting') === 'on-resume' && route('queued') === 'at-start' && route('idle') === 'new-task', 'where a message goes depends on what the agent is doing');
+    ok(T.chatState(W, 'techlead', 'techlead').state === 'running' && T.chatState(W, 'nobody-here', 'sentinel').state === 'idle', 'running when the worker is on it, idle otherwise');
+    Q.enqueue(W, { id: 'q1', agent: 'sentinel', task: 't', from: 'user', chainId: 'q1c', hop: 0, createdAt: new Date().toISOString() });
+    ok(T.chatState(W, 'sentinel').state === 'queued', 'queued when it has work waiting for the worker');
+    Q.complete(W, { id: 'q1', agent: 'sentinel', task: 't', from: 'user', chainId: 'q1c', hop: 0, createdAt: '' }, 'done', 'x');
+    const ctx = T.conversationContext(W, 'techlead');
+    ok(/^Conversation so far/.test(ctx) && /You: /.test(ctx) && ctx.length < 2500, 'a run that starts from a message gets a short summary of the conversation so far');
+  }
+
+  console.log('chat page: what you see for each state of an agent');
+  {
+    const { consoleModel, renderBody } = require(`${OUT}/console.js`);
+    const T = require(`${OUT}/thread.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-chatui-'));
+    fs.mkdirSync(path.join(R, '.github', 'agents'), { recursive: true });
+    for (const n of ['alpha', 'beta']) { fs.writeFileSync(path.join(R, '.github', 'agents', `${n}.agent.md`), `---\nname: ${n}\ndescription: ${n}\nloop:\n  skills: []\n  task: t\n---\nbody\n`); }
+    const page = (state, agent) => renderBody(consoleModel(R, { running: true, ...state, tab: 'chat', agent }));
+    ok(renderBody(consoleModel(R, { running: true })).includes('data-tab="chat"') && /aria-selected="true" data-tab="chat"/.test(renderBody(consoleModel(R, { running: true }))), 'the console opens on the chat tab');
+    ok(!renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('chat-agents') && renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('Recent runs'), 'the overview is still there, with the runs, the agents and what needs you');
+    let h = page({}, 'alpha');
+    ok(h.includes('data-agent="alpha"') && h.includes('data-agent="beta"') && /alpha is idle\. This starts a new run\./.test(h) && !/class="composer running"/.test(h), 'an idle agent: it says a message starts a run, and the composer is not in its running form (no stop button)');
+    ok(/The team is stopped\. This is saved/.test(renderBody(consoleModel(R, { running: false, tab: 'chat', agent: 'alpha' }))), 'with the team stopped it says the message is kept until you start it');
+    Q.enqueue(R, { id: 'qa', agent: 'alpha', task: 't', from: 'user', chainId: 'qac', hop: 0, createdAt: new Date().toISOString() });
+    ok(/alpha has work queued\. It reads this when it starts\./.test(page({}, 'alpha')), 'a queued agent: it will read the message when it starts');
+    h = page({ active: 'alpha' }, 'alpha');
+    ok(/alpha is working\. It reads this at its next step/.test(h) && /class="composer running"/.test(h) && h.includes('data-chat-cancel="alpha"') && /class="av working"/.test(h), 'a working agent: it will read it at its next step, the composer offers Stop, and its avatar shows it is working');
+    Q.complete(R, { id: 'qa', agent: 'alpha', task: 't', from: 'user', chainId: 'qac', hop: 0, createdAt: '' }, 'done', 'x');
+    Q.saveGate(R, { id: 'cg1', kind: 'approval', agent: 'alpha', itemId: 'i', chainId: 'c', title: 'Publish it', body: 'b', command: 'echo go', files: [], resume: true, status: 'pending', createdAt: new Date().toISOString() });
+    h = page({}, 'alpha');
+    ok(/alpha is waiting for your answer above/.test(h) && h.includes('thread-gates') && h.includes('data-approve="cg1"') && h.includes('echo go'), 'a waiting agent: its question or approval sits at the end of the conversation, with the exact command, and a message is read when it continues');
+    ok(/class="count warn" title="needs you">1<\/span>/.test(h), 'the agent list and the tab show that something needs you');
+    ok(!page({}, 'beta').includes('data-approve="cg1"'), 'another agent\'s conversation does not show it');
+    ok(page({}, 'alpha').includes('aria-pressed="true"') && page({}, 'unknown-agent').includes('data-agent="alpha"'), 'an unknown or missing selection falls back to an agent that needs you');
+    T.postHumanMessage(R, 'beta', '<img src=x onerror=alert(1)> hello & goodbye');
+    h = page({}, 'beta');
+    ok(!h.includes('<img') && h.includes('&lt;img src=x') && h.includes('hello &amp; goodbye') && /waiting for beta to read it/.test(h), 'your own text is shown escaped, and says the agent has not read it yet');
+    ok(/empty-title">Nothing yet with alpha|Nothing yet with beta/.test(page({}, 'beta')) === false && true, 'a conversation with messages is not shown as empty');
+    ok(/Nothing yet with alpha/.test(renderBody(consoleModel(fs.mkdtempSync(path.join(os.tmpdir(), 'loop-chatui2-')), { running: true, tab: 'chat' }))) === false, 'a workspace with no team says there are no agents rather than showing an empty chat');
+    // the roster: a glance at each agent
+    const G = T.glance;
+    ok(G(R, 'gamma', 'Does gamma things').line === 'Does gamma things' && G(R, 'gamma', 'x').avatar === 'idle', 'an agent that never ran shows what it is for, and is still');
+    ok(G(R, 'beta', 'x').line === 'Your message is waiting to be read', 'an unread message of yours is what the roster shows');
+    const stamp0 = new Date();
+    Q.audit(R, 'alpha-chain', { type: 'start', agent: 'alpha', from: 'user', task: 'work' });
+    Q.audit(R, 'alpha-chain', { type: 'tool', agent: 'alpha', step: 1, name: 'run_command', input: { command: 'bash probe.sh' }, result: '[exit 0]' });
+    const live = G(R, 'alpha', 'alpha', 'alpha');
+    ok(live.avatar === 'working' && live.line === 'bash probe.sh', 'a working agent shows the tool it is on, as its progress line');
+    Q.audit(R, 'alpha-chain', { type: 'end', agent: 'alpha', step: 2, status: 'done', summary: 'Everything checked out', outputs: [] });
+    Q.complete(R, { id: 'cg-gate-clean', agent: 'alpha', task: 't', from: 'user', chainId: 'x', hop: 0, createdAt: '' }, 'done', 'x');
+    const g0 = Q.getGate(R, 'cg1'); g0.status = 'answered'; Q.saveGate(R, g0);
+    const done = G(R, 'alpha', 'alpha', undefined, stamp0);
+    ok(done.avatar === 'done' && done.line === 'Finished: Everything checked out', 'a run that just finished: a check on the avatar, and its summary as the line');
+    ok(G(R, 'alpha', 'alpha', undefined, new Date(stamp0.getTime() + 2 * 3600e3)).avatar === 'idle', 'the check fades after an hour');
+    Q.audit(R, 'beta-chain', { type: 'start', agent: 'beta', from: 'user', task: 'x' });
+    Q.audit(R, 'beta-chain', { type: 'end', agent: 'beta', step: 1, status: 'blocked', summary: 'no access to the board' });
+    const stuck = G(R, 'beta', 'beta', undefined, stamp0);
+    ok(stuck.avatar === 'blocked' && stuck.line === 'Your message is waiting to be read', 'a run that ended blocked: a red avatar, even while an unread message of yours is what the line says');
+    const stuck2 = G(R, 'delta', 'delta', undefined, stamp0);
+    Q.audit(R, 'delta-chain', { type: 'start', agent: 'delta', from: 'user', task: 'x' });
+    Q.audit(R, 'delta-chain', { type: 'end', agent: 'delta', step: 1, status: 'blocked', summary: 'no access to the board' });
+    const stuck3 = G(R, 'delta', 'delta', undefined, new Date());
+    ok(stuck3.avatar === 'blocked' && /^Blocked: no access/.test(stuck3.line) && stuck2.avatar === 'idle', 'and with nothing unread, the line says why it is blocked');
+    Q.saveGate(R, { id: 'cg2', kind: 'question', agent: 'beta', itemId: 'i', chainId: 'c', title: 'Which board?', body: 'b', files: [], resume: true, status: 'pending', createdAt: new Date().toISOString() });
+    ok(G(R, 'beta', 'beta').avatar === 'waiting' && G(R, 'beta', 'beta').line === 'Needs you: Which board?', 'an agent waiting for you says what it needs');
+    const rows = page({}, 'alpha');
+    ok(/data-agent="beta"[^>]*title="beta is waiting for you: Needs you: Which board\?"/.test(rows) && /class="av waiting"/.test(rows) && /rr-line warn/.test(rows), 'the roster row carries the avatar, the progress line, and the line as a tooltip');
+    ok(/class="av [a-z]+" style="--h:\d+;--sz:38px"/.test(rows) && page({}, 'alpha').match(/--h:(\d+)/g).length >= 2, 'every agent has its own avatar');
+    ok(!/<img/.test(rows) && !/onerror/.test(rows), 'the avatars are drawn inline, with nothing fetched');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
+  console.log('tool arguments: checked and converted before a tool runs');
+  {
+    const { validateToolArguments: v } = require(`${OUT}/vendor/pi-agent/ai/validation.js`);
+    const { buildTools } = require(`${OUT}/tools.js`);
+    const tool = { name: 'read_file', description: 'd', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number' }, wait: { type: 'boolean' }, files: { type: 'array', items: { type: 'string' } }, mode: { type: 'string', enum: ['a', 'b'] }, nested: { type: 'object', properties: { n: { type: 'integer' } }, required: ['n'] } }, required: ['path'] } };
+    const call = args => ({ type: 'toolCall', id: '1', name: 'read_file', arguments: args });
+    const fails = args => { try { v(tool, call(args)); return ''; } catch (e) { return e.message; } };
+    ok(JSON.stringify(v(tool, call({ path: 'a', startLine: '5', wait: 'true' }))) === '{"path":"a","startLine":5,"wait":true}', 'a number or boolean the model sent as text is converted');
+    ok(v(tool, call({ path: 'a', extra: 1 })).extra === 1, 'a property the schema does not know is allowed');
+    ok(JSON.stringify(v(tool, call({ path: 'a', nested: { n: '3' }, files: ['x'] })).nested) === '{"n":3}', 'nested objects are converted too');
+    const missing = fails({ startLine: 2 });
+    ok(/Validation failed for tool "read_file"/.test(missing) && /\/path: required property is missing/.test(missing) && /Received arguments/.test(missing), 'a missing required property: an error the model can read and act on');
+    ok(/\/startLine: expected number, received string/.test(fails({ path: 'a', startLine: 'soon' })) && /\/startLine: expected number/.test(fails({ path: 'a', startLine: '' })), 'text that is not a number is an error, and so is an empty string');
+    ok(/must be one of "a", "b"/.test(fails({ path: 'a', mode: 'c' })), 'a value outside an enum names the choices');
+    ok(/\/files: expected array, received string/.test(fails({ path: 'a', files: 'x' })) && /\/files\/0: expected string, received object/.test(fails({ path: 'a', files: [{}] })), 'arrays are checked, item by item');
+    ok(JSON.stringify(v(tool, call({ path: 'a', files: [1, true] })).files) === '["1","true"]', 'and numbers or booleans in a list of strings are converted to text');
+    ok(/\/nested\/n: required property is missing/.test(fails({ path: 'a', nested: {} })), 'required properties of nested objects too');
+    const original = { path: 'a', startLine: '5' }; v(tool, call(original));
+    ok(original.startLine === '5', 'the model\'s own arguments are not changed in place (the audit keeps what it sent)');
+    ok(buildTools({ handoffs: ['x'] }).every(t => t.inputSchema.type === 'object'), 'every tool Loop Runner offers describes its arguments as a JSON Schema object');
+    const real = buildTools({ handoffs: ['x'] });
+    const asTool = n => ({ name: n, description: '', parameters: real.find(t => t.name === n).inputSchema });
+    ok(v(asTool('ask_human'), call({ question: 'q', context: 'c', options: ['a'] })).options.length === 1 && /required property is missing/.test((() => { try { v(asTool('ask_human'), call({ question: 'q' })); } catch (e) { return e.message; } })()), 'the real tools: ask_human needs its context, and its options are an array');
+    ok(v(asTool('request_approval'), call({ title: 't', summary: 's', command: 'c', wait: 'false' })).wait === false, 'the real tools: request_approval accepts "false" as false');
+    ok(v(asTool('handoff'), call({ to: 'x', task: 't', context: 'c' })).to === 'x' && /must be one of "x"/.test((() => { try { v(asTool('handoff'), call({ to: 'y', task: 't', context: 'c' })); } catch (e) { return e.message; } })()), 'the real tools: a handoff to someone who is not a teammate is refused');
   }
 
   console.log(`\nALL ${pass} CHECKS PASSED`);
