@@ -47,14 +47,17 @@ export function loadPolicy(root: string, relPath: string): Policy {
   if (!fs.existsSync(p)) {
     return DEFAULT_POLICY;
   }
-  return { ...DEFAULT_POLICY, ...JSON.parse(fs.readFileSync(p, 'utf8')) };
+  const custom = JSON.parse(fs.readFileSync(p, 'utf8'));
+  // The protected paths are a floor: a policy can add to them but never remove one, so no policy lets an agent rewrite its own definition.
+  return { ...DEFAULT_POLICY, ...custom, protectedPaths: [...new Set([...DEFAULT_POLICY.protectedPaths, ...(Array.isArray(custom.protectedPaths) ? custom.protectedPaths : [])])] };
 }
 
 /** Allow rule for running scripts that ship inside an assigned skill. */
 export function skillScriptRule(relDir: string): string {
   const dir = relDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Interpreters: python/python3, py (Windows launcher), node, bash/sh, pwsh/powershell.
-  return `^((python3?|py|node|bash|sh|pwsh|powershell)\\s+)?(\\./)?${dir}/scripts/`;
+  // No `..` segment anywhere in the command: `scripts/../../x` must not reach a script outside the skill.
+  return `^(?!.*(?:^|[\\s/\\\\])\\.\\.(?:[/\\\\]|\\s|$))((python3?|py|node|bash|sh|pwsh|powershell)\\s+)?(\\./)?${dir}/scripts/`;
 }
 
 export function deniedBy(policy: Policy, command: string): string | undefined {

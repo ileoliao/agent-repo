@@ -1635,6 +1635,24 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     fs.rmSync(R, { recursive: true, force: true });
   }
 
+  console.log('policy: the protected floor, and the open example');
+  {
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-policy-'));
+    fs.mkdirSync(path.join(R, '.loop', 'policies'), { recursive: true });
+    fs.writeFileSync(path.join(R, '.loop', 'policies', 'mine.json'), JSON.stringify({ protectedPaths: ['notes/**'], allowCommands: ['^cat\\b'] }));
+    const mine = loadPolicy(R, '.loop/policies/mine.json');
+    ok(['.loop/**', '.github/**', '.git/**', '**/*.env', 'notes/**'].every(p => mine.protectedPaths.includes(p)), 'a policy that lists its own protected paths adds to the defaults and cannot drop one');
+    ok(decideCommand(mine, 'cat f > .github/agents/x.agent.md').decision === 'deny' && decideWrite(mine, '.github/agents/x.agent.md').decision === 'deny', 'so such a policy cannot be used to rewrite an agent file');
+    const rule = skillScriptRule('.github/skills/x');
+    ok(new RegExp(rule).test('python3 .github/skills/x/scripts/run.py --n 5') && new RegExp(rule).test('python3 .github/skills/x/scripts/a.py 1..5'), 'a skill script still runs with ordinary arguments');
+    ok(!new RegExp(rule).test('python .github/skills/x/scripts/../../../../.loop/outbox/a.py') && !new RegExp(rule).test('node .github/skills/x/scripts/a.js ../b'), 'a ".." segment never matches the skill-script rule');
+    const open = loadPolicy(path.join(__dirname, '..', 'examples'), 'policies/open.json');
+    for (const c of ['python3 tools/summarize.py logs/2026-10-13.json', 'python3 -c "print(1)"', 'node scripts/agg.js', 'bash run.sh', 'cat a.json | jq .x | sort | uniq -c']) { ok(decideCommand(open, c).decision === 'allow', `open policy runs: ${c}`); }
+    for (const c of ['curl http://x', 'rm -rf data', 'python3 ../x.py', 'git push origin main', 'python3 a.py > /etc/x', 'python3 a.py > .github/agents/x.md']) { ok(decideCommand(open, c).decision === 'deny', `open policy still refuses: ${c}`); }
+    ok(decideWrite(open, 'tools/summarize.py').decision === 'allow' && decideWrite(open, '.github/agents/a.agent.md').decision === 'deny' && decideWrite(open, '.loop/policies/open.json').decision === 'deny' && decideWrite(open, '.loop/outbox/r.md').decision === 'allow', 'open policy: the workspace is writable, the agent definitions and policies are not, the outbox is');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
   console.log('console: run status, review binding, page states');
   {
     const { consoleModel, renderBody } = require(`${OUT}/console.js`);
