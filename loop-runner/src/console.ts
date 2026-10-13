@@ -572,7 +572,7 @@ a{color:var(--vscode-textLink-foreground)}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;font-size:.88em;font-weight:600;white-space:nowrap;border:1px solid currentColor}
 .chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}.chip.warn{color:var(--warn-text)}.chip.info{color:var(--info)}.chip.mute{color:var(--vscode-descriptionForeground)}
 .run{border:1px solid var(--vscode-panel-border);border-radius:var(--r);margin-bottom:8px;background:var(--vscode-sideBar-background,transparent)}
-.run>summary{padding:10px 12px;flex-wrap:wrap}.run>summary .run-sum{flex:1 1 220px;min-width:180px}.run-why{flex-basis:100%;padding-left:26px;font-size:.88em;color:var(--warn-text)}.run>summary:hover{background:var(--vscode-list-hoverBackground)}.run-agent{font-weight:600}.run-sum{color:var(--vscode-descriptionForeground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run>summary{padding:10px 12px;flex-wrap:wrap}.run>summary .run-sum{flex:1 1 100px;min-width:100px}.run-why{flex-basis:100%;padding-left:26px;font-size:.88em;color:var(--warn-text)}.run>summary:hover{background:var(--vscode-list-hoverBackground)}.run-agent{font-weight:600}.run-sum{color:var(--vscode-descriptionForeground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .run-body{padding:0 14px 12px 36px}
 .timeline{list-style:none;margin:6px 0 10px;padding:0}
 .step{display:flex;gap:10px;padding:5px 0;position:relative}.step:not(:last-child)::before{content:"";position:absolute;left:7px;top:22px;bottom:-4px;width:1px;background:var(--vscode-panel-border)}
