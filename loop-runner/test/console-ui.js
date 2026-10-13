@@ -74,6 +74,13 @@ ok(!/onclick="boom/.test(hostileCmd), 'a hostile command text cannot break out o
 ok(!/see run log/.test(renderBody({ ...base, pending: [{ id: 'g', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'x', files: [], resume: true, status: 'pending', createdAt: now, previews: [] }] })), 'no text that looks like a link but is not one');
 ok(/The Add buttons are off because GitHub Copilot is not signed in/.test(renderBody({ ...base, running: false, agents: [], copilot: 0, tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'disabled starters say why');
 
+console.log('allow from the chat thread');
+const threadRun = (steps) => ({ kind: 'result', ts: now, chainId: 'c1', status: 'blocked', label: 'Blocked', tone: 'warn', detail: 'Could not reach the API', deliverables: [], supporting: [], fold: [{ kind: 'steps', ts: now, steps }], stepCount: steps.length, problems: { refused: 1, error: 0, failed: 0 } });
+const tstep = (cmd, rule) => ({ step: 1, kind: 'tool', title: 'run_command', phrase: 'ran a command', routine: false, detail: `REFUSED by policy (${rule}).`, ok: false, refused: { command: cmd, rule } });
+const inChat = ev => renderBody({ ...base, tab: 'chat', chat: { agents: [{ name: 'a', description: 'd', state: 'idle', avatar: 'blocked', line: 'x', pendingMessages: 0, needsYou: 0 }], selected: 'a', events: [ev], hidden: 0, gates: [] } });
+const chatAllow = inChat(threadRun([tstep('harbor status --json', 'no allow rule matched')]));
+ok(/data-allow-agent="a" data-allow-cmd="harbor status --json"/.test(chatAllow), 'a blocked result in the chat can allow the refused command right there');
+ok(!/data-allow-agent/.test(inChat(threadRun([tstep('curl https://x', '\\bcurl\\b')]))) && /matches the deny rule/.test(inChat(threadRun([tstep('curl https://x', '\\bcurl\\b')]))), 'a deny rule is explained in the chat too, with no Allow');
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');
 console.log(`${n} console wording checks passed`);

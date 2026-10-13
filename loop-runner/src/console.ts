@@ -4,7 +4,7 @@ import { sha256Of } from './gates';
 import * as path from 'path';
 import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
-import { Active, brief, clip, firstLine, isActive } from './textutil';
+import { refusalOf, Active, brief, clip, firstLine, isActive } from './textutil';
 import { Task, listTasks } from './tasks';
 import { AvatarState, ChatState, ThreadEvent, ThreadStep, Tone, buildThread, glance } from './thread';
 
@@ -86,8 +86,8 @@ export function stepsOf(file: string): Step[] {
     } else if (e.type === 'tool') {
       const result = String(e.result ?? '');
       const ok = !/^(REFUSED|ERROR|Not sent)/.test(result);
-      const refusal = e.name === 'run_command' && typeof e.input?.command === 'string' ? /^REFUSED by policy \((.+?)\)/.exec(result) : null;
-      out.push({ step, kind: e.gateId ? 'gate' : 'tool', title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`, detail: clip(firstLine(result), 160) || undefined, ok, ...(refusal ? { refused: { command: String(e.input.command).slice(0, 500), rule: refusal[1] } } : {}) });
+      const refusal = refusalOf(e.name, e.input, result);
+      out.push({ step, kind: e.gateId ? 'gate' : 'tool', title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`, detail: clip(firstLine(result), 160) || undefined, ok, ...(refusal ? { refused: refusal } : {}) });
     } else if (e.type === 'end') {
       out.push({ step, kind: 'end', title: `${e.status ?? 'done'}${e.summary ? ` · ${clip(String(e.summary), 140)}` : ''}`, ok: e.status === 'done' || e.status === undefined });
     } else if (e.type === 'error') {
@@ -223,7 +223,7 @@ function gateCard(g: GateView): string {
   const notes = [
     missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '',
     previews.length && !missing.length ? `<div class="note">Your approval covers ${truncated ? 'the whole of each file (only the first part of a long one is shown above; open it to read the rest)' : 'the file contents shown above'}. If a file changes before it runs, nothing runs and you review again.</div>` : '',
-    '<div class="note">Runs as your user account in the workspace folder, not in a sandbox. Only the secrets you gave this agent are available to it.</div>'
+    '<div class="note">Runs as your user account in the workspace folder, not in a sandbox. Only the secrets you gave this mate are available to it.</div>'
   ].join('');
   return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${body}
     <div class="label">This exact command runs when you approve</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${files}${notes}
@@ -232,7 +232,7 @@ function gateCard(g: GateView): string {
 }
 
 /** For each command policy refused: say which rule did it, and offer the one-click allow only when no deny rule is involved. */
-function refusalsOf(r: ConsoleRun): string {
+function refusalsOf(r: { agent: string; steps: { refused?: { command: string; rule: string } }[] }): string {
   const seen = new Set<string>();
   const rows: string[] = [];
   for (const s of r.steps) {
@@ -385,9 +385,11 @@ function threadEvent(e: ThreadEvent, agent: string): string {
     const inner = e.fold.map(f => threadEvent(f, agent)).join('');
     const label = e.stepCount ? `Show ${plural(e.stepCount, 'step', 'steps')}` : 'Show details';
     const fold = inner ? `<details class="rfold" data-k="rf-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${esc(label)}</span></summary><div class="rfold-body">${inner}</div></details>` : '';
+    const foldSteps = e.fold.flatMap(f => (f.kind === 'steps' ? f.steps : []));
+    const refusals = refusalsOf({ agent, steps: foldSteps });
     const pr = e.problems, probs = [pr.refused ? `${pr.refused} refused` : '', pr.error ? `${pr.error} error${pr.error === 1 ? '' : 's'}` : '', pr.failed ? `${pr.failed} failed` : ''].filter(Boolean).join(' · ');
     if (e.status === 'nothing_to_do') {
-      return `<div class="rquiet" data-result="nothing_to_do"><div class="rtop"><span class="chip mute">${esc(e.label)}</span>${e.detail ? `<span class="rgoal ell" title="${esc(e.detail)}">${esc(e.detail)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${probs ? `<div class="rprob">${esc(probs)}</div>` : ''}${fold}</div>`;
+      return `<div class="rquiet" data-result="nothing_to_do"><div class="rtop"><span class="chip mute">${esc(e.label)}</span>${e.detail ? `<span class="rgoal ell" title="${esc(e.detail)}">${esc(e.detail)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${probs ? `<div class="rprob">${esc(probs)}</div>` : ''}${refusals}${fold}</div>`;
     }
     const row = (d: { path: string; preview?: string }) => { const i = d.path.lastIndexOf('/'); return `<a class="deliv" href="#" data-open="${esc(d.path)}" title="${esc(d.path)}">${icon('file')}<span class="dtext"><span class="dline"><span class="dname">${esc(d.path.slice(i + 1))}</span>${i > 0 ? `<span class="ddir ell">${esc(d.path.slice(0, i))}</span>` : ''}</span>${d.preview ? `<span class="dprev ell">${esc(d.preview)}</span>` : ''}</span></a>`; };
     const sup = e.supporting.length ? `<details class="rsup" data-k="rs-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${plural(e.supporting.length, 'supporting file', 'supporting files')}</span></summary><div class="rfiles">${e.supporting.map(o => `<a class="filechip" href="#" data-open="${esc(o)}" title="${esc(o)}">${icon('file')}<span class="ell">${esc(o)}</span></a>`).join('')}</div></details>` : '';
@@ -397,7 +399,7 @@ function threadEvent(e: ThreadEvent, agent: string): string {
       + (e.detail ? `<div class="rsum wrap-text">${esc(e.detail)}</div>` : '')
       + (e.next ? line('Next:', e.next) : '') + (e.handoff ? line(`Handed to ${e.handoff.to}:`, e.handoff.task) : '')
       + (e.approvals ?? []).map(a => line('Approved:', a)).join('')
-      + (files ? `<div class="rdelivs">${files}</div>` : '') + sup + (probs ? `<div class="rprob">${esc(probs)}</div>` : '') + fold + '</div>';
+      + (files ? `<div class="rdelivs">${files}</div>` : '') + sup + (probs ? `<div class="rprob">${esc(probs)}</div>` : '') + refusals + fold + '</div>';
   }
   const outs = (e.outputs ?? []).map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
   return `<div class="sline"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.detail ? `<span class="sdetail wrap-text">${esc(e.detail)}</span>` : ''}${outs}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`;

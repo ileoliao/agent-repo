@@ -46,3 +46,10 @@ export function humanize(name: string, input: unknown): Humanized {
     default: return { phrase: `${name}${brief(input) ? ` · ${clip(brief(input), 48)}` : ''}`, routine: false };
   }
 }
+
+/** A `run_command` that policy refused, with the rule that did it. Both the run list and the chat thread read it from the audit. */
+export function refusalOf(name: unknown, input: any, result: string): { command: string; rule: string } | undefined {
+  if (name !== 'run_command' || typeof input?.command !== 'string') { return undefined; }
+  const m = /^REFUSED by policy \((.+?)\)/.exec(result);
+  return m ? { command: String(input.command).slice(0, 500), rule: m[1] } : undefined;
+}
