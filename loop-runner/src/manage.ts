@@ -4,6 +4,7 @@ import { createTwoFilesPatch } from 'diff';
 import { parseFrontmatter } from './frontmatter';
 import { cronMatches, validateCron } from './cron';
 import { AgentDef, agentFromText, loadAllAgents, problemsIfWritten } from './team';
+import { listQueue } from './maintenance';
 
 /**
  * Changes the human asks for in conversation (schedule, task text, role instructions, standing memory).
@@ -595,4 +596,27 @@ export function applyChange(root: string, c: Change): void {
   if (now !== c.before) { throw new Error(`${c.file} changed since this was proposed. Ask again so the change is built on the current file.`); }
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   if (c.delete || (c.after === '' && c.file.startsWith(MEMORY_DIR))) { fs.rmSync(abs, { force: true }); } else { fs.writeFileSync(abs, c.after); }
+}
+
+/**
+ * Take an agent off the team. The file is moved to `.loop/archive/agents/`, never deleted, so putting it back is a move.
+ * Refused while it still has unfinished work or another agent can hand work to it.
+ */
+export function proposeAgentRemove(root: string, name: string): { changes: Change[]; summary: string; notes: string } | { error: string } {
+  const r = readAgent(root, name);
+  if (!r.ok) { return { error: r.error }; }
+  const open = listQueue(root).filter(q => q.agent === name);
+  if (open.length) { return { error: `${name} still has ${open.length} unfinished item(s). Cancel them first (list_queue, propose_cancel).` }; }
+  const from = [...loadAllAgents(root).values()].filter(a => a.name !== name && a.handoffs.includes(name)).map(a => a.name);
+  if (from.length) { return { error: `${from.join(', ')} can hand work to ${name}. Remove that handoff first, or the removal would leave a broken team.` }; }
+  const file = r.agent.file;
+  const before = fs.readFileSync(path.join(root, file), 'utf8');
+  const stamp = new Date().toISOString().slice(0, 10);
+  const archive = `.loop/archive/agents/${stamp}-${path.basename(file)}`;
+  if (fs.existsSync(path.join(root, archive))) { return { error: `${archive} already exists. Ask again tomorrow, or move it away.` }; }
+  return {
+    summary: `Remove agent ${name}`,
+    notes: `${name} leaves the team and stops running. Its file moves to ${archive}; to bring it back, move it to ${file}. Its standing notes and finished runs are kept until cleanup.`,
+    changes: [{ file: archive, before: null, after: before, summary: `archive ${name}` }, { file, before, after: '', summary: `remove ${name}`, delete: true }]
+  };
 }

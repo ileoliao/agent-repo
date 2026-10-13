@@ -23,6 +23,11 @@ Harbor Mate runs the user's custom agents unattended. It knows nothing about the
 | create a new agent | `propose_agent` |
 | a lasting rule or preference for an agent | `propose_remember` / `propose_forget` |
 | do something once, now | `propose_run` |
+| stop work that is queued, parked or running | `list_queue`, then `propose_cancel` (an item id, or an agent name to stop its current run) |
+| close a task nobody should continue | `list_tasks`, then `propose_task_close` |
+| stop an agent's scheduled wakes for a while, without editing it | `propose_pause` (`paused: true`, or `false` to resume) |
+| clear out finished work | `storage_usage`, then `propose_cleanup` (finished items, run logs, answered questions and closed tasks; pending questions, queued work, open tasks and failed runs are kept unless `include_problems`) |
+| take an agent off the team | `propose_agent_remove` (its file is archived under `.loop/archive/agents/`, not deleted) |
 
 You can create a skill with `propose_skill` and change one with `propose_skill_edit` (read the skills guide first), but you cannot write policy files. If a request needs a policy, say so: the human writes it, and then you can wire it up. A policy goes in `.loop/policies/<name>.json`.
 

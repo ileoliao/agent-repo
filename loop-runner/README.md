@@ -82,6 +82,15 @@ agent 会记住自己手上还没做完的任务，可以同时有好几个，�
 - 控制台的 Overview 页有 “Open tasks”，每个任务可以点 Close（记为 `dropped`，不再有人持有）；`@mate` 可以用 `list_tasks` 查看
 - 它和 `loop-memory` 不同：`loop-memory` 存知识和被跟踪的对象，任务是“进行中的承诺”，谁持有要随 `handoff` 变化，只有运行时看得见，所以由运行时记账
 
+## 清理与管理
+
+`.loop/` 里的已完成工作不会无限增长:
+
+- **自动清理**:启动团队时和之后每天一次,按保留期删除已结束的内容。默认:完成的工作项、已处理的提问和审批保留 14 天;运行记录(审计)和已完成或已放弃的任务保留 30 天。可在设置里改 `harborMate.retention.doneDays / runsDays / gateDays / taskDays`。每次清理在 `.loop/maintenance.jsonl` 留一行汇总。
+- **永远不会自动删**:待回答的提问和审批、排队或等待中的工作项、未完成的任务、以 `blocked`、`error`、`max_steps`、`stalled` 结束的工作项及其运行记录。
+- **手动**:命令 `Harbor Mate: Clean Up Finished Work` 先列出数量再确认。在 Chat 里说 `@mate 清理已完成的` 会先出预览,点 Apply 才删。
+- **其他管理**:`@mate` 还能取消排队、等待或运行中的工作(`propose_cancel`)、关闭任务(`propose_task_close`)、暂停或恢复某个 agent 的定时(`propose_pause`,不改文件,手动给的任务照常运行)、把 agent 移出团队(`propose_agent_remove`,文件归档到 `.loop/archive/agents/`,移回去即可恢复),以及查看队列、占用和单次运行详情(`list_queue`、`storage_usage`、`get_run`)。
+
 ## 多个目标与并发
 
 一个 agent 可以同时负责几件事（一个助手，多个长期目标），而不是一件事配一个 agent：

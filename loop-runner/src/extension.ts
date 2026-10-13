@@ -1,3 +1,4 @@
+import { DEFAULT_RETENTION, Retention, autoCleanup, describeResult, pausedAgents, planCleanup, runCleanup } from './maintenance';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -106,6 +107,20 @@ export class TeamService {
 
   root(): string | undefined { return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath; }
   /** Settings live under `harborMate`; a value still set under the old `loopRunner` prefix keeps working. */
+  /** How long finished work is kept; see `maintenance.ts`. */
+  retention(): Retention {
+    const n = (k: string, d: number) => { const v = Number(this.cfg().get<number>(k, d)); return Number.isFinite(v) && v >= 1 ? v : d; };
+    return { doneDays: n('retention.doneDays', DEFAULT_RETENTION.doneDays), runsDays: n('retention.runsDays', DEFAULT_RETENTION.runsDays), gateDays: n('retention.gateDays', DEFAULT_RETENTION.gateDays), taskDays: n('retention.taskDays', DEFAULT_RETENTION.taskDays) };
+  }
+
+  /** Daily housekeeping, run when the team starts and on ticks (it does nothing after the first pass of a day). */
+  private housekeeping(root: string): void {
+    try {
+      const r = autoCleanup(root, this.retention(), this.now());
+      if (r && Object.values(r.removed).some(n => n)) { this.out.appendLine(`Cleanup: ${describeResult(r)}`); }
+    } catch (e: any) { this.out.appendLine(`Cleanup failed: ${e?.message ?? e}`); }
+  }
+
   cfg() {
     const now = vscode.workspace.getConfiguration('harborMate');
     const old = vscode.workspace.getConfiguration('loopRunner');
@@ -262,6 +277,7 @@ export class TeamService {
   tick(): Promise<void> {
     const root = this.root();
     if (!this.running || !root) { this.changed(); return Promise.resolve(); }
+    this.housekeeping(root);
     return this.schedule(root).then(() => checkSilence(root, this.team.values(), this.startedAt, this.now(), this.silent, ev => this.alert(ev)))
       .then(() => { void this.pump(root); }).then(() => { this.changed(); });
   }
@@ -314,7 +330,8 @@ export class TeamService {
       const now = this.now();
       const io = this.goalIO(root);
       // Decided up front: firing one goal changes lastFired, not what is due for the others.
-      for (const d of goalsDue(this.team.values(), this.lastFired, now, catchUp)) {
+      const paused = pausedAgents(root);
+      for (const d of goalsDue([...this.team.values()].filter(a => !paused.has(a.name)), this.lastFired, now, catchUp)) {
         if (!this.running && catchUp) { return; }
         // Also covers slots missed while the machine slept with VS Code open (one catch-up wake, not one per slot).
         if (d.missed) { this.out.appendLine(`${d.agent.name}/${d.goal.id}: missed a scheduled wake; catching up once.`); }
@@ -570,7 +587,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       submit: (agent, task) => svc.submit(agent, task),
       answer: (id, text) => after(answerQuestion(r, id, text).woke),
       power: async on => { if (on) { await svc.start(true); } else { svc.stop(true); } refresh(); },
-      reload: async () => { const errs = await svc.reloadAll(); refresh(); return errs; }
+      reload: async () => { const errs = await svc.reloadAll(); refresh(); return errs; },
+      cancel: agent => { const ok = svc.cancelRun(agent); refresh(); return ok; },
+      retention: svc.retention()
     } : undefined;
   });
   const panelTimer = setInterval(() => consolePanel?.refresh(), 3000);
@@ -610,6 +629,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         { label: '$(sync) Reload & Validate Team', run: run('harborMate.reloadTeam') },
         { label: '$(send) Give an Agent a Task', run: run('harborMate.runAgent') },
         { label: '$(info) Show Team Status', run: run('harborMate.status') },
+        { label: '$(trash) Clean Up Finished Work', run: run('harborMate.cleanUp') },
         { label: '$(key) Set Secret', run: run('harborMate.setSecret') },
         { label: '$(list-unordered) List Available Models', run: run('harborMate.listModels') },
         { label: '$(bell) Send a Test Notification', run: run('harborMate.testNotify') }
@@ -624,6 +644,13 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!pick) { return; }
       const task = await vscode.window.showInputBox({ prompt: `Task for ${pick.label}`, ignoreFocusOut: true });
       if (task) { svc.submit(pick.label, task); }
+    }),
+    vscode.commands.registerCommand('harborMate.cleanUp', async () => {
+      const victims = planCleanup(root(), svc.retention());
+      if (!victims.length) { vscode.window.showInformationMessage('Harbor Mate: nothing to clean up.'); return; }
+      const kb = Math.round(victims.reduce((n, v) => n + v.bytes, 0) / 1024);
+      const ok = await vscode.window.showWarningMessage(`Harbor Mate: delete ${victims.length} finished file(s), about ${kb} KB? Pending questions, queued work, open tasks and failed runs are kept.`, { modal: true }, 'Delete');
+      if (ok === 'Delete') { const msg = describeResult(runCleanup(root(), victims, 'human')); out.appendLine(`Cleanup: ${msg}`); vscode.window.showInformationMessage(`Harbor Mate: ${msg}`); inbox.refresh(); consolePanel?.refresh(); }
     }),
     vscode.commands.registerCommand('harborMate.setSecret', async () => {
       const name = await vscode.window.showInputBox({ prompt: 'Env var name (e.g. HARBOR_PAT, JIRA_TOKEN)', ignoreFocusOut: true });

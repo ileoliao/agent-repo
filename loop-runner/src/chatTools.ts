@@ -1,12 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Change, GoalInput, Proposed, applyChange, diffOf, memoryFor, proposeAgent, proposeForget, proposeGoals, proposeRemember, proposeRoleEdit, proposeSchedule, proposeSkills } from './manage';
+import { Change, GoalInput, Proposed, applyChange, diffOf, memoryFor, proposeAgent, proposeAgentRemove, proposeForget, proposeGoals, proposeRemember, proposeRoleEdit, proposeSchedule, proposeSkills } from './manage';
 import { proposeSkill, proposeSkillEdit } from './skillAuthoring';
 import { loadAllAgents, loadSkills } from './team';
 import { listGates } from './queue';
+import { DEFAULT_RETENTION, cancelQueued, describeResult, listQueue, pausedAgents, planCleanup, runCleanup, setPaused, storageUsage, Retention } from './maintenance';
 import { recentRuns } from './runs';
 import { agentRows } from './status';
-import { listTasks } from './tasks';
+import { closeTaskByHuman, getTask, listTasks } from './tasks';
 import { Active } from './textutil';
 
 /**
@@ -26,6 +27,10 @@ export interface ChatHost {
   power(on: boolean): Promise<void>;
   /** Re-read agent files; returns config problems. */
   reload(): Promise<string[]>;
+  /** Stop the agent's running item for good. Returns false when it is not running. */
+  cancel?(agent: string): boolean;
+  /** How long finished work is kept (the user's settings). Defaults to `DEFAULT_RETENTION`. */
+  retention?: Retention;
   /** The agent authoring guide shipped with the extension. Defaults to guides/authoring.md next to out/. */
   guidePath?: string;
   /** The skill authoring guide. Defaults to guides/skill-authoring.md next to out/. */
@@ -101,6 +106,14 @@ export const CHAT_TOOLS: ChatTool[] = [
   { name: 'propose_forget', description: 'Propose removing the one standing note that contains the given text.', inputSchema: obj({ agent: str("Agent name or 'all'"), match: str('Text that identifies the note') }, ['agent', 'match']) },
   { name: 'propose_run', description: 'Propose giving a team agent a one-off task to run now.', inputSchema: obj({ agent: str('Agent name'), task: str('The task') }, ['agent', 'task']) },
   { name: 'propose_answer', description: 'Propose answering a pending question with the human\'s words. Never invent an answer the human did not give.', inputSchema: obj({ gate_id: str('Id from list_pending'), answer: str('The answer') }, ['gate_id', 'answer']) },
+  { name: 'list_queue', description: 'List work that has not finished: queued items, items parked on a question or approval, and what is running now. Ids are for propose_cancel.', inputSchema: obj({}, []) },
+  { name: 'storage_usage', description: "How much finished work Harbor Mate keeps (items, run logs, questions, tasks) and what a cleanup would remove under the current retention. Use before propose_cleanup.", inputSchema: obj({}, []) },
+  { name: 'get_run', description: 'The step-by-step record of one run (tool calls, results, how it ended). Get chain ids from recent_runs.', inputSchema: obj({ chain_id: str('Chain id from recent_runs') }, ['chain_id']) },
+  { name: 'propose_cleanup', description: "Propose deleting finished work: done items, run logs, answered questions and approvals, closed tasks. Shows exactly what would go; the human must apply it. Never touches pending questions, queued or parked items, or open tasks; failed or blocked runs stay unless include_problems is true. Defaults follow the retention settings (14 days for items, questions and approvals, 30 for run logs and tasks); older_than_days overrides them, 0 means everything finished.", inputSchema: obj({ agent: str('Only this agent'), older_than_days: { type: 'number', description: 'Replace the retention age for every kind' }, include_problems: { type: 'boolean', description: 'Also remove runs that ended blocked, error, max_steps or stalled' } }, []) },
+  { name: 'propose_cancel', description: "Propose cancelling work that has not finished. Give the id from list_queue to cancel a queued or parked item, or just the agent name to stop what it is running now.", inputSchema: obj({ id: str('Item id from list_queue'), agent: str('Agent whose current run to stop') }, []) },
+  { name: 'propose_task_close', description: 'Propose closing an open task that no agent should keep working on (it is marked dropped). Get ids from list_tasks.', inputSchema: obj({ id: str('Task id from list_tasks') }, ['id']) },
+  { name: 'propose_pause', description: "Propose pausing or resuming an agent's scheduled wakes without touching its file. A paused agent still runs tasks given to it by hand.", inputSchema: obj({ agent: str('Agent name'), paused: { type: 'boolean', description: 'true to pause, false to resume' } }, ['agent', 'paused']) },
+  { name: 'propose_agent_remove', description: 'Propose removing an agent from the team. Its file is moved to .loop/archive/agents/ (not deleted), so it can be restored by moving it back. Refused while it has unfinished work or other agents hand off to it.', inputSchema: obj({ agent: str('Agent name') }, ['agent']) },
   { name: 'propose_team_power', description: 'Propose starting or stopping the unattended team.', inputSchema: obj({ on: { type: 'boolean', description: 'true to start, false to stop' } }, ['on']) }
 ];
 
@@ -158,7 +171,7 @@ async function runTool(name: string, input: any, host: ChatHost): Promise<ToolRe
     case 'list_agents': {
       const rows = new Map(agentRows(root, host.state().active).map(r => [r.name, r]));
       return { text: json({ teamRunning: host.state().running, agents: [...agents.values()].map(a => ({
-        name: a.name, description: a.description, runsUnattended: a.inLoop, state: rows.get(a.name)?.state, schedule: a.schedule, task: a.task && clip(a.task, 200), goals: a.goals.map(g => ({ id: g.id, text: clip(g.text, 150), schedule: g.schedule, urgent: g.urgent })),
+        name: a.name, description: a.description, runsUnattended: a.inLoop, paused: pausedAgents(root).has(a.name) || undefined, state: rows.get(a.name)?.state, schedule: a.schedule, task: a.task && clip(a.task, 200), goals: a.goals.map(g => ({ id: g.id, text: clip(g.text, 150), schedule: g.schedule, urgent: g.urgent })),
         model: a.modelFamily ?? a.models[0], nextWake: rows.get(a.name)?.next?.toLocaleString(), file: a.file })) }) };
     }
     case 'get_agent': {
@@ -176,6 +189,66 @@ async function runTool(name: string, input: any, host: ChatHost): Promise<ToolRe
         id: t.id, title: t.title, holders: t.holders, next: t.next, updated: t.updatedAt, recent: t.log.slice(-3).map(e => ({ agent: e.agent, event: e.event, status: e.status, text: e.text && clip(e.text, 150) })) }))) };
     case 'get_memory':
       return { text: memoryFor(root, String(input.agent)) || '(nothing remembered)' };
+    case 'list_queue':
+      { const act = host.state().active; return { text: json({ running: act === undefined ? [] : Array.isArray(act) ? act : [act], items: listQueue(root) }) }; }
+    case 'storage_usage': {
+      const ret = host.retention ?? DEFAULT_RETENTION;
+      const would = planCleanup(root, ret);
+      return { text: json({ keeps: storageUsage(root), retention: ret, wouldRemoveNow: would.length, wouldFree: `${(would.reduce((n, v) => n + v.bytes, 0) / 1024).toFixed(0)} KB` }) };
+    }
+    case 'get_run': {
+      const id = String(input.chain_id ?? '');
+      if (!/^[A-Za-z0-9_-]+$/.test(id)) { return { text: 'That is not a chain id. Use recent_runs.' }; }
+      const runs = path.join(root, '.loop', 'runs');
+      const files = fs.existsSync(runs) ? fs.readdirSync(runs).map(d => path.join(runs, d, `${id}.jsonl`)).filter(f => fs.existsSync(f)) : [];
+      if (!files.length) { return { text: `No run ${id}. It may have been cleaned up.` }; }
+      return { text: clip(files.map(f => fs.readFileSync(f, 'utf8')).join('').split('\n').filter(Boolean).map(l => clip(l, 400)).join('\n'), 8000) };
+    }
+    case 'propose_cleanup': {
+      const ret = host.retention ?? DEFAULT_RETENTION;
+      const victims = planCleanup(root, ret, new Date(), { agent: input.agent ? String(input.agent) : undefined, olderThanDays: typeof input.older_than_days === 'number' ? input.older_than_days : undefined, includeProblems: input.include_problems === true });
+      if (!victims.length) { return { text: 'Nothing to clean up under those rules.' }; }
+      const by = victims.reduce<Record<string, number>>((m, v) => { m[v.kind] = (m[v.kind] ?? 0) + 1; return m; }, {});
+      const title = `Clean up ${victims.length} finished file${victims.length > 1 ? 's' : ''}`;
+      return {
+        text: `Proposal ready: "${title}" (${Object.entries(by).map(([k, n]) => `${n} ${k}`).join(', ')}). It is shown to the human with an Apply button; nothing has been deleted. Tell them briefly what goes and wait.`,
+        proposal: {
+          title,
+          detail: `Deleted for good (the audit trail of anything still open is kept):\n\n` + victims.slice(0, 40).map(v => `- ${v.label}, ${v.ageDays} days old`).join('\n') + (victims.length > 40 ? `\n- and ${victims.length - 40} more` : ''),
+          apply: async () => describeResult(runCleanup(root, victims, 'human'))
+        }
+      };
+    }
+    case 'propose_cancel': {
+      if (input.id) {
+        const row = listQueue(root).find(r => r.id === String(input.id));
+        if (!row) { return { text: `No queued or waiting item ${input.id}. Use list_queue.` }; }
+        const title = `Cancel ${row.agent}'s ${row.state} item`;
+        return { text: `Proposal ready: "${title}". Nothing has been cancelled; tell the human briefly and wait for Apply.`, proposal: { title, detail: `${row.task}\n\nIt moves to the finished list as cancelled${row.state === 'waiting' ? ', and the question or approval it is parked on is closed' : ''}.`, apply: async () => cancelQueued(root, row.id) } };
+      }
+      const agent = String(input.agent ?? '');
+      if (!agent) { return { text: 'Give an item id from list_queue, or an agent name to stop its current run.' }; }
+      if (!host.cancel) { return { text: 'Stopping a running agent is not available here.' }; }
+      const title = `Stop ${agent}'s current run`;
+      return { text: `Proposal ready: "${title}". Nothing has stopped yet; tell the human briefly and wait for Apply.`, proposal: { title, detail: 'The run is closed as cancelled and is not retried.', apply: async () => (host.cancel!(agent) ? `Stopped ${agent}'s run.` : `${agent} is not running anything right now.`) } };
+    }
+    case 'propose_task_close': {
+      const t = getTask(root, String(input.id ?? ''));
+      if (!t) { return { text: `No task ${input.id}. Use list_tasks.` }; }
+      if (t.state !== 'open') { return { text: `Task ${t.id} is already ${t.state}.` }; }
+      const title = `Close task "${clip(t.title, 60)}"`;
+      return { text: `Proposal ready: "${title}". Nothing is closed yet; tell the human briefly and wait for Apply.`, proposal: { title, detail: `Held by ${t.holders.join(', ') || 'nobody'}. It is marked dropped and no agent holds it any more.`, apply: async () => (closeTaskByHuman(root, t.id) ? `Closed task ${t.id}.` : `Task ${t.id} could not be closed.`) } };
+    }
+    case 'propose_pause': {
+      const a = agents.get(String(input.agent));
+      if (!a || !a.inLoop) { return { text: `${input.agent} is not an unattended team agent. Use list_agents.` }; }
+      const on = input.paused === true;
+      if (pausedAgents(root).has(a.name) === on) { return { text: `${a.name} is already ${on ? 'paused' : 'running its schedule'}.` }; }
+      const title = `${on ? 'Pause' : 'Resume'} ${a.name}'s schedule`;
+      return { text: `Proposal ready: "${title}". Nothing has changed yet; tell the human briefly and wait for Apply.`, proposal: { title, detail: on ? 'Its scheduled wakes are skipped until resumed. Its file is untouched, and a task given by hand still runs.' : 'Its schedule runs again from the next matching minute.', apply: async () => { setPaused(root, a.name, on); return `${a.name} ${on ? 'paused' : 'resumed'}.`; } } };
+    }
+    case 'propose_agent_remove':
+      return changeSet(proposeAgentRemove(root, String(input.agent ?? '')), host, 'changed');
     case 'propose_schedule':
       return fromChange(proposeSchedule(root, String(input.agent), { schedule: input.off ? null : input.schedule, task: input.task, wakeIf: input.wakeIf }), host);
     case 'propose_role_edit':

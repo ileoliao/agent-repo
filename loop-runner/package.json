@@ -60,6 +60,11 @@
         "category": "Harbor Mate"
       },
       {
+        "command": "harborMate.cleanUp",
+        "title": "Clean Up Finished Work",
+        "category": "Harbor Mate"
+      },
+      {
         "command": "harborMate.setSecret",
         "title": "Set Secret (env var for skill scripts)",
         "category": "Harbor Mate"
@@ -230,6 +235,30 @@
           "default": "",
           "scope": "machine",
           "description": "Command run whenever the team needs you (question, approval, blocked, error). Receives the event as JSON in LOOP_EVENT, plus LOOP_EVENT_KIND and LOOP_EVENT_TITLE; secrets are injected. Typically a notify skill script, e.g. \"python3 .github/skills/notify-wecom/scripts/send.py\". User settings only, so a repository cannot set it."
+        },
+        "harborMate.retention.doneDays": {
+          "type": "number",
+          "default": 14,
+          "minimum": 1,
+          "description": "Days to keep finished work items. Items that ended blocked, error, max_steps or stalled are never removed automatically."
+        },
+        "harborMate.retention.runsDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Days to keep run logs (audit). Logs of unfinished or failed work are kept."
+        },
+        "harborMate.retention.gateDays": {
+          "type": "number",
+          "default": 14,
+          "minimum": 1,
+          "description": "Days to keep answered, rejected or executed questions and approvals. Pending ones are never removed."
+        },
+        "harborMate.retention.taskDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Days to keep done or dropped tasks. Open tasks are never removed."
         }
       }
     },
@@ -257,7 +286,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "rm -rf out && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository",
-    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js",
+    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js && node test/maintenance.js",
     "sim": "node test/sim/run.js"
   },
   "devDependencies": {
