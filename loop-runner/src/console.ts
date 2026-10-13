@@ -177,7 +177,7 @@ const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
   retry: { label: 'Will retry', tone: 'warn', ic: 'clock' }, blocked: { label: 'Blocked', tone: 'warn', ic: 'alert' },
   max_steps: { label: 'Step limit', tone: 'warn', ic: 'alert' }, stalled: { label: 'Stalled', tone: 'bad', ic: 'alert' },
   interrupted: { label: 'Interrupted', tone: 'warn', ic: 'alert' },
-  nothing_to_do: { label: 'Nothing to do', tone: 'mute', ic: 'check' }, open: { label: 'Not finished', tone: 'info', ic: 'clock' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
+  nothing_to_do: { label: 'Checked, nothing found', tone: 'mute', ic: 'check' }, open: { label: 'Not finished', tone: 'info', ic: 'clock' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
 };
 /** Statuses the "Problems" filter shows. */
 const PROBLEMS = new Set(['error', 'stalled', 'blocked', 'max_steps', 'interrupted', 'retry']);
@@ -188,7 +188,7 @@ const copy = (text: string, label: string) => `<button class="btn ghost" data-co
 function gateCard(g: GateView): string {
   const isQ = g.kind === 'question';
   const head = `<div class="card-head">${icon(isQ ? 'help' : 'bell', 'lead warn')}<div class="grow"><div class="card-title">${esc(g.title)}</div>
-    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span></div></div></div>`;
+    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span><span class="muted mono" title="The run that asked. Its steps are in Overview, Recent runs.">run ${esc(String(g.chainId).slice(-6))}</span></div></div></div>`;
   const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
   const previews = g.previews ?? [];
   const missing = previews.filter(p => p.sha256 === 'missing').map(p => p.path);
@@ -238,6 +238,23 @@ function taskCard(t: Task): string {
     ${nexts ? `<dl class="kv">${nexts}</dl>` : ''}</div>`;
 }
 
+/** A cron expression in words, for the common shapes; anything else is shown as written. */
+export function plainCron(c: string): string {
+  const p = c.trim().split(/\s+/);
+  if (p.length !== 5) { return c; }
+  const [mi, h, dom, mon, dow] = p;
+  const hhmm = /^\d+$/.test(mi) && /^\d+$/.test(h) ? `${h.padStart(2, '0')}:${mi.padStart(2, '0')}` : undefined;
+  const every = /^\*\/(\d+)$/.exec(mi);
+  if (every && h === '*' && dom === '*' && mon === '*' && dow === '*') { return `every ${every[1]} minutes`; }
+  if (mi === '*' && h === '*' && dom === '*' && mon === '*' && dow === '*') { return 'every minute'; }
+  if (hhmm && dom === '*' && mon === '*') {
+    if (dow === '*') { return `every day at ${hhmm}`; }
+    if (dow === '1-5') { return `weekdays at ${hhmm}`; }
+  }
+  if (/^\d+$/.test(mi) && h === '*' && dom === '*' && mon === '*' && dow === '*') { return 'every hour'; }
+  return c;
+}
+
 function agentRow(a: AgentRow): string {
   const label = a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
   const tone = a.state === 'running' ? 'info' : a.state === 'waiting' ? 'warn' : 'mute';
@@ -247,10 +264,16 @@ function agentRow(a: AgentRow): string {
     : `${lw.wake ? 'found work' : 'nothing to do'} <span class="muted">${stamp(lw.at, ago(lw.at))}</span>`;
   return `<div class="agent"><div class="agent-top">${icon('bot', 'lead')}<a class="agent-name" href="#" data-open="${esc(a.file)}">${esc(a.name)}</a>
     <span class="chip ${tone}">${icon(a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
-    <dl class="kv"><dt>Model</dt><dd class="mono">${esc(a.model ?? 'default')}</dd>
-    <dt>Next wake</dt><dd>${a.next ? stamp(a.next.toISOString(), when(a.next.toISOString())) : '<span class="muted">manual only</span>'}</dd>
-    <dt>Last check</dt><dd>${last}</dd></dl></div>`;
+    <dl class="kv">${a.schedule ? `<dt>Runs</dt><dd>${esc(plainCron(a.schedule))}</dd>` : ''}
+    <dt>Next</dt><dd>${a.next ? stamp(a.next.toISOString(), when(a.next.toISOString())) : '<span class="muted">when you give it a task</span>'}</dd>
+    ${lw ? `<dt>Last check</dt><dd>${last}</dd>` : ''}${a.model ? `<dt>Model</dt><dd class="mono">${esc(a.model)}</dd>` : ''}</dl></div>`;
 }
+
+/** What a brand-new user sees: a way forward, not a note about config files. */
+const getStartedCard = () => `<div class="empty start">${icon('bot', 'big')}<div class="empty-title">Set up your first agent</div>
+  <div class="muted">An agent does a job for you on its own and only stops to ask when it needs you. Pick a starter and it is ready in a minute, or just say what you want.</div>
+  <div class="start-actions">${btn('Add a starter agent', 'data-cmd="getStarted"', 'primary', 'play')}${btn('Describe what you want', 'data-cmd="describeAgent"', 'secondary', 'send')}</div>
+  <div class="muted tiny">Starters: a morning report of what changed in your repo, and a folder watcher. Nothing runs on a schedule until you start the team.</div></div>`;
 
 /** `hint` is trusted markup: callers pass only fixed strings. */
 const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
@@ -366,7 +389,7 @@ function avatar(name: string, state: AvatarState, size = 38): string {
 
 function renderChat(m: ConsoleModel): string {
   const c = m.chat!;
-  if (!c.agents.length) { return empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.'); }
+  if (!c.agents.length) { return getStartedCard(); }
   const sel = c.agents.find(a => a.name === c.selected)!;
   const list = c.agents.map(a => `<button class="roster-row ${a.name === sel.name ? 'on' : ''}" data-agent="${esc(a.name)}" aria-pressed="${a.name === sel.name}" title="${esc(a.name)} is ${AVATAR_TITLE[a.avatar]}: ${esc(a.line)}">${avatar(a.name, a.avatar)}`
     + `<span class="rr-main"><span class="rr-top"><span class="rr-name">${esc(a.name)}</span>${a.at ? `<span class="muted rr-time">${stamp(a.at, whenShort(a.at))}</span>` : ''}</span><span class="rr-line ${a.avatar === 'waiting' ? 'warn' : a.avatar === 'blocked' ? 'bad' : 'muted'}">${esc(a.line)}</span></span>`
@@ -400,7 +423,9 @@ export function renderBody(m: ConsoleModel): string {
   const state = !m.running ? `<span class="state off">${icon('stop')}Team stopped</span>`
     : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
     : `<span class="state idle">${icon('clock')}Team on · idle${m.next ? ` · next wake ${esc(when(m.next.at))}` : ''}</span>`;
-  const actions = (m.running ? btn('Stop team', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
+  // A brand-new workspace gets only the way forward: no tabs, no team controls that would do nothing.
+  const hasAgents = m.agents.length > 0 || m.runs.length > 0 || m.pending.length > 0 || (m.tasks ?? []).length > 0;
+  const actions = !hasAgents ? '' : (m.running ? btn('Stop team', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
     + btn('Give a task', 'data-cmd="runAgent"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult"', 'secondary', 'file');
   const last = m.runs.find(r => r.status !== 'running');
   const tiles = [
@@ -411,16 +436,19 @@ export function renderBody(m: ConsoleModel): string {
   ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
   const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
   const tasks = m.tasks ?? [];
-  const openTasks = tasks.length ? `<h2>Open tasks<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
+  const openTasks = tasks.length ? `<h2>Tasks in progress<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
   const filter = m.runs.length ? `<label class="filter"><span class="muted">Show</span><select data-filter aria-label="Filter runs"><option value="all">All runs (${m.runs.length})</option><option value="problems">Problems (${problems})</option><option value="done">Done</option></select></label>` : '';
   const runs = m.runs.length ? `<div class="runs">${m.runs.map(runCard).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
     : empty('clock', 'No runs yet', 'Press Start team, or use “Give a task” to run an agent now.');
   const agents = m.agents.length ? m.agents.map(agentRow).join('')
-    : empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.');
+    : getStartedCard();
+  const stoppedWithWork = !m.running && m.pending.length > 0;
+  const stoppedNote = stoppedWithWork ? `<div class="alert info" role="status">${icon('alert')}<span>The team is stopped. Your answer or approval is saved, but the agent only carries on once you start the team.</span>${btn('Start team', 'data-cmd="startTeam"', 'primary', 'play')}</div>` : '';
+  const tools = hasAgents ? `<div class="tools" role="group" aria-label="Tools"><span class="muted">Tools</span>${btn('Check agents', 'data-cmd="runDoctor" title="Check that every agent can run, and run their pre-checks once"', 'ghost', 'check')}${btn('Health report', 'data-cmd="showHealth" title="How each agent has been doing, and what to improve"', 'ghost', 'file')}${btn('Add an agent', 'data-cmd="getStarted" title="Add a starter agent"', 'ghost', 'play')}${btn('Clean up', 'data-cmd="cleanUp" title="Delete finished work you no longer need"', 'ghost', 'x')}</div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
   return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
-    ${note}${renderTabs(m)}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
+    ${note}${stoppedNote}${hasAgents ? renderTabs(m) : ''}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
     ${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
 }
@@ -430,7 +458,7 @@ const STYLE = `
 *{box-sizing:border-box}
 body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);line-height:1.45}
 .mono,code,pre{font-family:var(--vscode-editor-font-family,monospace);font-size:.92em}
-.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none}
+.start{padding:28px 20px;gap:10px}.start .empty-title{font-size:1.15em}.start-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:6px 0}.tools{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin:12px 0 14px}.alert .btn{margin-left:auto}textarea{border:1px solid var(--vscode-input-border,var(--vscode-panel-border))}.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none!important}
 .ic{flex:none}.big{width:28px;height:28px}.lead{width:18px;height:18px;margin-top:2px}.spin{animation:sp 1.2s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;padding:12px 0;margin-bottom:4px;background:var(--vscode-editor-background);border-bottom:1px solid var(--vscode-panel-border)}

@@ -22,7 +22,12 @@ const COMMANDS: Record<string, string> = {
   startTeam: 'harborMate.startTeam',
   stopTeam: 'harborMate.stopTeam',
   runAgent: 'harborMate.runAgent',
-  openLatestResult: 'harborMate.openLatestResult'
+  openLatestResult: 'harborMate.openLatestResult',
+  getStarted: 'harborMate.getStarted',
+  describeAgent: 'harborMate.describeAgent',
+  runDoctor: 'harborMate.runDoctor',
+  showHealth: 'harborMate.showHealth',
+  cleanUp: 'harborMate.cleanUp'
 };
 
 /** Webview console: one page with what needs you, the agents, and what each run did. */

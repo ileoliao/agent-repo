@@ -60,6 +60,11 @@
         "category": "Harbor Mate"
       },
       {
+        "command": "harborMate.describeAgent",
+        "title": "Describe an Agent to @mate",
+        "category": "Harbor Mate"
+      },
+      {
         "command": "harborMate.getStarted",
         "title": "Get Started (Add a Starter Agent)",
         "category": "Harbor Mate"

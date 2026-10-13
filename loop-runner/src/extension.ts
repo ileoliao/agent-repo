@@ -694,6 +694,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       const task = await vscode.window.showInputBox({ prompt: `Task for ${pick.label}`, ignoreFocusOut: true });
       if (task) { svc.submit(pick.label, task); }
     }),
+    vscode.commands.registerCommand('harborMate.describeAgent', () => vscode.commands.executeCommand('workbench.action.chat.open', { query: '@mate I want an agent that ', isPartialQuery: true })),
     vscode.commands.registerCommand('harborMate.getStarted', async () => {
       const r = root();
       const items = [
@@ -702,7 +703,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       ];
       const pick = await vscode.window.showQuickPick(items, { title: 'Harbor Mate: Get Started', placeHolder: 'Pick a starting point. Nothing runs on a schedule until you start the team.' });
       if (!pick) { return; }
-      if (!pick.id) { await vscode.commands.executeCommand('workbench.action.chat.open', { query: '@mate I want an agent that ', isPartialQuery: true }); return; }
+      if (!pick.id) { await vscode.commands.executeCommand('harborMate.describeAgent'); return; }
       const res = installTemplate(r, pick.id);
       if (!res.ok) { vscode.window.showWarningMessage(`Harbor Mate: ${res.error}`); return; }
       const errs = await svc.reloadAll();
