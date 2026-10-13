@@ -219,7 +219,7 @@ const isStrList = (v: unknown): v is string[] => Array.isArray(v) && v.every(isS
 const BARE = /^[A-Za-z0-9][A-Za-z0-9_.\-]*$/;
 
 /** A string as a one-line quoted YAML scalar; undefined when it cannot be written without escapes. */
-function quoted(v: string): string | undefined {
+export function quoted(v: string): string | undefined {
   if (/[\r\n]/.test(v)) { return undefined; }
   if (!v.includes('"')) { return `"${v}"`; }
   if (!v.includes("'")) { return `'${v}'`; }

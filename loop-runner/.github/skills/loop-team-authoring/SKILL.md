@@ -81,21 +81,7 @@ A probe that could not get its data (authentication failed, empty response) must
 
 ## 4. Skill: `.github/skills/<skill-name>/`
 
-```
-SKILL.md        frontmatter: name, description; body: when and how to use it
-scripts/        executables the agent runs; pre-approved for agents that list this skill
-```
-
-Script conventions (required, because commands run with stdin closed and a hard timeout, default 180 s):
-
-- **Non-interactive.** Never prompt, never open a pager, never wait for input.
-- **Credentials come from environment variables** (for example `HARBOR_PAT`, `JIRA_TOKEN`). The human stores them with "Loop Runner: Set Secret". Never print them; the runtime also redacts them.
-- **Print machine-readable output** (JSON preferred) and keep it small. Output beyond about 16 KB is truncated to its head and tail.
-- **Exit codes are meaningful:** 0 means success; non-zero means failure, with the reason on stderr.
-- Call scripts as `python3 .github/skills/<skill>/scripts/x.py ...` (or `python`, `py`, `node`, `bash`, `sh`, `pwsh`, `powershell`). Use forward slashes; they work on Windows too. Only paths inside `scripts/` of the agent's own skills are pre-approved.
-- Do not call `curl`, `wget`, `ssh` or similar directly from the agent. They are denied by default; network access belongs inside skill scripts.
-- Mask or aggregate sensitive business data inside the script before printing. Whatever a script prints is sent to the model.
-- Scripts that send or publish something must take the draft file path as an argument.
+A skill is a folder with `SKILL.md` (frontmatter `name`, `description`; body: how and when to use it) and optional `scripts/` and `references/`. Its scripts are pre-approved for every agent that lists the skill and run unattended, so they follow strict conventions: non-interactive, credentials from environment variables, small JSON output, meaningful exit codes, and writes only under `.loop/outbox/`. The full rules and the writing guidance are in the `loop-skill-authoring` skill (`guides/skill-authoring.md`); read it before writing or changing a skill or script.
 
 ## 5. Policy: `.loop/policies/<name>.json` (optional)
 

@@ -1270,7 +1270,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
       power: async on => { calls.power.push(on); }, reload: async () => { calls.reload++; return []; } };
     const list = JSON.parse((await runChatTool('list_agents', {}, host)).text);
     ok(list.agents.length === 2 && list.agents.find(a => a.name === 'sentinel').schedule === '0 9 * * *' && list.agents.find(a => a.name === 'planner').runsUnattended === false, 'list_agents tells team agents from chat-only ones');
-    ok(CHAT_TOOLS.every(t => t.name && t.description && t.inputSchema.type === 'object') && CHAT_TOOLS.filter(t => t.name.startsWith('propose_')).length === 10, 'every change goes through a propose_ tool');
+    ok(CHAT_TOOLS.every(t => t.name && t.description && t.inputSchema.type === 'object') && CHAT_TOOLS.filter(t => t.name.startsWith('propose_')).length === 11, 'every change goes through a propose_ tool');
 
     const sched = await runChatTool('propose_schedule', { agent: 'sentinel', schedule: '*/30 9-18 * * 1-5' }, host);
     ok(sched.proposal && sched.proposal.detail.includes('+  schedule: "*/30 9-18 * * 1-5"') && fs.readFileSync(file, 'utf8') === src, 'a schedule request becomes a diff and writes nothing');
@@ -1474,6 +1474,63 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     for (const bad of [null, 5, 'x', [], { agent: 5 }]) { ok(typeof (await runChatTool('propose_agent', bad, host)).text === 'string', `propose_agent survives input ${JSON.stringify(bad)}`); }
     ok((await runChatTool('propose_goals', { agent: 'sentinel', op: 'add', id: 'z', text: 't', skills: { a: 1 } }, host)).text.startsWith('Not proposed'), 'a model sending the wrong shape gets an explanation');
 
+    // ---- creating skills ----
+    const SK = n => path.join(R, '.github', 'skills', n);
+    const okScript = '#!/usr/bin/env python3\nimport json, os, subprocess, sys\nname = sys.argv[1]\nout = subprocess.run(["harbor", "status", name], capture_output=True, text=True, timeout=60)\nprint(json.dumps({"name": name, "code": out.returncode}))\nsys.exit(0 if out.returncode == 0 else 2)\n';
+    const skillIn = { name: 'release-check', description: 'Summarises release health for one service. Use when a task mentions release health, a failed rollout or a deploy check.', instructions: '# Release check\n\nRun `python3 .github/skills/release-check/scripts/status.py <service>`. It prints one JSON line; exit 2 means harbor could not be reached.\n\nRead references/fields.md if a field is unclear.',
+      scripts: [{ name: 'status.py', content: okScript }], references: [{ name: 'fields.md', content: '# Fields\n\n- code: harbor exit code\n' }] };
+    const ps = await cardOf('propose_skill', skillIn);
+    ok(ps.proposal && !fs.existsSync(SK('release-check')), 'a skill is proposed and nothing is written');
+    ok(ps.proposal.detail.includes('pre-approved') && ps.proposal.detail.includes('status.py') && ps.proposal.detail.includes('subprocess.run') && ps.proposal.detail.includes('fields.md'), 'the card says the scripts run unattended and shows every file in full');
+    await ps.proposal.apply();
+    const made = require(`${OUT}/team.js`).loadSkills(R).get('release-check');
+    ok(made && made.description.startsWith('Summarises release health') && fs.readFileSync(path.join(SK('release-check'), 'scripts', 'status.py'), 'utf8') === okScript && fs.existsSync(path.join(SK('release-check'), 'references', 'fields.md')), 'Apply writes SKILL.md and its files, and the team loader finds the skill');
+    const wired = await cardOf('propose_skills', { agent: 'sentinel', add: ['release-check'] });
+    ok(wired.proposal, 'the new skill can be given to an agent right away');
+    const again = await cardOf('propose_skill', skillIn);
+    ok(again.text.startsWith('Not proposed') && /already exists/.test(again.text), 'a skill never overwrites an existing one');
+    const racedSkill = await cardOf('propose_skill', { ...skillIn, name: 'raced-skill', instructions: skillIn.instructions.replace(/release-check/g, 'raced-skill') });
+    fs.mkdirSync(path.join(SK('raced-skill'), 'scripts'), { recursive: true }); fs.writeFileSync(path.join(SK('raced-skill'), 'scripts', 'status.py'), 'mine\n');
+    let skillBlocked = false; try { await racedSkill.proposal.apply(); } catch (e) { skillBlocked = /changed since/.test(e.message); }
+    ok(skillBlocked && fs.readFileSync(path.join(SK('raced-skill'), 'scripts', 'status.py'), 'utf8') === 'mine\n', 'if a file appears before Apply, nothing is overwritten and the skill is not half-written');
+    const mk2 = (over, scriptContent) => ({ ...skillIn, name: 'sk-' + Math.random().toString(36).slice(2, 8), scripts: [{ name: 'status.py', content: scriptContent ?? okScript }], references: [], ...over });
+    const fix = s => ({ ...s, instructions: s.instructions.replace(/release-check/g, s.name) });
+    for (const [input, why] of [
+      [mk2({}, 'import sys\nname = input("which? ")\n'), 'a script that prompts'],
+      [mk2({}, 'TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"\n'), 'a token written into a script'],
+      [mk2({}, 'open(".github/agents/x.agent.md", "w").write("x")\n'), 'a script that writes an agent definition'],
+      [mk2({}, 'open(".loop/policies/open.json", "w").write("{}")\n'), 'a script that writes a policy'],
+      [mk2({ scripts: [{ name: '../evil.py', content: 'print(1)\n' }] }), 'a script name that climbs out'],
+      [mk2({ scripts: [{ name: 'sub/x.py', content: 'print(1)\n' }] }), 'a script in a sub-folder'],
+      [mk2({ scripts: [{ name: 'x.exe', content: 'MZ' }] }), 'a script with an unsupported extension'],
+      [mk2({ scripts: [{ name: 'x.py', content: ' ' }] }), 'an empty script'],
+      [mk2({ scripts: [{ name: 'a.py', content: 'print(1)\n' }, { name: 'a.py', content: 'print(2)\n' }] }), 'a script listed twice'],
+      [mk2({ scripts: [{ name: 'x.py', content: 'x = "' + 'a'.repeat(70000) + '"\n' }] }), 'a script over the size limit'],
+      [mk2({ name: 'Bad Name' }), 'a bad name'],
+      [mk2({ name: 'loop-memory' }), 'a reserved name'],
+      [mk2({ description: '' }), 'no description'],
+      [mk2({ description: 'x'.repeat(1100) }), 'a description over 1024 characters'],
+      [mk2({ instructions: '' }), 'empty instructions'],
+      [mk2({ instructions: 'line\n'.repeat(600) }), 'instructions over 500 lines'],
+      [mk2({ description: 'He said "go" and \'stop\'. Use when needed.' }), 'a description that cannot be quoted safely'],
+      [mk2({ scripts: 'status.py' }), 'scripts as text'],
+      [mk2({ scripts: [{ name: 'a.py' }] }), 'a script without content'],
+      [mk2({ name: 5 }), 'a numeric name']
+    ]) { ok((await cardOf('propose_skill', input.instructions && input.name && typeof input.name === 'string' ? fix(input) : input)).text.startsWith('Not proposed'), `skill: ${why} is refused with a reason`); }
+    ok(!fs.readdirSync(path.join(R, '.github', 'skills')).some(d => d.startsWith('sk-')), 'a refused skill leaves no folder behind');
+    // warnings are shown, not blocking
+    const warn = await cardOf('propose_skill', fix(mk2({ description: 'Fetches a thing.' }, 'import requests\nimport os\nos.system("ls " + __import__("sys").argv[1])\nprint(1)\n')));
+    ok(warn.proposal && /uses the network/.test(warn.proposal.detail) && /shell command built from text/.test(warn.proposal.detail) && /does not say when/.test(warn.proposal.detail), 'risky habits are listed as warnings on the card, for the human to judge');
+    const unmentioned = await cardOf('propose_skill', { ...fix(mk2({})), instructions: '# x\n\nDo the thing.' });
+    ok(unmentioned.proposal && /never mention/.test(unmentioned.proposal.detail), 'a file the instructions never mention is flagged');
+    const lintMod = require(`${OUT}/skillAuthoring.js`);
+    ok(lintMod.lintScript('a.js', 'const rl = require("readline").createInterface({ input: process.stdin });\n').some(f => f.level === 'error') && !lintMod.lintScript('a.py', 'def my_input(x):\n    return x\nprint(my_input(1))\n').some(f => f.level === 'error'), 'prompt detection catches readline and does not trip on a function that merely contains "input"');
+    ok(lintMod.lintScript('a.py', 'path = ".loop/outbox/report.json"\n').length === 0 && lintMod.lintScript('a.py', 'path = ".loop/other/x"\n').some(f => f.level === 'warning'), 'writing to .loop/outbox is fine; other .loop paths are flagged');
+    const skillGuide = (await runChatTool('get_authoring_guide', { topic: 'skills' }, host)).text;
+    ok(skillGuide.includes('propose_skill') && skillGuide.includes('500 lines') && skillGuide.includes('Use when'), 'the skills guide is served by topic');
+    ok(!guideDefaultIsSkills(skillGuide, (await cardOf('get_authoring_guide', {})).text), 'the default topic is still the agents guide');
+    function guideDefaultIsSkills(a, b) { return a === b; }
+
     // guide
     const guide = (await cardOf('get_authoring_guide', {})).text;
     ok(guide.includes('propose_agent') && guide.includes('goals') && guide.includes('wakeIf') && guide.includes('Leave out `schedule`'), 'the authoring guide is served and covers goals, probes and new agents');
@@ -1488,6 +1545,11 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
       const skill = fs.readFileSync(path.join(__dirname, '..', '.github', 'skills', 'loop-team-authoring', 'SKILL.md'), 'utf8');
       const shared = g.slice(g.indexOf('# Authoring roles and skills for a Loop Runner team'));
       ok(parseFrontmatter(skill).meta.name === 'loop-team-authoring' && skill.split(/^---\r?\n[\s\S]*?\r?\n---\r?\n\r?\n/)[1].trim() === shared.trim(), 'the guide and the loop-team-authoring skill carry the same reference text');
+      const sg = fs.readFileSync(path.join(__dirname, '..', 'guides', 'skill-authoring.md'), 'utf8');
+      const sskill = fs.readFileSync(path.join(__dirname, '..', '.github', 'skills', 'loop-skill-authoring', 'SKILL.md'), 'utf8');
+      const sshared = sg.slice(sg.indexOf('# Writing a skill for Loop Runner agents'));
+      ok(parseFrontmatter(sskill).meta.name === 'loop-skill-authoring' && /Use whenever/.test(parseFrontmatter(sskill).meta.description) && sskill.split(/^---\r?\n[\s\S]*?\r?\n---\r?\n\r?\n/)[1].trim() === sshared.trim(), 'the skills guide and the loop-skill-authoring skill carry the same text');
+      ok(sshared.split('\n').length < 500 && [...sg.matchAll(/`(propose_[a-z_]+|get_[a-z_]+|list_[a-z_]+)`/g)].every(m => CHAT_TOOLS.some(t => t.name === m[1])), 'the skills guide is short and names only tools that exist');
       const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'team.ts'), 'utf8');
       const fences = [...g.matchAll(/```(?:markdown|yaml)\n([\s\S]*?)```/g)].map(m => m[1]);
       const keys = new Set(fences.flatMap(f => f.split('\n').flatMap(l => { const m = /^\s*(?:- )?([A-Za-z]+):/.exec(l); return m ? [m[1]] : []; })));

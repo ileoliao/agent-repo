@@ -248,7 +248,8 @@ loop:
 - 直接说话,例如「把 sentinel 改成工作日 9 点到 18 点每 30 分钟跑一次」「以后所有报告都用中文」「让 collector 现在跑一次,查一下磁盘」「他们问的那个问题,回答 mac-mini」。
 - 它先用工具查清现状,然后给出**提案**:改定时/任务/角色指令会显示 diff,长期要求会写成备忘,一次性任务和回答也一样。你点 **Apply** 才生效,点 Dismiss 就作废。它自己不会改文件、不会运行 agent、不会替你回答。
 - **创建和修改 agent**:「新建一个 release-watch,负责盯发布」「给 sentinel 加一个目标:Harbor 发布正常,每 15 分钟检查,紧急」「把 loop-memory 这个 skill 加给 briefer」。它会先读内置的说明书(随扩展打包的 `guides/authoring.md`)和现状,再提议;校验不通过(skill 不存在、cron 非法、转交目标不存在、goal id 重复等)就**不给你看 diff**,而是告诉你原因。提案卡片最上面会写明这个 agent **会不会自己运行**:新建的 agent 默认**不带定时**,只在你给它任务时运行;只有你明确要求才会带定时或目标。
-- **它做不到的**:不创建 skill,不创建或修改 policy 文件(`policy` 只能引用 `.loop/policies/` 里已有的文件),不改 skill 的脚本。这些需要你(或 Copilot Chat 里的 agent)自己写,写好后再让 `@loop` 接上。
+- **创建 skill**:「写一个 skill,查 harbor 的发布状态,只输出一行 JSON」。它会先读 skill 写作规范(`guides/skill-authoring.md`,也是可复制到工作区的 `loop-skill-authoring` skill),然后一次提议整个 skill 文件夹。**审批卡会完整展示每个文件的代码**,并明说:脚本会无人值守地运行、对所有用到这个 skill 的 agent 预先放行、不受 policy 检查——所以请先读代码再 Apply。提议前有自动检查,拦下的:脚本提示输入(无人值守时 stdin 是关的)、把令牌写进脚本、写 `.github/` 或 `.loop/` 里的定义和状态文件、`..` 路径、重名、描述为空或太长、SKILL.md 超过 500 行等;只提醒不拦的:联网、拼 shell 命令、整份环境变量打印、说明里没提到某个文件、描述没说什么时候用。它只创建,不覆盖也不修改已有 skill。创建后还要用「把它加给某某 agent」接上才会生效。
+- **它做不到的**:不创建或修改 policy 文件(`policy` 只能引用 `.loop/policies/` 里已有的文件),不修改已有 skill。这些需要你(或 Copilot Chat 里的 agent)自己做,做好后再让 `@loop` 接上。
 - **备忘**保存在 `.loop/memory/<agent>.md`(`_all.md` 对所有 agent 生效),之后每一次新的运行都会把它放进提示词。想看或改,直接打开这个文本文件。
 - **审批**不在聊天里决定:要在控制台看清完整命令和文件内容后再批准。
 - 它用的是 Chat 模型选择器里当前选中的模型,需要支持工具调用;不支持时用 `/status`、`/pending` 仍可用。

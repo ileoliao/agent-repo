@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Change, GoalInput, Proposed, applyChange, diffOf, memoryFor, proposeAgent, proposeForget, proposeGoals, proposeRemember, proposeRoleEdit, proposeSchedule, proposeSkills } from './manage';
+import { proposeSkill } from './skillAuthoring';
 import { loadAllAgents } from './team';
 import { listGates } from './queue';
 import { recentRuns } from './runs';
@@ -25,8 +26,10 @@ export interface ChatHost {
   power(on: boolean): Promise<void>;
   /** Re-read agent files; returns config problems. */
   reload(): Promise<string[]>;
-  /** The authoring guide shipped with the extension. Defaults to guides/authoring.md next to out/. */
+  /** The agent authoring guide shipped with the extension. Defaults to guides/authoring.md next to out/. */
   guidePath?: string;
+  /** The skill authoring guide. Defaults to guides/skill-authoring.md next to out/. */
+  skillGuidePath?: string;
 }
 
 export interface Proposal {
@@ -79,7 +82,14 @@ export const CHAT_TOOLS: ChatTool[] = [
       schedule: str('Optional cron (LOCAL time); needs task'), task: str('What a scheduled run does'), goals: { type: 'array', items: { type: 'object' }, description: 'Optional goals, same fields as propose_goals' },
       policy: str('Existing file under .loop/policies/'), maxSteps: { type: 'number' }, maxRunsPerDay: { type: 'number' } }, ['name', 'description', 'instructions'])
   },
-  { name: 'get_authoring_guide', description: 'The reference for writing agents, goals and skills for Loop Runner: file format, every field, conventions. Read it before proposing a new agent or goal.', inputSchema: obj({}, []) },
+  {
+    name: 'propose_skill',
+    description: "Propose creating a new skill (a folder with SKILL.md and optional scripts and reference files) that agents can list in loop.skills. Read get_authoring_guide with topic 'skills' first. It never overwrites an existing skill. The scripts run unattended and are pre-approved for every agent that uses the skill, so the human reads all the code before applying: write small, plain scripts. The human must apply it.",
+    inputSchema: obj({ name: str('Lowercase letters, digits and hyphens'), description: str('What the skill does AND when an agent should use it (this is what makes an agent pick it)'), instructions: str('The SKILL.md body: how to use the skill; mention every script and reference file by name'),
+      scripts: { type: 'array', items: { type: 'object', properties: { name: str('File name, for example report.py'), content: str('The full file') }, required: ['name', 'content'] }, description: 'Files for scripts/ (.py .js .mjs .cjs .sh .ps1)' },
+      references: { type: 'array', items: { type: 'object', properties: { name: str('File name, for example fields.md'), content: str('The full file') }, required: ['name', 'content'] }, description: 'Files for references/ (.md .txt .json .csv)' } }, ['name', 'description', 'instructions'])
+  },
+  { name: 'get_authoring_guide', description: "The reference for writing agents and goals for Loop Runner (topic 'agents', the default) or skills (topic 'skills'): file format, every field, conventions. Read it before proposing a new agent, goal or skill.", inputSchema: obj({ topic: { type: 'string', enum: ['agents', 'skills'] } }, []) },
   { name: 'propose_remember', description: "Propose a standing note that every new run of an agent (or 'all' agents) is told. Use for lasting preferences and rules, not one-off tasks.", inputSchema: obj({ agent: str("Agent name or 'all'"), note: str('One short sentence') }, ['agent', 'note']) },
   { name: 'propose_forget', description: 'Propose removing the one standing note that contains the given text.', inputSchema: obj({ agent: str("Agent name or 'all'"), match: str('Text that identifies the note') }, ['agent', 'match']) },
   { name: 'propose_run', description: 'Propose giving a team agent a one-off task to run now.', inputSchema: obj({ agent: str('Agent name'), task: str('The task') }, ['agent', 'task']) },
@@ -148,8 +158,28 @@ async function runTool(name: string, input: any, host: ChatHost): Promise<ToolRe
       return fromChange(proposeSkills(root, String(input.agent), { add: input.add, remove: input.remove }), host);
     case 'propose_agent':
       return fromChange(proposeAgent(root, input), host);
+    case 'propose_skill': {
+      const p = proposeSkill(root, input);
+      if ('error' in p) { return { text: `Not proposed: ${p.error}` }; }
+      return {
+        text: `Proposal ready: "${p.summary}" (${p.changes.length} files). It is shown to the human with an Apply button, with every file in full; nothing has been written. Tell them briefly what the skill does and that its scripts run unattended, then wait.`,
+        proposal: {
+          title: p.summary,
+          detail: `${p.notes}\n\n` + p.changes.map(c => `**${c.file}**\n\n\`\`\`diff\n${diffOf(c)}\n\`\`\``).join('\n\n'),
+          apply: async () => {
+            // All or nothing: refuse if any file exists now, and take back what was written if a later write fails.
+            const written: string[] = [];
+            try { for (const c of p.changes) { applyChange(root, c); written.push(c.file); } }
+            catch (e) { for (const f of written) { fs.rmSync(path.join(root, f), { force: true }); } throw e; }
+            const problems = await host.reload();
+            return problems.length ? `Created ${p.changes.length} files, but the team has config problems:\n${problems.join('\n')}` : `Created skill ${p.summary.replace('Create skill ', '')} (${p.changes.length} files). Team reloaded.`;
+          }
+        }
+      };
+    }
     case 'get_authoring_guide': {
-      try { return { text: fs.readFileSync(host.guidePath ?? path.join(__dirname, '..', 'guides', 'authoring.md'), 'utf8') }; }
+      const skills = input.topic === 'skills';
+      try { return { text: fs.readFileSync(skills ? host.skillGuidePath ?? path.join(__dirname, '..', 'guides', 'skill-authoring.md') : host.guidePath ?? path.join(__dirname, '..', 'guides', 'authoring.md'), 'utf8') }; }
       catch { return { text: 'The authoring guide could not be read. Say so, and work from get_agent on an existing agent instead.' }; }
     }
     case 'propose_remember':

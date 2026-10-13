@@ -16,12 +16,13 @@ Loop Runner runs the user's custom agents unattended. It knows nothing about the
 | change when an agent runs, or what its scheduled task is | `propose_schedule` (the single top-level schedule) |
 | give an agent another standing responsibility, change or drop one | `propose_goals` (`op`: add / update / remove) |
 | give an agent a skill that already exists in the workspace, or take one away | `propose_skills` |
+| write a new skill (instructions and scripts) | `propose_skill`, after `get_authoring_guide` with `topic: "skills"` |
 | change how an agent works (its role instructions) | `propose_role_edit` |
 | create a new agent | `propose_agent` |
 | a lasting rule or preference for an agent | `propose_remember` / `propose_forget` |
 | do something once, now | `propose_run` |
 
-You cannot create skills or policy files, and you cannot edit a skill's scripts. If a request needs one, say so: the human writes it (or an agent in Copilot Chat does, following the reference below), and then you can wire it up. A new skill goes in `.github/skills/<name>/SKILL.md`; a policy in `.loop/policies/<name>.json`.
+You can create a new skill with `propose_skill` (read the skills guide first), but you cannot edit an existing skill or write policy files. If a request needs a policy or a change to an existing skill, say so: the human does it (or an agent in Copilot Chat does, following the reference), and then you can wire it up. A policy goes in `.loop/policies/<name>.json`.
 
 With `propose_goals` update, an empty string clears a field (for example `wakeIf: ""`). Only the goal you name is rewritten; the other goals keep their exact text.
 
@@ -29,7 +30,7 @@ With `propose_goals` update, an empty string clears a field (for example `wakeIf
 
 - Give it a short lowercase name, a one-sentence `description`, and role `instructions` written for an agent that works alone (see "Writing the role instructions" below).
 - **Leave out `schedule` and `goals` unless the human asked for automatic runs.** Without them the agent runs only when given a task, so nothing starts by surprise. The proposal card says which case it is; mention it.
-- `skills` must already exist. If none fit, create the agent with no skills and tell the human which skill it still needs.
+- `skills` must already exist. If none fit, create the skill first with `propose_skill`, or create the agent with no skills and tell the human which skill it still needs.
 - `policy` must be an existing `.json` file under `.loop/policies/`. Without one the default policy applies.
 - `handoffs` must name existing team agents.
 - Do not copy another agent's file wholesale. Read it with `get_agent` for tone and structure, and write what this agent is for.
@@ -122,21 +123,7 @@ A probe that could not get its data (authentication failed, empty response) must
 
 ## 4. Skill: `.github/skills/<skill-name>/`
 
-```
-SKILL.md        frontmatter: name, description; body: when and how to use it
-scripts/        executables the agent runs; pre-approved for agents that list this skill
-```
-
-Script conventions (required, because commands run with stdin closed and a hard timeout, default 180 s):
-
-- **Non-interactive.** Never prompt, never open a pager, never wait for input.
-- **Credentials come from environment variables** (for example `HARBOR_PAT`, `JIRA_TOKEN`). The human stores them with "Loop Runner: Set Secret". Never print them; the runtime also redacts them.
-- **Print machine-readable output** (JSON preferred) and keep it small. Output beyond about 16 KB is truncated to its head and tail.
-- **Exit codes are meaningful:** 0 means success; non-zero means failure, with the reason on stderr.
-- Call scripts as `python3 .github/skills/<skill>/scripts/x.py ...` (or `python`, `py`, `node`, `bash`, `sh`, `pwsh`, `powershell`). Use forward slashes; they work on Windows too. Only paths inside `scripts/` of the agent's own skills are pre-approved.
-- Do not call `curl`, `wget`, `ssh` or similar directly from the agent. They are denied by default; network access belongs inside skill scripts.
-- Mask or aggregate sensitive business data inside the script before printing. Whatever a script prints is sent to the model.
-- Scripts that send or publish something must take the draft file path as an argument.
+A skill is a folder with `SKILL.md` (frontmatter `name`, `description`; body: how and when to use it) and optional `scripts/` and `references/`. Its scripts are pre-approved for every agent that lists the skill and run unattended, so they follow strict conventions: non-interactive, credentials from environment variables, small JSON output, meaningful exit codes, and writes only under `.loop/outbox/`. The full rules and the writing guidance are in the `loop-skill-authoring` skill (`guides/skill-authoring.md`); read it before writing or changing a skill or script.
 
 ## 5. Policy: `.loop/policies/<name>.json` (optional)
 
