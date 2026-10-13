@@ -4,6 +4,7 @@ import { loadAllAgents, loadSkills, policyPathFor, skillsFor, validateTeam, load
 import { decideCommand, loadPolicy, skillScriptRule } from './policy';
 import { exec } from './exec';
 import { designWarnings } from './manage';
+import { parseOn } from './triggers';
 
 /**
  * "Can this agent run?" answered without a model: the things that break a first run are almost always the
@@ -20,6 +21,8 @@ export interface DoctorOptions {
   secrets?: Record<string, string>;
   /** Fallback policy file when an agent names none. */
   policyFile?: string;
+  /** The configured webhook port (0 = off); lets the doctor warn about a webhook goal nobody can reach. */
+  triggerPort?: number;
   /** Test hook: where interpreters are looked up. */
   pathEnv?: string;
 }
@@ -72,6 +75,11 @@ export async function runDoctor(root: string, o: DoctorOptions = {}): Promise<Do
       policy = loadPolicy(root, polRel);
       if (a.policy && !fs.existsSync(path.join(root, a.policy))) { add(a.name, 'warn', `Its policy file ${a.policy} does not exist, so the default policy applies.`, 'Create the file, or remove loop.policy.'); }
     } catch (e: any) { add(a.name, 'fail', `Its policy file ${polRel} cannot be read: ${e?.message ?? e}`, 'Fix the JSON in that file.'); }
+
+    for (const g of a.goals) {
+      const on = parseOn(g.on);
+      if (on && !('error' in on) && on.kind === 'webhook' && o.triggerPort !== undefined && !(o.triggerPort > 0)) { add(a.name, 'warn', `Goal "${g.id}" waits for webhook "${on.name}", but no webhook port is set, so nothing can reach it.`, 'Set harborMate.triggerPort in your user settings, then Start Team.'); }
+    }
 
     // Probes: allowed by policy, and (when asked) actually runnable.
     for (const g of a.goals.filter(x => x.wakeIf)) {
