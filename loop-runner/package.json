@@ -65,6 +65,11 @@
         "category": "Harbor Mate"
       },
       {
+        "command": "harborMate.copyTriggerInfo",
+        "title": "Copy Webhook Example (curl)",
+        "category": "Harbor Mate"
+      },
+      {
         "command": "harborMate.runDoctor",
         "title": "Check Agents (Doctor)",
         "category": "Harbor Mate"
@@ -280,6 +285,14 @@
           "default": "",
           "scope": "application",
           "markdownDescription": "Post a message here when an agent needs you (a question, an approval, a blocked or failed run). Paste an incoming-webhook URL from Slack, Microsoft Teams or Discord; any other https URL receives the event as JSON. Set it in your user settings, not in a workspace."
+        },
+        "harborMate.triggerPort": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 65535,
+          "scope": "application",
+          "markdownDescription": "Listen for webhooks on this port, on 127.0.0.1 only, so goals with `on: webhook:<name>` can be woken by `POST /hook/<name>` with a bearer token (command: Copy Webhook Example). 0 turns it off. Set it in your user settings."
         }
       }
     },
@@ -319,7 +332,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "rm -rf out && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository",
-    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js && node test/maintenance.js && node test/doctor.js",
+    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js && node test/maintenance.js && node test/doctor.js && node test/triggers.js",
     "sim": "node test/sim/run.js"
   },
   "devDependencies": {

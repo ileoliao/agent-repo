@@ -1,3 +1,4 @@
+import { TriggerServer, handleWebhook, newToken, scanFileTriggers, startTriggerServer } from './triggers';
 import { TEMPLATES, installTemplate } from './templates';
 import { doctorMarkdown, runDoctor } from './doctor';
 import { healthMarkdown, healthReport } from './health';
@@ -110,6 +111,28 @@ export class TeamService {
 
   root(): string | undefined { return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath; }
   /** Settings live under `harborMate`; a value still set under the old `loopRunner` prefix keeps working. */
+  private triggerServer?: TriggerServer;
+
+  /** The secret a webhook caller must present. Created once and kept in SecretStorage, never in the workspace. */
+  async triggerToken(): Promise<string> {
+    let t = await this.ctx.secrets.get('harborMate.triggerToken');
+    if (!t) { t = newToken(); await this.ctx.secrets.store('harborMate.triggerToken', t); }
+    return t;
+  }
+
+  /** Start the loopback webhook listener when `harborMate.triggerPort` is set. A busy port is reported, not fatal. */
+  private async startTriggers(): Promise<void> {
+    const port = Math.floor(Number(this.cfg().get<number>('triggerPort', 0)));
+    if (!(port > 0 && port < 65536) || this.triggerServer) { return; }
+    try {
+      this.triggerServer = await startTriggerServer({
+        port, token: await this.triggerToken(), log: l => this.out.appendLine(l),
+        onHook: (name, body) => { const r = handleWebhook(this.root()!, this.team.values(), name, body, this.now()); if (r.queued.length) { void this.tick(); } return r; }
+      });
+      this.out.appendLine(`Webhook triggers listening on http://127.0.0.1:${port}/hook/<name> (loopback only).`);
+    } catch (e: any) { this.out.appendLine(`Webhook triggers could not start on port ${port}: ${e?.message ?? e}`); }
+  }
+
   /** How long finished work is kept; see `maintenance.ts`. */
   retention(): Retention {
     const n = (k: string, d: number) => { const v = Number(this.cfg().get<number>(k, d)); return Number.isFinite(v) && v >= 1 ? v : d; };
@@ -223,6 +246,7 @@ export class TeamService {
     if (this.timer) clearInterval(this.timer);
     // The simulation drives ticks itself; a 20s interval would race with scripted time.
     this.timer = setInterval(() => void this.tick(), simEnabled() ? 3_600_000 : 20_000);
+    await this.startTriggers();
     // A restart re-alerts every gate that is still pending, even if it was already shown.
     await this.notifyPendingGates(true);
     await this.drainThenSchedule();
@@ -233,6 +257,7 @@ export class TeamService {
     this.running = false;
     if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
     for (const l of this.live.values()) { l.cts.cancel(); }
+    void this.triggerServer?.close(); this.triggerServer = undefined;
     if (user) void this.ctx.workspaceState.update(STARTED_KEY, false);
     this.out.appendLine('Team stopped.');
     this.changed();
@@ -281,6 +306,7 @@ export class TeamService {
     const root = this.root();
     if (!this.running || !root) { this.changed(); return Promise.resolve(); }
     this.housekeeping(root);
+    try { scanFileTriggers(root, this.team.values(), this.now()); } catch (e: any) { this.out.appendLine(`File trigger scan failed: ${e?.message ?? e}`); }
     return this.schedule(root).then(() => checkSilence(root, this.team.values(), this.startedAt, this.now(), this.silent, ev => this.alert(ev)))
       .then(() => { void this.pump(root); }).then(() => { this.changed(); });
   }
@@ -682,8 +708,15 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (next === 'Start Team') { await svc.start(true); }
       if (next === 'Open File') { await vscode.window.showTextDocument(vscode.Uri.file(path.join(r, res.files[0]))); }
     }),
+    vscode.commands.registerCommand('harborMate.copyTriggerInfo', async () => {
+      const port = Math.floor(Number(svc.cfg().get<number>('triggerPort', 0)));
+      if (!(port > 0)) { vscode.window.showWarningMessage('Harbor Mate: set harborMate.triggerPort (for example 8765) in your user settings, then Start Team.'); return; }
+      const cmd = `curl -X POST http://127.0.0.1:${port}/hook/<name> -H "Authorization: Bearer ${await svc.triggerToken()}" -d 'what happened'`;
+      await vscode.env.clipboard.writeText(cmd);
+      vscode.window.showInformationMessage('Harbor Mate: a curl example with your token is on the clipboard. Replace <name> with the webhook name from the agent\'s on: webhook:<name>.');
+    }),
     vscode.commands.registerCommand('harborMate.runDoctor', async () => {
-      const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking agents…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json') })));
+      const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking agents…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json'), triggerPort: Number(svc.cfg().get<number>('triggerPort', 0)) })));
       await showMarkdown('Harbor Mate · Doctor', md);
     }),
     vscode.commands.registerCommand('harborMate.showHealth', async () => { await showMarkdown('Harbor Mate · Agent Health', healthMarkdown(healthReport(root()))); }),

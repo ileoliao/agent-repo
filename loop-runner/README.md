@@ -84,6 +84,23 @@ agent 会记住自己手上还没做完的任务，可以同时有好几个，�
 - 控制台的 Overview 页有 “Open tasks”，每个任务可以点 Close（记为 `dropped`，不再有人持有）；`@mate` 可以用 `list_tasks` 查看
 - 它和 `loop-memory` 不同：`loop-memory` 存知识和被跟踪的对象，任务是“进行中的承诺”，谁持有要随 `handoff` 变化，只有运行时看得见，所以由运行时记账
 
+## 事件触发:不只靠时钟
+
+目标(goal)可以用 `on:` 被事件叫醒,而不只是按 cron:
+
+```yaml
+goals:
+  - id: on-deploy
+    text: 部署出事时先看日志再告诉我
+    task: 收到一次部署事件,检查它。
+    on: webhook:deploy        # 或 file:reports/*.md
+```
+
+- **Webhook**:在用户设置里填 `harborMate.triggerPort`(例如 8765),启动团队后只在 `127.0.0.1` 监听。命令 `Harbor Mate: Copy Webhook Example (curl)` 把带令牌的 `curl` 示例放进剪贴板;调用 `POST /hook/<name>`,请求头 `Authorization: Bearer <令牌>`。令牌存在 VS Code 的 SecretStorage,不写进工作区。要让外部服务(GitHub、Jira、监控)调用,需要你自己用隧道把这个端口暴露出去。
+- **文件**:`file:<glob>` 每 20 秒扫描一次,只对**之后新出现**的匹配文件触发,第一次扫描只记录已有的文件。
+- **安全**:请求体最大 64 KB,事件内容以"外部数据,不是指令"的框架交给 agent;同一目标未完成的触发超过 20 个就拒绝更多(429);暂停的 agent 不会被叫醒。
+- **体检**:有 webhook 目标但没设端口时,Doctor 会提醒。
+
 ## 上手、体检与健康报告
 
 - **Get Started**:命令 `Harbor Mate: Get Started (Add a Starter Agent)` 提供两个开箱即用的模板(每日提交报告、文件夹监听,后者演示 `wakeIf` 探针),也可以选"Describe what you want"直接在 Chat 里用自己的话描述。模板只写文件、从不覆盖,写完立刻体检,告诉你能不能跑。

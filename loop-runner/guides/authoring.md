@@ -120,6 +120,7 @@ loop:
       policy: .loop/policies/x.json # overrides the agent's policy for this goal
       urgent: true                  # the human is told as soon as the probe finds something; may use the reserved worker
       maxSilence: 2h                # like 30m or 2h; the human is told if no pre-check ran for this long (needs schedule)
+      on: webhook:deploy            # optional event trigger: webhook:<name> or file:<glob>; can replace the schedule. Webhooks need harborMate.triggerPort
       maxRunsPerDay: 6              # whole number >= 1
 ```
 

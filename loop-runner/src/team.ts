@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseFrontmatter } from './frontmatter';
 import { validateCron } from './cron';
+import { parseOn } from './triggers';
 
 /** A capability. Harbor Mate never knows what a skill does; it only loads and exposes it. */
 export interface SkillDef {
@@ -31,6 +32,8 @@ export interface GoalDef {
   /** Milliseconds without a wake check that ran before the human is told. */
   maxSilenceMs?: number;
   maxRunsPerDay?: number;
+  /** An event that wakes this goal: `webhook:<name>` or `file:<glob>` (see triggers.ts). */
+  on?: string;
 }
 
 /**
@@ -160,7 +163,8 @@ function readGoal(g: any): GoalDef {
     policy: o.policy ? String(o.policy) : undefined,
     urgent: o.urgent === true || o.urgent === 'true' ? true : undefined,
     maxSilenceMs: o.maxSilence !== undefined ? parseSilence(String(o.maxSilence)) ?? NaN : undefined,
-    maxRunsPerDay: typeof o.maxRunsPerDay === 'number' ? o.maxRunsPerDay : undefined
+    maxRunsPerDay: typeof o.maxRunsPerDay === 'number' ? o.maxRunsPerDay : undefined,
+    on: o.on ? String(o.on) : undefined
   };
 }
 
@@ -219,6 +223,7 @@ export function validateTeam(team: Map<string, AgentDef>, skills: Map<string, Sk
       seen.add(g.id);
       if (!g.text.trim()) { errors.push(`${w}: text is missing`); }
       if (g.schedule) { const e = validateCron(g.schedule); if (e) { errors.push(`${w}: ${e}`); } }
+      if (g.on) { const e = parseOn(g.on); if (e && 'error' in e) { errors.push(`${w}: ${e.error}`); } }
       if (g.wakeIf && !g.schedule) { errors.push(`${w}: wakeIf only applies to scheduled runs; add schedule`); }
       if (g.maxSilenceMs !== undefined && !(g.maxSilenceMs > 0)) { errors.push(`${w}: maxSilence must look like 30m or 2h`); }
       if (g.maxSilenceMs !== undefined && !g.schedule) { errors.push(`${w}: maxSilence needs a schedule`); }

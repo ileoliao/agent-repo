@@ -254,7 +254,7 @@ function fieldLines(key: string, v: unknown): string[] | undefined {
   return undefined;
 }
 
-const GOAL_KEYS = ['id', 'text', 'schedule', 'wakeIf', 'task', 'skills', 'policy', 'urgent', 'maxSilence', 'maxRunsPerDay'];
+const GOAL_KEYS = ['id', 'text', 'schedule', 'wakeIf', 'task', 'skills', 'policy', 'urgent', 'maxSilence', 'maxRunsPerDay', 'on'];
 
 /** One goal as the lines of a list item (`- id: ...`), indented by `ind`. */
 function goalItem(g: Record<string, unknown>, ind: string): { lines: string[] } | { error: string } {
@@ -270,7 +270,7 @@ function goalItem(g: Record<string, unknown>, ind: string): { lines: string[] } 
 
 /** What a goal's fields must look like. Applies to everything chat sends, because a wrong type can read back as something else. */
 function goalTypeError(g: Record<string, unknown>): string | undefined {
-  for (const k of ['text', 'schedule', 'wakeIf', 'task', 'policy', 'maxSilence']) { if (g[k] !== undefined && !isStr(g[k])) { return `${k} must be text.`; } }
+  for (const k of ['text', 'schedule', 'wakeIf', 'task', 'policy', 'maxSilence', 'on']) { if (g[k] !== undefined && !isStr(g[k])) { return `${k} must be text.`; } }
   if (g.skills !== undefined && !isStrList(g.skills)) { return 'skills must be a list of skill names.'; }
   if (g.urgent !== undefined && typeof g.urgent !== 'boolean') { return 'urgent must be true or false.'; }
   if (g.maxRunsPerDay !== undefined && !isPosInt(g.maxRunsPerDay)) { return 'maxRunsPerDay must be a whole number of at least 1.'; }
