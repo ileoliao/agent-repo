@@ -65,7 +65,7 @@ ok(/Mates on · 1 waiting on you/.test(renderBody({ ...base, pending: [{ id: 'g'
 ok(/data-cmd="stopTeam"[^>]*><[^]*Stop mates/.test(renderBody(base)) && !/Start team|Stop team/.test(renderBody({ ...base, running: false })), 'one vocabulary: agents');
 const step = (cmd, rule) => ({ step: 1, kind: 'tool', title: 'run_command', detail: `REFUSED by policy (${rule}).`, ok: false, refused: { command: cmd, rule } });
 const refused = renderBody({ ...base, runs: [{ ...run('blocked', 'Could not reach the API.'), steps: [step('harbor status --json', 'no allow rule matched')] }] });
-ok(/data-allow-agent="a" data-allow-cmd="harbor status --json"/.test(refused) && /Allow for a/.test(refused) && /exact command for a only/.test(refused), 'a command no rule allowed gets a one-click Allow for that mate');
+ok(/data-allow-agent="a" data-allow-cmd="harbor status --json"/.test(refused) && /Allow it/.test(refused) && /exact command for a only/.test(refused), 'a command no rule allowed gets a one-click Allow for that mate');
 const denied = renderBody({ ...base, runs: [{ ...run('blocked'), steps: [step('curl https://x', '\\b(curl|wget)\\b')] }] });
 ok(!/data-allow-agent/.test(denied) && /matches the deny rule/.test(denied) && /data-open="\.loop\/policy\.json"/.test(denied), 'a deny rule gets an explanation and the policy file, never a one-click Allow');
 ok(!/data-allow-agent/.test(renderBody({ ...base, runs: [run('blocked')] })), 'other blocked runs offer no Allow');
@@ -81,6 +81,10 @@ const inChat = ev => renderBody({ ...base, tab: 'chat', chat: { agents: [{ name:
 const chatAllow = inChat(threadRun([tstep('harbor status --json', 'no allow rule matched')]));
 ok(/data-allow-agent="a" data-allow-cmd="harbor status --json"/.test(chatAllow), 'a blocked result in the chat can allow the refused command right there');
 ok(!/data-allow-agent/.test(inChat(threadRun([tstep('curl https://x', '\\bcurl\\b')]))) && /matches the deny rule/.test(inChat(threadRun([tstep('curl https://x', '\\bcurl\\b')]))), 'a deny rule is explained in the chat too, with no Allow');
+ok(/class="daysep"[^]*Today/.test(inChat({ kind: 'status', ts: now, label: 'x', tone: 'info', chainId: 'c' })) , 'the thread marks the day');
+const old = new Date(Date.now() - 3 * 86_400_000).toISOString();
+const twoDays = renderBody({ ...base, tab: 'chat', chat: { agents: [{ name: 'a', description: 'd', state: 'idle', avatar: 'idle', line: 'x', pendingMessages: 0, needsYou: 0 }], selected: 'a', events: [{ kind: 'status', ts: old, label: 'x', tone: 'info', chainId: 'c1' }, { kind: 'status', ts: now, label: 'y', tone: 'info', chainId: 'c2' }], hidden: 0, gates: [] } });
+ok((twoDays.match(/class="daysep"/g) || []).length === 2, 'and again when the day changes, not between events of one day');
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');
 console.log(`${n} console wording checks passed`);
