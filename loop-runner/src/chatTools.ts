@@ -7,6 +7,8 @@ import { listGates } from './queue';
 import { DEFAULT_RETENTION, cancelQueued, describeResult, listQueue, pausedAgents, planCleanup, runCleanup, setPaused, storageUsage, Retention } from './maintenance';
 import { recentRuns } from './runs';
 import { agentRows } from './status';
+import { doctorMarkdown, runDoctor } from './doctor';
+import { healthMarkdown, healthReport } from './health';
 import { closeTaskByHuman, getTask, listTasks } from './tasks';
 import { Active } from './textutil';
 
@@ -27,6 +29,8 @@ export interface ChatHost {
   power(on: boolean): Promise<void>;
   /** Re-read agent files; returns config problems. */
   reload(): Promise<string[]>;
+  /** Secrets for skill scripts (needed when a doctor run executes probes). */
+  secrets?(): Promise<Record<string, string>>;
   /** Stop the agent's running item for good. Returns false when it is not running. */
   cancel?(agent: string): boolean;
   /** How long finished work is kept (the user's settings). Defaults to `DEFAULT_RETENTION`. */
@@ -106,6 +110,8 @@ export const CHAT_TOOLS: ChatTool[] = [
   { name: 'propose_forget', description: 'Propose removing the one standing note that contains the given text.', inputSchema: obj({ agent: str("Agent name or 'all'"), match: str('Text that identifies the note') }, ['agent', 'match']) },
   { name: 'propose_run', description: 'Propose giving a team agent a one-off task to run now.', inputSchema: obj({ agent: str('Agent name'), task: str('The task') }, ['agent', 'task']) },
   { name: 'propose_answer', description: 'Propose answering a pending question with the human\'s words. Never invent an answer the human did not give.', inputSchema: obj({ gate_id: str('Id from list_pending'), answer: str('The answer') }, ['gate_id', 'answer']) },
+  { name: 'run_doctor', description: "Check, without a model, whether agents can actually run: skills exist, script interpreters are installed, the policy file parses, wakeIf probes are allowed by policy, config is valid. Use right after creating or changing an agent, and whenever a run failed for a reason that looks like the environment. It does not execute probes; the human runs /doctor in Chat to do that.", inputSchema: obj({ agent: str('One agent; omit for the whole team') }, []) },
+  { name: 'agent_health', description: "How each agent has been doing over the last days (default 14), from the audit trail, with no model: outcomes, steps, how often it asked the human, how often policy refused it, whether it produces files, and findings with the change that would help. Use to answer whether an agent is worth keeping and to find what to improve.", inputSchema: obj({ days: { type: 'number', description: 'Look-back window, default 14' } }, []) },
   { name: 'list_queue', description: 'List work that has not finished: queued items, items parked on a question or approval, and what is running now. Ids are for propose_cancel.', inputSchema: obj({}, []) },
   { name: 'storage_usage', description: "How much finished work Harbor Mate keeps (items, run logs, questions, tasks) and what a cleanup would remove under the current retention. Use before propose_cleanup.", inputSchema: obj({}, []) },
   { name: 'get_run', description: 'The step-by-step record of one run (tool calls, results, how it ended). Get chain ids from recent_runs.', inputSchema: obj({ chain_id: str('Chain id from recent_runs') }, ['chain_id']) },
@@ -131,10 +137,23 @@ function fromChange(p: Proposed, host: ChatHost): ToolResult {
       apply: async () => {
         applyChange(host.root, c);
         const problems = c.file.startsWith('.github/') ? await host.reload() : [];
-        return problems.length ? `Applied ${c.file}, but the team now has config problems:\n${problems.join('\n')}` : `Applied ${c.file}.${c.file.startsWith('.github/') ? ' Team reloaded.' : ' New runs will use it.'}`;
+        if (problems.length) { return `Applied ${c.file}, but the team now has config problems:\n${problems.join('\n')}`; }
+        return `Applied ${c.file}.${c.file.startsWith('.github/') ? ' Team reloaded.' : ' New runs will use it.'}${await readiness(host.root, c.file)}`;
       }
     }
   };
+}
+
+/** After an agent file changes, say whether it can run: the environment problems a first run would hit, found now instead. */
+async function readiness(root: string, file: string): Promise<string> {
+  const m = /^\.github\/agents\/(.+)\.agent\.md$/.exec(file);
+  if (!m) { return ''; }
+  try {
+    const name = loadAllAgents(root).get(m[1])?.name ?? m[1];
+    const r = await runDoctor(root, { agent: name, runProbes: false });
+    const bad = r.checks.filter(c => c.level === 'fail');
+    return bad.length ? `\nNot ready to run: ${bad.map(c => c.what + (c.fix ? ` (${c.fix})` : '')).join(' ')}` : r.checks.length && r.ready.includes(name) ? '\nChecked: it can run.' : '';
+  } catch { return ''; }
 }
 
 /** A multi-file proposal (a skill): every file in full on the card, all-or-nothing on Apply. */
@@ -189,6 +208,12 @@ async function runTool(name: string, input: any, host: ChatHost): Promise<ToolRe
         id: t.id, title: t.title, holders: t.holders, next: t.next, updated: t.updatedAt, recent: t.log.slice(-3).map(e => ({ agent: e.agent, event: e.event, status: e.status, text: e.text && clip(e.text, 150) })) }))) };
     case 'get_memory':
       return { text: memoryFor(root, String(input.agent)) || '(nothing remembered)' };
+    case 'run_doctor':
+      return { text: doctorMarkdown(await runDoctor(root, { agent: input.agent ? String(input.agent) : undefined, runProbes: false })) };
+    case 'agent_health': {
+      const days = typeof input.days === 'number' && input.days >= 1 && input.days <= 365 ? input.days : 14;
+      return { text: healthMarkdown(healthReport(root, new Date(), days)) };
+    }
     case 'list_queue':
       { const act = host.state().active; return { text: json({ running: act === undefined ? [] : Array.isArray(act) ? act : [act], items: listQueue(root) }) }; }
     case 'storage_usage': {

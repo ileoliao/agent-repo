@@ -1,3 +1,5 @@
+import { doctorMarkdown, runDoctor } from './doctor';
+import { healthMarkdown, healthReport } from './health';
 import { DEFAULT_RETENTION, Retention, autoCleanup, describeResult, pausedAgents, planCleanup, runCleanup } from './maintenance';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -505,6 +507,13 @@ export class TeamService {
   }
 }
 
+/** Show generated markdown in a read-only editor tab. */
+async function showMarkdown(title: string, md: string): Promise<void> {
+  const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: `# ${title}\n\n${md}\n` });
+  await vscode.window.showTextDocument(doc, { preview: true });
+  await vscode.commands.executeCommand('markdown.showPreview', doc.uri).then(undefined, () => undefined);
+}
+
 export function activate(ctx: vscode.ExtensionContext) {
   const out = vscode.window.createOutputChannel('Harbor Mate');
   // Status bar: one click per common action. A status bar item cannot host a dropdown, and a QuickPick always opens at the top of the window.
@@ -588,6 +597,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       answer: (id, text) => after(answerQuestion(r, id, text).woke),
       power: async on => { if (on) { await svc.start(true); } else { svc.stop(true); } refresh(); },
       reload: async () => { const errs = await svc.reloadAll(); refresh(); return errs; },
+      secrets: () => svc.secrets(),
       cancel: agent => { const ok = svc.cancelRun(agent); refresh(); return ok; },
       retention: svc.retention()
     } : undefined;
@@ -629,6 +639,8 @@ export function activate(ctx: vscode.ExtensionContext) {
         { label: '$(sync) Reload & Validate Team', run: run('harborMate.reloadTeam') },
         { label: '$(send) Give an Agent a Task', run: run('harborMate.runAgent') },
         { label: '$(info) Show Team Status', run: run('harborMate.status') },
+        { label: '$(pulse) Check Agents (Doctor)', run: run('harborMate.runDoctor') },
+        { label: '$(graph) Agent Health Report', run: run('harborMate.showHealth') },
         { label: '$(trash) Clean Up Finished Work', run: run('harborMate.cleanUp') },
         { label: '$(key) Set Secret', run: run('harborMate.setSecret') },
         { label: '$(list-unordered) List Available Models', run: run('harborMate.listModels') },
@@ -645,6 +657,11 @@ export function activate(ctx: vscode.ExtensionContext) {
       const task = await vscode.window.showInputBox({ prompt: `Task for ${pick.label}`, ignoreFocusOut: true });
       if (task) { svc.submit(pick.label, task); }
     }),
+    vscode.commands.registerCommand('harborMate.runDoctor', async () => {
+      const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking agents…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json') })));
+      await showMarkdown('Harbor Mate · Doctor', md);
+    }),
+    vscode.commands.registerCommand('harborMate.showHealth', async () => { await showMarkdown('Harbor Mate · Agent Health', healthMarkdown(healthReport(root()))); }),
     vscode.commands.registerCommand('harborMate.cleanUp', async () => {
       const victims = planCleanup(root(), svc.retention());
       if (!victims.length) { vscode.window.showInformationMessage('Harbor Mate: nothing to clean up.'); return; }

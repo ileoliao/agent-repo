@@ -60,6 +60,16 @@
         "category": "Harbor Mate"
       },
       {
+        "command": "harborMate.runDoctor",
+        "title": "Check Agents (Doctor)",
+        "category": "Harbor Mate"
+      },
+      {
+        "command": "harborMate.showHealth",
+        "title": "Agent Health Report",
+        "category": "Harbor Mate"
+      },
+      {
         "command": "harborMate.cleanUp",
         "title": "Clean Up Finished Work",
         "category": "Harbor Mate"
@@ -277,6 +287,14 @@
           {
             "name": "pending",
             "description": "Questions and approvals waiting for you"
+          },
+          {
+            "name": "doctor",
+            "description": "Check that your agents can run, and run their probes once"
+          },
+          {
+            "name": "health",
+            "description": "How each agent has been doing, and what to improve"
           }
         ]
       }
@@ -286,7 +304,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "rm -rf out && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository",
-    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js && node test/maintenance.js",
+    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js && node test/maintenance.js && node test/doctor.js",
     "sim": "node test/sim/run.js"
   },
   "devDependencies": {
