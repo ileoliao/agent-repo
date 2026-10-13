@@ -70,6 +70,7 @@ loop:
 ```
 
 - The single top-level `schedule`/`task`/`wakeIf` is the goal `default`. Change it with `propose_schedule`; `propose_goals` refuses the id `default`.
+- With `propose_goals` update, an empty string clears a field (for example `wakeIf: ""`). Only the goal you name is rewritten; the other goals keep their exact text.
 - Schedule state, the daily cap and wake history are kept per goal.
 - A goal without a schedule never runs on its own; it only records a responsibility.
 

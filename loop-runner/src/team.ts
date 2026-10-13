@@ -210,6 +210,7 @@ export function validateTeam(team: Map<string, AgentDef>, skills: Map<string, Sk
       if (!a.task) { errors.push(`${a.name}: loop.schedule is set but loop.task is missing`); }
     }
     if (a.maxRunsPerDay !== undefined && (!Number.isInteger(a.maxRunsPerDay) || a.maxRunsPerDay < 1)) { errors.push(`${a.name}: loop.maxRunsPerDay must be a whole number of at least 1`); }
+    if (a.maxSteps !== undefined && (!Number.isInteger(a.maxSteps) || a.maxSteps < 1)) { errors.push(`${a.name}: loop.maxSteps must be a whole number of at least 1`); }
     const seen = new Set<string>(a.schedule ? ['default'] : []);
     for (const g of a.goals.filter(x => !(x.id === 'default' && a.schedule && x === a.goals[0]))) {
       const w = `${a.name}: goal "${g.id}"`;

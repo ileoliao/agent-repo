@@ -108,6 +108,12 @@ function fromChange(p: Proposed, host: ChatHost): ToolResult {
 }
 
 export async function runChatTool(name: string, input: any, host: ChatHost): Promise<ToolResult> {
+  // Whatever the model sends, a tool answers with text; an exception would end the whole chat turn and hide the cause.
+  try { return await runTool(name, input && typeof input === 'object' ? input : {}, host); }
+  catch (e: any) { return { text: `Not proposed: that input could not be used (${e?.message ?? e}). Check the tool's parameters and try again.` }; }
+}
+
+async function runTool(name: string, input: any, host: ChatHost): Promise<ToolResult> {
   const root = host.root;
   const agents = loadAllAgents(root);
   switch (name) {

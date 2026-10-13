@@ -1364,7 +1364,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok((await cardOf('propose_skills', { agent: 'sentinel', remove: ['other'] })).text.startsWith('Not proposed'), 'removing a skill it does not have is refused');
     const rmSk = await cardOf('propose_skills', { agent: 'sentinel', remove: ['probe'] });
     await rmSk.proposal.apply();
-    ok(loadAgents(R).get('sentinel').skills.length === 0 && !/skills:/.test(fs.readFileSync(A('sentinel'), 'utf8')), 'removing the last skill removes the key');
+    ok(loadAgents(R).get('sentinel').skills.length === 0 && loadAgents(R).has('sentinel') && fs.readFileSync(A('sentinel'), 'utf8').includes('  skills: []'), 'removing the last skill leaves an empty list, so the agent stays in the team');
     fs.writeFileSync(A('sentinel'), src);
 
     // a block-style list is replaced whole
@@ -1405,6 +1405,74 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     fs.writeFileSync(A('raced'), 'someone else wrote this\n');
     let blocked = false; try { await race.proposal.apply(); } catch (e) { blocked = /changed since/.test(e.message); }
     ok(blocked && fs.readFileSync(A('raced'), 'utf8') === 'someone else wrote this\n', 'Apply refuses to overwrite a file that appeared after the proposal');
+
+    // ---- hardening from review ----
+    fs.writeFileSync(A('sentinel'), src);
+    const refused = async (tool, input, why) => ok((await cardOf(tool, input)).text.startsWith('Not proposed'), `refused: ${why}`);
+    // injection through a value
+    await refused('propose_agent', { name: 'x1', description: 'd', instructions: 'i', handoffs: ['sentinel\nloop:\n  schedule: "* * * * *"\n  task: go\n  policy: .loop/outbox/p.json'] }, 'a handoff name carrying YAML');
+    await refused('propose_agent', { name: 'x1', description: 'd', instructions: 'i', skills: ['probe\n  schedule: "* * * * *"'] }, 'a skill name carrying a line break');
+    // types
+    for (const [input, why] of [
+      [{ name: 'x1', description: 'd', instructions: 'i', skills: 'probe' }, 'skills as text'],
+      [{ name: 'x1', description: 'd', instructions: 'i', handoffs: 'sentinel' }, 'handoffs as text'],
+      [{ name: 'x1', description: 'd', instructions: 'i', goals: {} }, 'goals as an object'],
+      [{ name: 'x1', description: 'd', instructions: 'i', goals: [null] }, 'a null goal'],
+      [{ name: 'x1', description: 'd', instructions: 'i', schedule: 5, task: 't' }, 'a numeric schedule'],
+      [{ name: 'x1', description: 'd', instructions: 'i', model: 5 }, 'a numeric model'],
+      [{ name: 'x1', description: 'd', instructions: 'i', policy: ['.loop/policies/ro.json'] }, 'a policy given as a list'],
+      [{ name: 'x1', description: 'd', instructions: 'i', maxSteps: 0 }, 'maxSteps 0'],
+      [{ name: 'x1', description: 'd', instructions: 'i', maxSteps: -3.5 }, 'a negative fractional maxSteps'],
+      [{ name: 'x1', description: 'd', instructions: 'i', maxRunsPerDay: 'abc' }, 'maxRunsPerDay as text'],
+      [{ name: 'x1', description: 'd', instructions: 'i', policy: '.loop/policies/.' }, 'a policy that is a directory'],
+      [{ name: 'x1', description: 'd', instructions: 'i', goals: [{ id: 'g', text: 't', schedule: '0 9 * * *', policy: ['../../x.json'] }] }, 'a goal policy given as a list'],
+      [{ name: 'x1', description: 'd', instructions: 'i', goals: [{ id: 'g', text: 't', policy: 5 }] }, 'a numeric goal policy']
+    ]) { await refused('propose_agent', input, `new agent, ${why}`); }
+    for (const [input, why] of [
+      [{ agent: 'sentinel', op: 'add', id: 'z', text: 't', policy: ['../../x.json'] }, 'a goal policy as a list'],
+      [{ agent: 'sentinel', op: 'add', id: 'z', text: 't', policy: 5 }, 'a numeric goal policy'],
+      [{ agent: 'sentinel', op: 'add', id: 'z', text: 't', maxRunsPerDay: '3' }, 'maxRunsPerDay as text'],
+      [{ agent: 'sentinel', op: 'add', id: 'z', text: 't', urgent: 'yes' }, 'urgent as text'],
+      [{ agent: 'sentinel', op: 'add', id: 'z', text: 't', skills: 'probe' }, 'skills as text'],
+      [{ agent: 'sentinel', op: 'frobnicate', id: 'z', text: 't' }, 'an unknown op']
+    ]) { await refused('propose_goals', input, `goal, ${why}`); }
+    await refused('propose_skills', { agent: 'sentinel', add: 'probe' }, 'skills add as text');
+    await refused('propose_skills', { agent: 'sentinel', add: ['probe'], remove: ['probe'] }, 'the same skill added and removed');
+    // a flattened description is still only a description
+    const flat = M.proposeAgent(R, { name: 'x2', description: 'd\nloop:\n  schedule: "* * * * *"', instructions: 'i' });
+    ok(flat.change && !parseFrontmatter(flat.change.after).meta.loop.schedule && flat.change.notes.includes('Will not run on its own'), 'a description with line breaks is flattened and cannot add a schedule');
+    // duplicates
+    const dup = M.proposeAgent(R, { name: 'x3', description: 'd', instructions: 'i', skills: ['probe', 'probe'], handoffs: ['sentinel', 'sentinel'] });
+    ok(dup.change && dup.change.after.includes('skills: [probe]') && (dup.change.after.match(/agent: sentinel/g) || []).length === 1, 'repeated skills and handoffs are written once');
+    const addDup = M.proposeSkills(R, 'sentinel', { add: ['probe', 'probe'] });
+    ok(addDup.error === 'Nothing to change.', 'adding a skill it has twice changes nothing');
+    // layouts: comments at the key indent, CRLF, a block-style list with a comment between items
+    const withComment = '---\nname: sentinel\ndescription: watches\nloop:\n  skills:\n  - probe\n  # the second\n  - other\n  task: Look.\n---\nYou watch.\n';
+    fs.writeFileSync(A('sentinel'), withComment);
+    const cm = M.setLoopBlock(withComment, 'skills', ['skills: [probe]']);
+    ok(cm === '---\nname: sentinel\ndescription: watches\nloop:\n  skills: [probe]\n  task: Look.\n---\nYou watch.\n', 'a block list with a comment between its items is replaced whole, leaving no orphan lines');
+    const crlf = src.replace(/\n/g, '\r\n');
+    const cr = M.setLoopBlock(crlf, 'goals', ['goals:', '- id: a', '  text: t']);
+    ok(cr.includes('\r\n  goals:\r\n    - id: a\r\n      text: t\r\n---') && !/[^\r]\n/.test(cr), 'CRLF files keep CRLF');
+    fs.writeFileSync(A('sentinel'), src);
+    // surgical goal edits: other goals keep their exact text, comments and multi-line values
+    const rich = src.replace('  maxSteps: 12\n', '  maxSteps: 12\n  goals:\n    # keep this one cheap\n    - id: a\n      text: Watch A\n      task: |\n        Line one.\n        Line two.\n      wakeIf: node -e "require(\'fs\')"\n    - id: b\n      text: Watch B\n');
+    fs.writeFileSync(A('sentinel'), rich);
+    const sur = M.proposeGoals(R, 'sentinel', 'update', { id: 'b', text: 'Watch B closely' });
+    ok(sur.change && sur.change.after === rich.replace('    - id: b\n      text: Watch B\n', '    - id: "b"\n      text: "Watch B closely"\n'), 'editing one goal changes only its own lines: comments, multi-line text and quote-heavy commands in the others are untouched');
+    const sur2 = M.proposeGoals(R, 'sentinel', 'update', { id: 'a', text: 'Watch A closely' });
+    const aAfter = loadAgents(R).get('sentinel') && require(`${OUT}/team.js`).agentFromText('sentinel.agent.md', sur2.change.after).goals.find(g => g.id === 'a');
+    ok(aAfter && aAfter.task === 'Line one.\nLine two.' && aAfter.wakeIf === 'node -e "require(\'fs\')"' && aAfter.text === 'Watch A closely', 'the goal being edited keeps its multi-line task and its quote-heavy command');
+    const addTo = M.proposeGoals(R, 'sentinel', 'add', { id: 'c', text: 'Watch C' });
+    ok(addTo.change && addTo.change.after.endsWith('    - id: b\n      text: Watch B\n    - id: "c"\n      text: "Watch C"\n---\nYou watch.\n'), 'a new goal is appended after the last one, in the same layout');
+    const rm = M.proposeGoals(R, 'sentinel', 'remove', { id: 'a' });
+    ok(rm.change && rm.change.after === rich.replace(/    # keep this one cheap\n    - id: a[\s\S]*?(?=    - id: b)/, '    # keep this one cheap\n'), 'removing a goal removes only its own lines');
+    const clr = M.proposeGoals(R, 'sentinel', 'update', { id: 'a', wakeIf: '' });
+    ok(clr.change && !require(`${OUT}/team.js`).agentFromText('sentinel.agent.md', clr.change.after).goals.find(g => g.id === 'a').wakeIf, 'an empty string clears a field on update');
+    fs.writeFileSync(A('sentinel'), src);
+    // the chat layer never throws
+    for (const bad of [null, 5, 'x', [], { agent: 5 }]) { ok(typeof (await runChatTool('propose_agent', bad, host)).text === 'string', `propose_agent survives input ${JSON.stringify(bad)}`); }
+    ok((await runChatTool('propose_goals', { agent: 'sentinel', op: 'add', id: 'z', text: 't', skills: { a: 1 } }, host)).text.startsWith('Not proposed'), 'a model sending the wrong shape gets an explanation');
 
     // guide
     const guide = (await cardOf('get_authoring_guide', {})).text;
