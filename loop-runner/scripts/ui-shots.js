@@ -77,6 +77,7 @@ const THEMES = {
       let html = renderPage(model, 'n', 'x').replace(/<meta http[^>]*>/, '').replace('<script nonce="n">', '<script>');
       html = html.replace('<head>', `<head><style>:root{${Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')}} body{background:${vars['--vscode-editor-background']}}</style><script>window.acquireVsCodeApi=()=>({postMessage(){}});</script>`);
       await page.setContent(html);
+      await page.evaluate(() => { const t = document.querySelector('.thread'); if (t) { t.scrollTop = t.scrollHeight; } if (typeof updatePinned === 'function') { updatePinned(); } });
       if (openSel) { await page.evaluate(sel => { document.querySelector(sel).open = true; }, openSel); }
       const f = path.join(outDir, `${name}.${theme}.png`);
       await page.screenshot({ path: f, fullPage: true });

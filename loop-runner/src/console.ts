@@ -695,7 +695,16 @@ function scan() {
   const empty = document.querySelector('[data-filter-empty]');
   if (empty) empty.classList.toggle('hidden', !document.querySelectorAll('details.run').length || [...document.querySelectorAll('details.run')].some(d => !d.classList.contains('hidden')));
   const sel = document.querySelector('[data-filter]'); if (sel) sel.value = filter;
+  updatePinned();
 }
+/** The pinned "waiting for you" bar is only for when the card it points to is out of view. */
+function updatePinned() {
+  const th = document.querySelector('.thread'); if (!th) return;
+  const p = th.querySelector('.pinned'), g = th.querySelector('.thread-gates'); if (!p || !g) return;
+  const top = g.offsetTop - th.scrollTop, inView = th.clientHeight > 0 && top >= 0 && top < th.clientHeight - 80;
+  p.classList.toggle('hidden', inView);
+}
+document.addEventListener('scroll', e => { if (e.target && e.target.classList && e.target.classList.contains('thread')) updatePinned(); }, true);
 function autosize(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; }
 document.addEventListener('input', e => { if (e.target.matches && e.target.matches('textarea[data-chat-input]')) autosize(e.target); });
 function sendChat(agent) {
