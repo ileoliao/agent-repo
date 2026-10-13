@@ -11,7 +11,7 @@ import { loadPolicy } from './policy';
 import { GoalIO, checkSilence, fireGoal, goalsDue } from './goals';
 import { runItem } from './runner';
 import { taskOnEnd } from './tasks';
-import { LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
+import { notifyWebhook, LoopEvent, answerQuestion, approveAndRun, notify, rejectApproval } from './gates';
 import { InboxView, showGate } from './inbox';
 import { ConsolePanel } from './consoleView';
 import { chatState, conversationContext, markDelivered, pendingMessages, postHumanMessage, routeFor } from './thread';
@@ -479,6 +479,8 @@ export class TeamService {
     } catch (e: any) {
       this.out.appendLine(`notify failed: ${e?.message ?? e}`);
     }
+    const w = await notifyWebhook(this.cfg().get<string>('notifyWebhook') || undefined, ev, await this.secrets());
+    if (w && !w.ok) { this.out.appendLine(`webhook notify failed: ${w.error}`); }
   }
 
   async secrets(): Promise<Record<string, string>> {
@@ -700,7 +702,9 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('harborMate.testNotify', async () => {
       const cmd = svc.cfg().get<string>('notifyCommand');
-      if (!cmd) { vscode.window.showWarningMessage('Set harborMate.notifyCommand in your user settings first.'); return; }
+      const hook = svc.cfg().get<string>('notifyWebhook');
+      if (!cmd && !hook) { vscode.window.showWarningMessage('Set harborMate.notifyWebhook (Slack, Teams or Discord) or harborMate.notifyCommand in your user settings first.'); return; }
+      if (hook) { const w = await notifyWebhook(hook, { kind: 'question', agent: 'harbor-mate', title: 'Test notification' }, await svc.secrets()); vscode.window.showInformationMessage(w?.ok ? 'Harbor Mate: webhook test sent.' : `Harbor Mate: webhook failed: ${w?.error}`); if (!cmd) { return; } }
       const r = await notify(root(), cmd, { kind: 'question', agent: 'harbor-mate', title: 'Test notification' }, await svc.secrets());
       out.show(true);
       out.appendLine(`notify test: ${r?.text}`);
