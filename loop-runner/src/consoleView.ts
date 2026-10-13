@@ -30,7 +30,9 @@ const COMMANDS: Record<string, string> = {
   describeAgent: 'harborMate.describeAgent',
   runDoctor: 'harborMate.runDoctor',
   showHealth: 'harborMate.showHealth',
-  cleanUp: 'harborMate.cleanUp'
+  cleanUp: 'harborMate.cleanUp',
+  pauseAgent: 'harborMate.pauseAgent',
+  resumeAgent: 'harborMate.resumeAgent'
 };
 
 /** Webview console: one page with what needs you, the agents, and what each run did. */
@@ -43,6 +45,14 @@ export class ConsolePanel {
   private lastHtml = '';
 
   constructor(private a: ConsoleActions) {}
+
+  /** The one argument a page button may pass: a starter id, or an agent name. Anything else is dropped. */
+  private cmdArg(name: string, arg: unknown): string | undefined {
+    if (typeof arg !== 'string') { return undefined; }
+    if (name === 'getStarted') { return TEMPLATES.some(t => t.id === arg) ? arg : undefined; }
+    if (name === 'runAgent' || name === 'pauseAgent' || name === 'resumeAgent') { return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(arg) ? arg : undefined; }
+    return undefined;
+  }
 
   show(): void {
     if (this.panel) { this.panel.reveal(); this.refresh(true); return; }
@@ -94,7 +104,7 @@ export class ConsolePanel {
     try {
       switch (m?.type) {
         case 'ready': this.refresh(true); return;
-        case 'cmd': if (COMMANDS[m.name]) { await vscode.commands.executeCommand(COMMANDS[m.name], m.name === 'getStarted' && typeof m.arg === 'string' && TEMPLATES.some(t => t.id === m.arg) ? m.arg : undefined); } break;
+        case 'cmd': if (COMMANDS[m.name]) { await vscode.commands.executeCommand(COMMANDS[m.name], this.cmdArg(String(m.name), m.arg)); } break;
         case 'answer': this.a.answer(String(m.id), String(m.text)); break;
         case 'approve': {
           const id = String(m.id);

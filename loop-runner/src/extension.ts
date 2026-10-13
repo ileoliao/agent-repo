@@ -3,7 +3,7 @@ import { TEMPLATES, installTemplate } from './templates';
 import { setExtraPath } from './exec';
 import { doctorMarkdown, runDoctor } from './doctor';
 import { healthMarkdown, healthReport } from './health';
-import { DEFAULT_RETENTION, Retention, autoCleanup, describeResult, pausedAgents, planCleanup, runCleanup } from './maintenance';
+import { DEFAULT_RETENTION, Retention, autoCleanup, setPaused, describeResult, pausedAgents, planCleanup, runCleanup } from './maintenance';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -697,14 +697,17 @@ export function activate(ctx: vscode.ExtensionContext) {
       const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Harbor Mate' });
       await pick?.run();
     }),
-    vscode.commands.registerCommand('harborMate.runAgent', async () => {
+    vscode.commands.registerCommand('harborMate.runAgent', async (agent?: string) => {
       if (!svc.running) { vscode.window.showWarningMessage('Start the team first (Harbor Mate: Start Team).'); return; }
-      const pick = await vscode.window.showQuickPick(
+      const named = typeof agent === 'string' ? svc.team.get(agent) : undefined;
+      const pick = named ? { label: named.name } : await vscode.window.showQuickPick(
         [...svc.team.values()].map(a => ({ label: a.name, description: a.description })), { placeHolder: 'Which agent?' });
       if (!pick) { return; }
       const task = await vscode.window.showInputBox({ prompt: `Task for ${pick.label}`, ignoreFocusOut: true });
       if (task) { svc.submit(pick.label, task); }
     }),
+    vscode.commands.registerCommand('harborMate.pauseAgent', (agent?: string) => { if (typeof agent === 'string' && svc.team.has(agent)) { setPaused(root(), agent, true); refresh(); } }),
+    vscode.commands.registerCommand('harborMate.resumeAgent', (agent?: string) => { if (typeof agent === 'string' && svc.team.has(agent)) { setPaused(root(), agent, false); refresh(); } }),
     vscode.commands.registerCommand('harborMate.describeAgent', () => vscode.commands.executeCommand('workbench.action.chat.open', { query: '@mate I want an agent that ', isPartialQuery: true })),
     vscode.commands.registerCommand('harborMate.getStarted', async (preset?: string) => {
       const r = root();

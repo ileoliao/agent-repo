@@ -1,3 +1,4 @@
+import { pausedAgents } from './maintenance';
 import * as fs from 'fs';
 import * as path from 'path';
 import { loadAllAgents } from './team';
@@ -16,6 +17,10 @@ export interface AgentRow {
   next?: Date;
   /** Latest wake check: whether it found work, and when. */
   lastWake?: { wake: boolean; at: string; capped?: number };
+  /** What wakes it besides a person: `schedule` text and `on:` triggers, one entry per goal that has one. */
+  triggers?: { kind: 'schedule' | 'webhook' | 'file'; text: string }[];
+  /** Its scheduled and event wakes are skipped (a task given by hand still runs). */
+  paused?: boolean;
   /** Workspace-relative path of the agent file. */
   file: string;
 }
@@ -44,6 +49,7 @@ function lastWakes(root: string): Map<string, { wake: boolean; at: string; cappe
 export function agentRows(root: string, activeAgent?: Active, now = new Date()): AgentRow[] {
   const wakes = lastWakes(root);
   const gates = listGates(root).filter(g => g.status === 'pending');
+  const paused = pausedAgents(root);
   return [...loadAllAgents(root).values()].filter(a => a.inLoop).map(a => ({
     name: a.name,
     description: a.description,
@@ -52,6 +58,8 @@ export function agentRows(root: string, activeAgent?: Active, now = new Date()):
     schedule: a.goals.find(g => g.schedule)?.schedule,
     next: a.goals.flatMap(g => (g.schedule ? [nextMatch(g.schedule, now)] : [])).filter((d): d is Date => !!d).sort((x, y) => x.getTime() - y.getTime())[0],
     lastWake: wakes.get(a.name),
+    triggers: a.goals.flatMap(g => [...(g.schedule ? [{ kind: 'schedule' as const, text: g.schedule }] : []), ...(g.on ? [{ kind: (g.on.startsWith('webhook:') ? 'webhook' : 'file') as 'webhook' | 'file', text: g.on.replace(/^(webhook|file):/, '') }] : [])]),
+    paused: paused.has(a.name) || undefined,
     file: a.file
   }));
 }

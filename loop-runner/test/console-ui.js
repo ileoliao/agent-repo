@@ -47,6 +47,19 @@ ok(/class="working"[^]*is working: read app.js/.test(chat({ state: 'running' }))
 const gate = kind => ({ id: 'g', kind, agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now, previews: [] });
 ok(/use the buttons above/.test(chat({ state: 'waiting' }, [gate('approval')])) && /Answer the question above/.test(chat({ state: 'waiting' }, [gate('question')])), 'the message box says whether it answers the approval or question');
 
+console.log('agent cards act');
+const card = (over = {}) => renderBody({ ...base, agents: [{ ...agent, triggers: [{ kind: 'schedule', text: '0 9 * * 1-5' }, { kind: 'webhook', text: 'deploy' }, { kind: 'file', text: 'reports/*.md' }], ...over }] });
+const c1 = card();
+ok(/weekdays at 09:00/.test(c1) && /webhook “deploy”/.test(c1) && /new file appears in reports\/\*\.md/.test(c1), 'a card says what wakes the agent, in words');
+ok(/data-cmd="runAgent" data-arg="a"/.test(c1) && /data-cmd="pauseAgent" data-arg="a"/.test(c1), 'a card can run the agent now and pause it');
+const c2 = card({ paused: true });
+ok(/data-cmd="resumeAgent"/.test(c2) && !/data-cmd="pauseAgent"/.test(c2) && /Paused/.test(c2), 'a paused agent shows Paused and offers Resume');
+ok(!/data-cmd="pauseAgent"/.test(card({ triggers: [] })), 'an agent with nothing to pause has no Pause button');
+ok(/disabled title="Sign in to GitHub Copilot first"/.test(renderBody({ ...base, copilot: 0, agents: [agent] })), 'Run now is disabled while Copilot is signed out');
+ok(/disabled/.test(renderBody({ ...base, running: false, agents: [], runs: [], copilot: 0, tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'so are the starters');
+const hostile = renderBody({ ...base, agents: [{ ...agent, name: 'a"><img src=x>', triggers: [{ kind: 'schedule', text: '0 9 * * *' }] }] });
+ok(!/<img src=x>/.test(hostile), 'an agent name cannot break out of the card');
+
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');
 console.log(`${n} console wording checks passed`);

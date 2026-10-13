@@ -147,6 +147,16 @@
         "command": "harborMate.chat.dismiss",
         "title": "Dismiss proposal",
         "category": "Harbor Mate"
+      },
+      {
+        "command": "harborMate.pauseAgent",
+        "title": "Pause an Agent",
+        "category": "Harbor Mate"
+      },
+      {
+        "command": "harborMate.resumeAgent",
+        "title": "Resume an Agent",
+        "category": "Harbor Mate"
       }
     ],
     "views": {
@@ -217,6 +227,14 @@
         },
         {
           "command": "harborMate.chat.dismiss",
+          "when": "false"
+        },
+        {
+          "command": "harborMate.pauseAgent",
+          "when": "false"
+        },
+        {
+          "command": "harborMate.resumeAgent",
           "when": "false"
         }
       ]
