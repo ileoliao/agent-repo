@@ -103,6 +103,12 @@ ok(/Runs only when you give it a task/.test(renderBody({ ...base, tab: 'chat', c
 ok(/data-insert="@b "/.test(head) && !/data-insert="\/stop"/.test(head) && /data-insert="\/stop"/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ state: 'running' }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'shortcut chips offer other mates, and /stop only while it runs');
 ok(/title="Talk to a mate/.test(head) && /title="Everything at a glance/.test(head), 'each tab says what it is for');
 ok(/Check &amp; tools/.test(head), 'the menu name says that checking is in there');
+ok(/class="tab-sub">talk to a mate/.test(head) && /class="tab-sub">all mates and runs/.test(head), 'each tab says in words what it is for, without hovering');
+const card2 = renderBody({ ...base, agents: [{ ...agent, file: '.github/agents/a.agent.md', triggers: [{ kind: 'schedule', text: '0 9 * * *' }] }] });
+ok(/data-agent="a"[^>]*>[^]*Chat/.test(card2) && /data-open="\.github\/agents\/a\.agent\.md"[^>]*>[^]*Edit file/.test(card2), 'an overview card links to that mate\'s chat and its file');
+ok(/Give a mate a task/.test(renderBody(base)) && /title="Stop every mate/.test(renderBody(base)) && /title="Open the newest file any mate wrote"/.test(renderBody(base)), 'the top buttons say whom they affect');
+ok(/class="chips-row"[^]*Try[^]*ask for status/.test(head) && !/ask for status/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ state: 'running' }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'an idle mate gets a ready-made question to try, a running one does not');
+ok(/appears at the top once you have a mate/.test(renderBody({ ...base, running: false, agents: [], runs: [], tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'the disabled Start says why');
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');
 console.log(`${n} console wording checks passed`);
