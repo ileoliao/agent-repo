@@ -189,12 +189,12 @@ const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
 };
 /** Why a run ended this way and what to do next, in words a first-time user can act on. */
 const STATUS_HINT: Record<string, string> = {
-  blocked: 'It could not go on. Open the steps to see what it was missing, then tell it in Chat.',
-  error: 'Something failed while it ran. Open the steps to see what; “Check mates” finds setup problems.',
-  stalled: 'It went in circles or ran out of time. Give it a narrower task, or tell it what to try.',
-  max_steps: 'It reached its step limit before finishing. Narrow the task, or raise its step limit.',
-  interrupted: 'VS Code closed, or the mates were stopped, while this ran. Start the mates and it is picked up again.',
-  retry: 'A temporary limit stopped it (rate or quota). It tries again by itself.'
+  blocked: 'It could not go on. Open the steps, then tell it what it needs in Chat.',
+  error: 'Something failed. Open the steps; “Check mates” finds setup problems.',
+  stalled: 'It went in circles or ran out of time. Try a narrower task.',
+  max_steps: 'It hit its step limit. Narrow the task, or raise the limit.',
+  interrupted: 'VS Code closed or the mates were stopped mid-run. Start the mates to pick it up.',
+  retry: 'A temporary limit stopped it. It retries by itself.'
 };
 /** Statuses the "Problems" filter shows. */
 const PROBLEMS = new Set(['error', 'stalled', 'blocked', 'max_steps', 'interrupted', 'retry']);
@@ -216,17 +216,16 @@ function gateCard(g: GateView): string {
   if (isQ) {
     const opts = (g.options ?? []).map(o => btn(o, `data-pick="${esc(g.id)}" data-text="${esc(o)}"`, 'secondary')).join('');
     return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Question from ${esc(g.agent)}">${head}${body}${files}
-      ${opts ? `<div class="label">Suggested answers: click one to fill the box, change it if you like, then Send</div><div class="row wrap">${opts}</div>` : ''}
+      ${opts ? `<div class="label">Suggested answers</div><div class="row wrap">${opts}</div>` : ''}
       <div class="row"><textarea rows="2" placeholder="Type an answer…" aria-label="Your answer" data-input="${esc(g.id)}"></textarea>${btn('Send answer', `data-send="${esc(g.id)}"`, 'primary', 'send')}</div></section>`;
   }
   const truncated = previews.some(p => p.truncated);
   const notes = [
     missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '',
-    previews.length && !missing.length ? `<div class="note">Your approval covers ${truncated ? 'the whole of each file (only the first part of a long one is shown above; open it to read the rest)' : 'the file contents shown above'}. If a file changes before it runs, nothing runs and you review again.</div>` : '',
-    '<div class="note">Runs as your user account in the workspace folder, not in a sandbox. Only the secrets you gave this mate are available to it.</div>'
+    `<div class="note">${previews.length && !missing.length ? (truncated ? 'Approval covers the whole of each file; open a long one to read it all. ' : 'Approval covers the files shown. ') : ''}Runs as you, not in a sandbox.</div>`
   ].join('');
   return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${body}
-    <div class="label">This exact command runs when you approve</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${files}${notes}
+    <div class="label">Command that will run</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${files}${notes}
     <div class="row"><textarea rows="1" placeholder="Reason, if you reject (optional)" aria-label="Feedback for the agent" data-input="${esc(g.id)}"></textarea>
     ${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div></section>`;
 }
@@ -242,7 +241,7 @@ function refusalsOf(r: { agent: string; steps: { refused?: { command: string; ru
     const { command, rule } = s.refused;
     const open = `<a class="link" href="#" data-open=".loop/policy.json">policy file</a>`;
     rows.push(rule === 'no allow rule matched'
-      ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> is not on ${esc(r.agent)}'s allowed list.${compact ? '' : ` Allowing adds this exact command for ${esc(r.agent)} only; anything else is still checked.`} <a class="link" href="#" data-open=".loop/policy.json">Policy file</a></span>${btn('Allow it', `data-allow-agent="${esc(r.agent)}" data-allow-cmd="${esc(command)}" title="Adds this exact command for ${esc(r.agent)} only. Anything else it tries is still checked against the policy."`, 'secondary', 'check')}</div>`
+      ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> is not allowed yet.${compact ? '' : ` Allowing adds this exact command for ${esc(r.agent)} only.`} <a class="link" href="#" data-open=".loop/policy.json">Policy file</a></span>${btn('Allow it', `data-allow-agent="${esc(r.agent)}" data-allow-cmd="${esc(command)}" title="Adds this exact command for ${esc(r.agent)} only. Anything else it tries is still checked against the policy."`, 'secondary', 'check')}</div>`
       : `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> matches the deny rule <code>${esc(clip(rule, 80))}</code>. A deny rule is a limit you set on purpose, so it is not lifted with one click. Open the ${open} to change it.</span></div>`);
   }
   return rows.join('');
@@ -409,10 +408,10 @@ function threadEvent(e: ThreadEvent, agent: string): string {
 
 function composerHint(name: string, state: ChatState, running: boolean): string {
   switch (state) {
-    case 'running': return `${name} is working. It reads this at its next step, and can change course.`;
-    case 'waiting': return `${name} is waiting for your answer above. It reads this when it continues.`;
-    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The mates are off.'}`;
-    default: return running ? `${name} is idle. This starts a new run.` : `The mates are off. This is saved, and starts a run when you start the mates.`;
+    case 'running': return `${name} reads this at its next step.`;
+    case 'waiting': return '';
+    case 'queued': return `${name} has work queued and reads this when it starts.${running ? '' : ' The mates are off.'}`;
+    default: return running ? '' : 'The mates are off. This is saved, and runs when you start them.';
   }
 }
 
@@ -485,13 +484,13 @@ function renderChat(m: ConsoleModel): string {
   return `<div class="chat">
     <nav class="roster" aria-label="Agents">${list}</nav>
     <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
-      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(STATE_LABEL[sel.state])} · ${esc(sel.line)}</div>${chatFacts(sel)}</div>${chatActions(sel, m.copilot === 0)}</header>
+      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(STATE_LABEL[sel.state])}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}</div>${chatActions(sel, m.copilot === 0)}</header>
       <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${c.gates.length ? `<button class="pinned" data-jump=".thread-gates" title="Scroll to what ${esc(sel.name)} is asking">${icon('bell')}<span><b>${esc(sel.name)}</b> is waiting for you: ${esc(clip(c.gates[0].title, 60))}${c.gates.length > 1 ? ` and ${c.gates.length - 1} more` : ''}</span><span class="pin-go">Jump</span></button>` : ''}${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${working}${gates}</div>
-      <div class="composer ${running ? 'running' : ''}"><div class="muted hint">${esc(composerHint(sel.name, sel.state, m.running))}</div>
+      <div class="composer ${running ? 'running' : ''}">${composerHint(sel.name, sel.state, m.running) ? `<div class="muted hint">${esc(composerHint(sel.name, sel.state, m.running))}</div>` : ''}
         <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}" aria-label="Message ${esc(sel.name)}" placeholder="${esc(c.gates.some(g => g.kind === 'approval') ? `Message ${sel.name}. To decide the approval, use the buttons above.` : c.gates.length ? `Answer the question above, or message ${sel.name}…` : `Message ${sel.name}…`)}"></textarea>`
     + `<button class="roundbtn stop" data-chat-cancel="${esc(sel.name)}" title="Stop this run" aria-label="Stop this run">${icon('stop')}<span class="stoplabel">Stop</span></button>`
     + `<button class="roundbtn send" data-chat-send="${esc(sel.name)}" title="Send" aria-label="Send">${icon('up')}</button></div>
-        <div class="chips-row" role="group" aria-label="Shortcuts"><span class="muted tiny">Try</span>${!running && sel.state !== 'waiting' ? `<button class="chip-btn" data-insert="What did you do last, and what is next?" title="Ask for a quick status">ask for status</button>` : ''}${c.agents.filter(x => x.name !== sel.name).slice(0, 2).map(x => `<button class="chip-btn" data-insert="@${esc(x.name)} " title="Write to ${esc(x.name)} from here">@${esc(x.name)}</button>`).join('')}${running ? '<button class="chip-btn" data-insert="/stop" title="End the current run">/stop</button>' : ''}<span class="muted tiny">Enter sends · Shift+Enter new line</span></div></div>
+        <div class="chips-row" role="group" aria-label="Shortcuts">${!running && sel.state !== 'waiting' ? `<button class="chip-btn" data-insert="What did you do last, and what is next?" title="Ask for a quick status">ask for status</button>` : ''}${c.agents.filter(x => x.name !== sel.name).slice(0, 2).map(x => `<button class="chip-btn" data-insert="@${esc(x.name)} " title="Write to ${esc(x.name)} from here">@${esc(x.name)}</button>`).join('')}${running ? '<button class="chip-btn" data-insert="/stop" title="End the current run">/stop</button>' : ''}</div></div>
     </section></div>`;
 }
 
@@ -530,7 +529,7 @@ export function renderBody(m: ConsoleModel): string {
   const agents = m.agents.length ? m.agents.map(a => agentRow(a, m.copilot === 0)).join('')
     : getStartedCard(m.copilot === 0);
   const stoppedWithWork = !m.running && m.pending.length > 0;
-  const stoppedNote = stoppedWithWork ? `<div class="alert warn" role="status">${icon('alert')}<span><b>Nothing will run until you press Start mates above.</b> Your answer or approval is saved, and the mate carries on once they are started.</span></div>` : '';
+  const stoppedNote = stoppedWithWork ? `<div class="alert warn" role="status">${icon('alert')}<span><b>Nothing will run until you press Start mates.</b></span></div>` : '';
   const item = (cmd: string, title: string, sub: string, kind = '') => `<button class="menuitem ${kind}" data-cmd="${cmd}"><span class="mi-title">${esc(title)}</span><span class="mi-sub">${esc(sub)}</span></button>`;
   const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<details class="toolmenu"><summary class="btn secondary" aria-haspopup="menu"><span>Check &amp; tools</span><span class="caret" aria-hidden="true"></span></summary><div class="menu" role="menu">${item('runDoctor', 'Check mates', 'Confirm every mate can run, and run their pre-checks once')}${item('showHealth', 'Health report', 'How each mate has been doing, and what to improve')}${item('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${item('cleanUp', 'Clean up', 'Delete finished work you no longer need. Asks first')}<div class="mi-foot">Or ask <code>@mate</code> in Chat for anything here.</div></div></details></div>` : '';
   const copilotChip = m.copilot === undefined ? '' : m.copilot > 0 ? `<span class="chip ok" title="${m.copilot} Copilot model${m.copilot > 1 ? 's' : ''} available">${icon('check')}<span>Copilot ready</span></span>` : `<span class="chip warn">${icon('alert')}<span>Copilot not signed in</span></span>`;
