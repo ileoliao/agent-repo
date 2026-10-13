@@ -16,6 +16,8 @@ export interface Step {
   detail?: string;
   /** false for REFUSED / ERROR results. */
   ok: boolean;
+  /** A command policy refused, and the rule that did: `no allow rule matched` can be allowed with one click; a deny rule cannot. */
+  refused?: { command: string; rule: string };
 }
 
 export interface ConsoleRun extends RunSummary { steps: Step[] }
@@ -84,7 +86,8 @@ export function stepsOf(file: string): Step[] {
     } else if (e.type === 'tool') {
       const result = String(e.result ?? '');
       const ok = !/^(REFUSED|ERROR|Not sent)/.test(result);
-      out.push({ step, kind: e.gateId ? 'gate' : 'tool', title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`, detail: clip(firstLine(result), 160) || undefined, ok });
+      const refusal = e.name === 'run_command' && typeof e.input?.command === 'string' ? /^REFUSED by policy \((.+?)\)/.exec(result) : null;
+      out.push({ step, kind: e.gateId ? 'gate' : 'tool', title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`, detail: clip(firstLine(result), 160) || undefined, ok, ...(refusal ? { refused: { command: String(e.input.command).slice(0, 500), rule: refusal[1] } } : {}) });
     } else if (e.type === 'end') {
       out.push({ step, kind: 'end', title: `${e.status ?? 'done'}${e.summary ? ` · ${clip(String(e.summary), 140)}` : ''}`, ok: e.status === 'done' || e.status === undefined });
     } else if (e.type === 'error') {
@@ -187,10 +190,10 @@ const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
 /** Why a run ended this way and what to do next, in words a first-time user can act on. */
 const STATUS_HINT: Record<string, string> = {
   blocked: 'It could not go on. Open the steps to see what it was missing, then tell it in Chat.',
-  error: 'Something failed while it ran. Open the steps to see what; “Check agents” finds setup problems.',
+  error: 'Something failed while it ran. Open the steps to see what; “Check mates” finds setup problems.',
   stalled: 'It went in circles or ran out of time. Give it a narrower task, or tell it what to try.',
   max_steps: 'It reached its step limit before finishing. Narrow the task, or raise its step limit.',
-  interrupted: 'VS Code closed, or the agents were stopped, while this ran. Start the agents and it is picked up again.',
+  interrupted: 'VS Code closed, or the mates were stopped, while this ran. Start the mates and it is picked up again.',
   retry: 'A temporary limit stopped it (rate or quota). It tries again by itself.'
 };
 /** Statuses the "Problems" filter shows. */
@@ -228,6 +231,23 @@ function gateCard(g: GateView): string {
     ${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div></section>`;
 }
 
+/** For each command policy refused: say which rule did it, and offer the one-click allow only when no deny rule is involved. */
+function refusalsOf(r: ConsoleRun): string {
+  const seen = new Set<string>();
+  const rows: string[] = [];
+  for (const s of r.steps) {
+    if (!s.refused || seen.has(s.refused.command)) { continue; }
+    seen.add(s.refused.command);
+    if (rows.length >= 3) { break; }
+    const { command, rule } = s.refused;
+    const open = `<a class="link" href="#" data-open=".loop/policy.json">policy file</a>`;
+    rows.push(rule === 'no allow rule matched'
+      ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> was not on ${esc(r.agent)}'s allowed list. Allowing adds this exact command for ${esc(r.agent)} only; anything else is still checked. See the ${open}.</span>${btn(`Allow for ${r.agent}`, `data-allow-agent="${esc(r.agent)}" data-allow-cmd="${esc(command)}"`, 'secondary', 'check')}</div>`
+      : `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> matches the deny rule <code>${esc(clip(rule, 80))}</code>. A deny rule is a limit you set on purpose, so it is not lifted with one click. Open the ${open} to change it.</span></div>`);
+  }
+  return rows.join('');
+}
+
 function runCard(r: ConsoleRun): string {
   const shown = r.steps.map(s => {
     const quiet = s.ok && (s.kind === 'tool' || s.kind === 'gate') && /^(\[exit 0\]|ok)$/.test(s.detail ?? '');
@@ -239,7 +259,7 @@ function runCard(r: ConsoleRun): string {
   const live = r.status === 'running';
   return `<details class="run" ${live ? 'open' : ''} data-k="r-${esc(r.chainId)}" data-status="${esc(r.status)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
     <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && STATUS_HINT[r.status] ? `<span class="run-why">${esc(STATUS_HINT[r.status])}</span>` : ''}</summary>
-    <div class="run-body">${r.steps.some(x => /REFUSED by policy/.test(x.detail ?? '') || /REFUSED by policy/.test(x.title)) || /refused by policy/i.test(r.summary) ? `<div class="hintbox warn">${icon('alert')}<span>Policy refused a command. Policy is yours to change, not the agent's: <a class="link" href="#" data-open=".loop/policy.json">open the policy file</a> to allow it, or change what the agent is asked to do. <code>@mate</code> can reword the agent, but cannot edit policy.</span></div>` : ''}${STATUS_HINT[r.status] ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(STATUS_HINT[r.status])}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
+    <div class="run-body">${refusalsOf(r)}${STATUS_HINT[r.status] ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(STATUS_HINT[r.status])}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
     <div class="label">What happened</div><ol class="timeline">${shown || '<li class="muted">No steps recorded.</li>'}</ol>
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
@@ -290,9 +310,9 @@ function agentRow(a: AgentRow, copilotOff = false): string {
 
 
 /** What a brand-new user sees: a way forward, not a note about config files. */
-const getStartedCard = (off = false) => `<div class="start-wrap"><div class="start-head">${icon('bot', 'big')}<div class="empty-title">Set up your first agent</div>
-  <div class="muted">An agent does a job for you on its own and only stops to ask when it needs you.</div></div>
-  <ol class="steps"><li><b>Add</b> a starter below, or say what you want.</li><li><b>Check</b> it: we confirm it can run, before it ever does.</li><li><b>Start</b> the agents (the button appears at the top once you have one). You decide anything risky; they never do it alone.</li></ol>
+const getStartedCard = (off = false) => `<div class="start-wrap"><div class="start-head">${icon('bot', 'big')}<div class="empty-title">Set up your first mate</div>
+  <div class="muted">A mate does a job for you on its own and only stops to ask when it needs you.</div></div>
+  <ol class="steps"><li><b>Add</b> a starter below, or say what you want.</li><li><b>Check</b> it: we confirm it can run, before it ever does.</li><li><b>Start</b> the mates (the button appears at the top once you have one). You decide anything risky; they never do it alone.</li></ol>
   <div class="starters">
     <div class="starter"><div class="starter-title">Daily report</div><div class="muted">Every weekday at 09:00 it reads yesterday's commits and writes a one-page summary: what changed, and what is risky.</div><div class="muted tiny">Writes <code>.loop/outbox/daily-report/&lt;date&gt;.md</code>. Reads only; needs no setup.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="daily-report"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
     <div class="starter"><div class="starter-title">Folder watch</div><div class="muted">Every 10 minutes it checks <code>drop/</code> for new files, at no model cost, and summarises each one when it finds some.</div><div class="muted tiny">Shows how a cheap pre-check works. Writes summaries to <code>.loop/outbox/folder-watch/</code>.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="folder-watch"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
@@ -387,8 +407,8 @@ function composerHint(name: string, state: ChatState, running: boolean): string 
   switch (state) {
     case 'running': return `${name} is working. It reads this at its next step, and can change course.`;
     case 'waiting': return `${name} is waiting for your answer above. It reads this when it continues.`;
-    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The agents are off.'}`;
-    default: return running ? `${name} is idle. This starts a new run.` : `The agents are off. This is saved, and starts a run when you start the agents.`;
+    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The mates are off.'}`;
+    default: return running ? `${name} is idle. This starts a new run.` : `The mates are off. This is saved, and starts a run when you start the mates.`;
   }
 }
 
@@ -445,16 +465,16 @@ function renderTabs(m: ConsoleModel): string {
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
   const live = m.runs.find(r => r.status === 'running' && isActive(m.active, r.agent));
-  const state = !m.running ? `<span class="state off">${icon('stop')}Agents off</span>`
+  const state = !m.running ? `<span class="state off">${icon('stop')}Mates off</span>`
     : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
-    : `<span class="state idle">${icon('clock')}Agents on · ${m.pending.length ? `${m.pending.length} waiting on you` : 'idle'}${m.next ? ` · next run ${esc(when(m.next.at))}` : ''}</span>`;
+    : `<span class="state idle">${icon('clock')}Mates on · ${m.pending.length ? `${m.pending.length} waiting on you` : 'idle'}${m.next ? ` · next run ${esc(when(m.next.at))}` : ''}</span>`;
   // A brand-new workspace gets only the way forward: no tabs, no team controls that would do nothing.
   const hasAgents = m.agents.length > 0 || m.runs.length > 0 || m.pending.length > 0 || (m.tasks ?? []).length > 0;
-  const actions = !hasAgents ? '' : (m.running ? btn('Stop agents', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start agents', 'data-cmd="startTeam"', 'primary', 'play'))
+  const actions = !hasAgents ? '' : (m.running ? btn('Stop mates', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start mates', 'data-cmd="startTeam"', 'primary', 'play'))
     + btn('Give a task', 'data-cmd="runAgent"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult"', 'secondary', 'file');
   const last = m.runs.find(r => r.status !== 'running');
   const tiles = [
-    { k: 'Agents', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
+    { k: 'Mates', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
     { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last && last.status !== 'interrupted' ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}${STATUS_HINT[last.status] && PROBLEMS.has(last.status) ? ' · open it below' : ''}` : 'no runs yet' },
     { k: 'Next run', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
   ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
@@ -466,22 +486,22 @@ export function renderBody(m: ConsoleModel): string {
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
   const filter = m.runs.length ? `<label class="filter"><span class="muted">Show</span><select data-filter aria-label="Filter runs"><option value="all">All runs (${m.runs.length})</option><option value="problems">Problems (${problems})</option><option value="done">Done</option></select></label>` : '';
   const runs = m.runs.length ? `<div class="runs">${m.runs.map(runCard).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
-    : empty('clock', 'No runs yet', 'Press Start agents, or use “Give a task” to run an agent now.');
+    : empty('clock', 'No runs yet', 'Press Start mates, or use “Give a task” to run a mate now.');
   const agents = m.agents.length ? m.agents.map(a => agentRow(a, m.copilot === 0)).join('')
     : getStartedCard(m.copilot === 0);
   const needBy = new Map<string, number>(); for (const g of m.pending) { if (g.agent !== m.chat?.selected) { needBy.set(g.agent, (needBy.get(g.agent) ?? 0) + 1); } }
   const needsBanner = m.tab === 'chat' && m.chat && needBy.size ? `<div class="alert warn needs-banner" role="status">${icon('bell')}<span><b>${[...needBy.values()].reduce((x, y) => x + y, 0)} more ${[...needBy.values()].reduce((x, y) => x + y, 0) === 1 ? 'thing needs' : 'things need'} you</b></span>${[...needBy].map(([a, n]) => btn(`${a}${n > 1 ? ` (${n})` : ''}`, `data-agent="${esc(a)}"`, 'secondary')).join('')}</div>` : '';
   const stoppedWithWork = !m.running && m.pending.length > 0;
-  const stoppedNote = stoppedWithWork ? `<div class="alert info" role="status">${icon('alert')}<span>The agents are off. Your answer or approval is saved, but the agent only carries on once you press Start agents above.</span></div>` : '';
-  const toolBtns = `${btn('Check agents', 'data-cmd="runDoctor" title="Check that every agent can run, and run their pre-checks once"', 'secondary', 'check')}${btn('Health report', 'data-cmd="showHealth" title="How each agent has been doing, and what to improve"', 'secondary', 'file')}${btn('Add an agent', 'data-cmd="getStarted" title="Add a starter agent"', 'secondary', 'play')}${btn('Clean up', 'data-cmd="cleanUp" title="Delete finished work you no longer need (asks first)"', 'secondary danger', 'file')}`;
-  const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<div class="tools" role="group" aria-label="Tools">${toolBtns}</div></div>${true ? '<div class=\"muted tools-help\">Hover a button to see what it does. Or ask <code>@mate</code> in Chat for anything here.</div>' : ''}` : '';
+  const stoppedNote = stoppedWithWork ? `<div class="alert info" role="status">${icon('alert')}<span>The mates are off. Your answer or approval is saved, but the mate only carries on once you press Start mates above.</span></div>` : '';
+  const item = (cmd: string, title: string, sub: string, kind = '') => `<button class="menuitem ${kind}" data-cmd="${cmd}"><span class="mi-title">${esc(title)}</span><span class="mi-sub">${esc(sub)}</span></button>`;
+  const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<details class="toolmenu"><summary class="btn secondary" aria-haspopup="menu"><span>Tools</span>${icon('chevron', 'chev')}</summary><div class="menu" role="menu">${item('runDoctor', 'Check mates', 'Confirm every mate can run, and run their pre-checks once')}${item('showHealth', 'Health report', 'How each mate has been doing, and what to improve')}${item('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${item('cleanUp', 'Clean up', 'Delete finished work you no longer need. Asks first', 'danger')}<div class="mi-foot">Or ask <code>@mate</code> in Chat for anything here.</div></div></details></div>` : '';
   const copilotChip = m.copilot === undefined ? '' : m.copilot > 0 ? `<span class="chip ok" title="${m.copilot} Copilot model${m.copilot > 1 ? 's' : ''} available">${icon('check')}<span>Copilot ready</span></span>` : `<span class="chip warn">${icon('alert')}<span>Copilot not signed in</span></span>`;
   const copilotNote = m.copilot === 0 ? `<div class="alert warn" role="alert">${icon('alert')}<span><b>GitHub Copilot is not signed in.</b> Agents use your Copilot models, so none can run until you sign in to GitHub Copilot in VS Code (Accounts menu, bottom left).</span></div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
   return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}${copilotChip}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
     ${note}${copilotNote}${stoppedNote}${needsBanner}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
-    ${decisions}${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
+    ${decisions}${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Mates</h2>${agents}</aside></div>`}`;
 }
 
 const STYLE = `
@@ -489,7 +509,7 @@ const STYLE = `
 *{box-sizing:border-box}
 body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);line-height:1.45}
 .mono,code,pre{font-family:var(--vscode-editor-font-family,monospace);font-size:.92em}
-.start-wrap{margin-top:12px;padding:24px 20px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);display:flex;flex-direction:column;gap:16px}.start-head{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center}.start-head .empty-title{font-size:1.25em}.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 18px;margin:0;padding:0;list-style:none;counter-reset:s}.steps li{counter-increment:s;display:block;position:relative;padding:3px 0 3px 36px;min-height:30px;line-height:1.5;font-size:1.02em}.steps li:before{content:counter(s);position:absolute;left:0;top:3px;flex:none;width:24px;height:24px;border-radius:50%;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);display:inline-flex;align-items:center;justify-content:center;font-size:.85em}.starters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.starter{display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background)}.starter .btn{margin-top:auto;align-self:flex-start}.starter .tiny{margin:0}.starter-title{font-weight:600;font-size:1.05em}.hintbox{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;margin:0 0 8px;border-radius:var(--r);background:var(--vscode-textCodeBlock-background);border-left:3px solid var(--info)}.hintbox.warn{border-left-color:var(--warn)}.hintbox .ic{flex:none;margin-top:2px}.decisions{margin:10px 0 4px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:6px 10px}.decisions summary{cursor:pointer;display:flex;gap:8px;align-items:center;list-style:none}.decisions ul{list-style:none;margin:8px 0 2px;padding:0;display:flex;flex-direction:column;gap:6px}.decisions li{display:flex;gap:8px;align-items:center;min-width:0}.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tabrow{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}.tabrow .tabs{flex:1}.tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:0 0 6px}.tools .btn{padding:3px 9px;font-size:.92em}.tools-label{font-size:.8em;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}.agent-actions{display:flex;gap:6px;margin-top:8px}.agent-actions .btn{padding:3px 9px;font-size:.92em}.agent.paused{opacity:.75}.trigs{display:flex;flex-direction:column;gap:2px}.trig{display:inline-flex;gap:5px;align-items:center}.trig .ic{width:12px;height:12px;flex:none}.btn[disabled]{opacity:.5;cursor:not-allowed}.run-sum{white-space:normal!important;display:-webkit-box!important;-webkit-line-clamp:2;-webkit-box-orient:vertical}.tools-help{font-size:.92em;margin:8px 2px 4px}.tools-help b{font-weight:600}.alert .btn{margin-left:auto}.working{display:flex;gap:8px;align-items:center;color:var(--vscode-descriptionForeground);padding:6px 2px}.needs-banner .btn{margin-left:0}.btn.danger{border:1px solid color-mix(in srgb,var(--bad) 60%,transparent);color:var(--bad)}.needs-banner span:first-of-type{margin-right:6px}textarea{border:1px solid var(--vscode-input-border,var(--vscode-panel-border))}.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none!important}
+.start-wrap{margin-top:12px;padding:24px 20px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);display:flex;flex-direction:column;gap:16px}.start-head{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center}.start-head .empty-title{font-size:1.25em}.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 18px;margin:0;padding:0;list-style:none;counter-reset:s}.steps li{counter-increment:s;display:block;position:relative;padding:3px 0 3px 36px;min-height:30px;line-height:1.5;font-size:1.02em}.steps li:before{content:counter(s);position:absolute;left:0;top:3px;flex:none;width:24px;height:24px;border-radius:50%;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);display:inline-flex;align-items:center;justify-content:center;font-size:.85em}.starters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.starter{display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background)}.starter .btn{margin-top:auto;align-self:flex-start}.starter .tiny{margin:0}.starter-title{font-weight:600;font-size:1.05em}.hintbox{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;margin:0 0 8px;border-radius:var(--r);background:var(--vscode-textCodeBlock-background);border-left:3px solid var(--info)}.hintbox.warn{border-left-color:var(--warn)}.hintbox .ic{flex:none;margin-top:2px}.decisions{margin:10px 0 4px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:6px 10px}.decisions summary{cursor:pointer;display:flex;gap:8px;align-items:center;list-style:none}.decisions ul{list-style:none;margin:8px 0 2px;padding:0;display:flex;flex-direction:column;gap:6px}.decisions li{display:flex;gap:8px;align-items:center;min-width:0}.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.toolmenu{position:relative;margin-bottom:6px}.toolmenu>summary{list-style:none;cursor:pointer;display:inline-flex;gap:6px;align-items:center}.toolmenu>summary::-webkit-details-marker{display:none}.toolmenu[open]>summary .chev{transform:rotate(90deg)}.menu{position:absolute;right:0;top:calc(100% + 4px);z-index:5;min-width:320px;padding:6px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-editor-background);box-shadow:0 6px 18px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:2px}.menuitem{all:unset;box-sizing:border-box;display:flex;flex-direction:column;gap:1px;padding:7px 10px;border-radius:4px;cursor:pointer}.menuitem:hover,.menuitem:focus-visible{background:var(--vscode-list-hoverBackground);outline:1px solid var(--vscode-focusBorder)}.mi-title{font-weight:600}.mi-sub{color:var(--vscode-descriptionForeground);font-size:.9em}.menuitem.danger .mi-title{color:var(--bad)}.mi-foot{padding:6px 10px 2px;color:var(--vscode-descriptionForeground);font-size:.9em;border-top:1px solid var(--vscode-panel-border);margin-top:4px}.tabrow{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}.tabrow .tabs{flex:1}.tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:0 0 6px}.tools .btn{padding:3px 9px;font-size:.92em}.tools-label{font-size:.8em;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}.agent-actions{display:flex;gap:6px;margin-top:8px}.agent-actions .btn{padding:3px 9px;font-size:.92em}.agent.paused{opacity:.75}.trigs{display:flex;flex-direction:column;gap:2px}.trig{display:inline-flex;gap:5px;align-items:center}.trig .ic{width:12px;height:12px;flex:none}.btn[disabled]{opacity:.5;cursor:not-allowed}.run-sum{white-space:normal!important;display:-webkit-box!important;-webkit-line-clamp:2;-webkit-box-orient:vertical}.tools-help{font-size:.92em;margin:8px 2px 4px}.tools-help b{font-weight:600}.alert .btn{margin-left:auto}.working{display:flex;gap:8px;align-items:center;color:var(--vscode-descriptionForeground);padding:6px 2px}.needs-banner .btn{margin-left:0}.btn.danger{border:1px solid color-mix(in srgb,var(--bad) 60%,transparent);color:var(--bad)}.needs-banner span:first-of-type{margin-right:6px}textarea{border:1px solid var(--vscode-input-border,var(--vscode-panel-border))}.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none!important}
 .ic{flex:none}.big{width:28px;height:28px}.lead{width:18px;height:18px;margin-top:2px}.spin{animation:sp 1.2s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;padding:12px 0;margin-bottom:4px;background:var(--vscode-editor-background);border-bottom:1px solid var(--vscode-panel-border)}
@@ -669,9 +689,11 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('change', e => { if (e.target.matches('[data-filter]')) { filter = e.target.value; scan(); } });
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel],[data-close-task]'); if (!t) return;
+  if (!e.target.closest('.toolmenu') || e.target.closest('.menuitem')) document.querySelectorAll('details.toolmenu[open]').forEach(d => { d.open = false; });
+  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel],[data-close-task],[data-allow-agent]'); if (!t) return;
   e.preventDefault(); const d = t.dataset;
-  if (d.open) vs.postMessage({ type:'open', path:d.open });
+  if (d.allowAgent) vs.postMessage({ type:'allowCommand', agent:d.allowAgent, command:d.allowCmd });
+  else if (d.open) vs.postMessage({ type:'open', path:d.open });
   else if (d.openAbs) vs.postMessage({ type:'openAbs', path:d.openAbs });
   else if (d.cmd) vs.postMessage({ type:'cmd', name:d.cmd, arg:d.arg });
   else if (d.pick) { const ta = document.querySelector('[data-input="' + CSS.escape(d.pick) + '"]'); if (ta) { ta.value = d.text; ta.focus(); } document.querySelectorAll(q(d.pick) + ' [data-pick]').forEach(b => b.classList.toggle('picked', b === t)); }

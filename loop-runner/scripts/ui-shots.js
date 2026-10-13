@@ -61,6 +61,7 @@ const THEMES = {
     ['chat-needs-you', R, { running: true, active: undefined, tab: 'chat', agent: 'release-watch' }],
     ['chat-question', R, { running: true, active: undefined, tab: 'chat', agent: 'triage' }],
     ['overview', R, { running: true, active: undefined, tab: 'overview' }],
+    ['tools-open', R, { running: true, active: undefined, tab: 'chat', agent: 'release-watch' }, 'details.toolmenu'],
     ['chat-running', R, { running: true, active: 'daily-report', tab: 'chat', agent: 'daily-report' }],
     ['stopped', R, { running: false, tab: 'overview' }],
     ['copilot-off', empty, { running: false, tab: 'chat' }],
@@ -70,12 +71,13 @@ const THEMES = {
   const shots = [];
   for (const [theme, vars] of Object.entries(THEMES)) {
     const ctx = await browser.newContext({ viewport: { width: 900, height: 1400 } });
-    for (const [name, root, st] of scenes) {
+    for (const [name, root, st, openSel] of scenes) {
       const page = await ctx.newPage();
       const model = { ...consoleModel(root, st, now), copilot: name === 'copilot-off' ? 0 : 3 };
       let html = renderPage(model, 'n', 'x').replace(/<meta http[^>]*>/, '').replace('<script nonce="n">', '<script>');
       html = html.replace('<head>', `<head><style>:root{${Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')}} body{background:${vars['--vscode-editor-background']}}</style><script>window.acquireVsCodeApi=()=>({postMessage(){}});</script>`);
       await page.setContent(html);
+      if (openSel) { await page.evaluate(sel => { document.querySelector(sel).open = true; }, openSel); }
       const f = path.join(outDir, `${name}.${theme}.png`);
       await page.screenshot({ path: f, fullPage: true });
       shots.push(f);

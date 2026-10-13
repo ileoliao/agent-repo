@@ -633,7 +633,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     reject: (id, fb) => after(rejectApproval(root(), id, fb).woke),
     chatSend: (agent, text) => { svc.chatSend(agent, text); },
     chatCancel: agent => svc.cancelRun(agent),
-    copilotModels: () => copilotCount
+    copilotModels: () => copilotCount,
+    defaultPolicy: () => svc.cfg().get<string>('policyFile', '.loop/policy.json')
   });
   registerLoopChat(ctx, () => {
     const r = svc.root();
@@ -678,17 +679,17 @@ export function activate(ctx: vscode.ExtensionContext) {
       const run = (command: string) => () => vscode.commands.executeCommand(command);
       const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
         svc.running
-          ? { label: '$(debug-stop) Stop Agents', run: run('harborMate.stopTeam') }
-          : { label: '$(play) Start Agents', run: run('harborMate.startTeam') },
+          ? { label: '$(debug-stop) Stop Mates', run: run('harborMate.stopTeam') }
+          : { label: '$(play) Start Mates', run: run('harborMate.startTeam') },
         { label: '$(dashboard) Open Console', run: run('harborMate.openConsole') },
         { label: '$(inbox) Open Inbox', description: inbox.pendingCount() ? `${inbox.pendingCount()} need you` : undefined, run: run('harborMate.focusInbox') },
         { label: '$(file-text) Open Latest Result', run: run('harborMate.openLatestResult') },
         { label: '$(sync) Reload & Validate Team', run: run('harborMate.reloadTeam') },
-        { label: '$(send) Give an Agent a Task', run: run('harborMate.runAgent') },
+        { label: '$(send) Give a Mate a Task', run: run('harborMate.runAgent') },
         { label: '$(info) Show Team Status', run: run('harborMate.status') },
         { label: '$(rocket) Get Started', run: run('harborMate.getStarted') },
-        { label: '$(pulse) Check Agents (Doctor)', run: run('harborMate.runDoctor') },
-        { label: '$(graph) Agent Health Report', run: run('harborMate.showHealth') },
+        { label: '$(pulse) Check Mates (Doctor)', run: run('harborMate.runDoctor') },
+        { label: '$(graph) Mate Health Report', run: run('harborMate.showHealth') },
         { label: '$(trash) Clean Up Finished Work', run: run('harborMate.cleanUp') },
         { label: '$(key) Set Secret', run: run('harborMate.setSecret') },
         { label: '$(list-unordered) List Available Models', run: run('harborMate.listModels') },
@@ -698,7 +699,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       await pick?.run();
     }),
     vscode.commands.registerCommand('harborMate.runAgent', async (agent?: string) => {
-      if (!svc.running) { vscode.window.showWarningMessage('Start the agents first (Harbor Mate: Start Agents).'); return; }
+      if (!svc.running) { vscode.window.showWarningMessage('Start the mates first (Harbor Mate: Start Mates).'); return; }
       const named = typeof agent === 'string' ? svc.team.get(agent) : undefined;
       const pick = named ? { label: named.name } : await vscode.window.showQuickPick(
         [...svc.team.values()].map(a => ({ label: a.name, description: a.description })), { placeHolder: 'Which agent?' });
@@ -726,8 +727,8 @@ export function activate(ctx: vscode.ExtensionContext) {
       const ready = report.ready.includes(res.agent);
       const next = await vscode.window.showInformationMessage(
         ready && !errs.length ? `Harbor Mate: ${pick.label} is ready. Start the team to let it run on its schedule, or give it a task now.` : `Harbor Mate: ${pick.label} was created but is not ready: ${[...errs, ...report.checks.filter(c => c.level === 'fail').map(c => c.what)].join(' ')}`,
-        ...(ready && !svc.running ? ['Start Agents'] : []), 'Open File');
-      if (next === 'Start Agents') { await svc.start(true); }
+        ...(ready && !svc.running ? ['Start Mates'] : []), 'Open File');
+      if (next === 'Start Mates') { await svc.start(true); }
       if (next === 'Open File') { await vscode.window.showTextDocument(vscode.Uri.file(path.join(r, res.files[0]))); }
     }),
     vscode.commands.registerCommand('harborMate.copyTriggerInfo', async () => {

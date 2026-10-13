@@ -1,3 +1,5 @@
+import { planAllowCommand } from './policyEdit';
+import { applyChange } from './manage';
 import { TEMPLATES } from './templates';
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
@@ -19,6 +21,8 @@ export interface ConsoleActions {
   chatCancel: (agent: string) => boolean;
   /** Copilot models VS Code offers right now (undefined while unknown). */
   copilotModels?: () => number | undefined;
+  /** The policy file used by mates that name none (the harborMate.policyFile setting). */
+  defaultPolicy?: () => string;
 }
 
 const COMMANDS: Record<string, string> = {
@@ -117,6 +121,19 @@ export class ConsolePanel {
         case 'view':
           this.view = { tab: m.tab === 'overview' ? 'overview' : 'chat', agent: typeof m.agent === 'string' && m.agent ? m.agent : this.view.agent };
           break;
+        case 'allowCommand': {
+          const agent = String(m.agent ?? ''), command = String(m.command ?? '');
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(agent)) { return; }
+          const plan = planAllowCommand(r, agent, command, this.a.defaultPolicy?.() ?? '.loop/policy.json');
+          if ('error' in plan) { void vscode.window.showWarningMessage(`Harbor Mate: ${plan.error}`); return; }
+          const shared = plan.shared.length ? `\n\nThis policy file is also used by ${plan.shared.join(', ')}, so they get the same permission.` : '';
+          const ok = await vscode.window.showWarningMessage(`Let ${agent} run this command from now on?`, { modal: true, detail: `${command}\n\nOnly this exact command, only for ${agent}. It is saved in ${plan.file}. Anything else it tries is still checked against the policy.${shared}` }, 'Allow');
+          if (ok !== 'Allow') { return; }
+          for (const c of plan.changes) { applyChange(r, c); }
+          await vscode.commands.executeCommand('harborMate.reloadTeam');
+          void vscode.window.showInformationMessage(`Harbor Mate: ${agent} may now run that command. Policy: ${plan.file}.`);
+          break;
+        }
         case 'closeTask': closeTaskByHuman(r, String(m.id)); break;
         case 'chatSend': this.a.chatSend(String(m.agent), String(m.text ?? '')); break;
         case 'chatCancel':

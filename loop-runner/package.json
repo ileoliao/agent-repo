@@ -21,17 +21,17 @@
     "commands": [
       {
         "command": "harborMate.startTeam",
-        "title": "Start Agents",
+        "title": "Start Mates",
         "category": "Harbor Mate"
       },
       {
         "command": "harborMate.stopTeam",
-        "title": "Stop Agents",
+        "title": "Stop Mates",
         "category": "Harbor Mate"
       },
       {
         "command": "harborMate.reloadTeam",
-        "title": "Reload & Validate Agents",
+        "title": "Reload & Validate Mates",
         "category": "Harbor Mate"
       },
       {
@@ -61,12 +61,12 @@
       },
       {
         "command": "harborMate.describeAgent",
-        "title": "Describe an Agent to @mate",
+        "title": "Describe a Mate to @mate",
         "category": "Harbor Mate"
       },
       {
         "command": "harborMate.getStarted",
-        "title": "Get Started (Add a Starter Agent)",
+        "title": "Get Started (Add a Starter Mate)",
         "category": "Harbor Mate"
       },
       {
@@ -76,12 +76,12 @@
       },
       {
         "command": "harborMate.runDoctor",
-        "title": "Check Agents (Doctor)",
+        "title": "Check Mates (Doctor)",
         "category": "Harbor Mate"
       },
       {
         "command": "harborMate.showHealth",
-        "title": "Agent Health Report",
+        "title": "Mate Health Report",
         "category": "Harbor Mate"
       },
       {
@@ -150,12 +150,12 @@
       },
       {
         "command": "harborMate.pauseAgent",
-        "title": "Pause an Agent",
+        "title": "Pause a Mate",
         "category": "Harbor Mate"
       },
       {
         "command": "harborMate.resumeAgent",
-        "title": "Resume an Agent",
+        "title": "Resume a Mate",
         "category": "Harbor Mate"
       }
     ],
@@ -350,7 +350,7 @@
           },
           {
             "name": "health",
-            "description": "How each agent has been doing, and what to improve"
+            "description": "How each mate has been doing, and what to improve"
           },
           {
             "name": "improve",
@@ -364,7 +364,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "rm -rf out && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository",
-    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js && node test/maintenance.js && node test/doctor.js && node test/triggers.js && node test/console-ui.js",
+    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js && node test/maintenance.js && node test/doctor.js && node test/triggers.js && node test/console-ui.js && node test/policy-allow.js",
     "sim": "node test/sim/run.js"
   },
   "devDependencies": {
