@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loop Runner · 从第一性原理推导</title>
+<style>
+  :root { color-scheme: light; }
+  html, body { margin: 0; height: 100%; background: #e6e0d4; color: #1c1915; }
+  body {
+    font-family: "WenQuanYi Micro Hei", "Droid Sans Fallback", "Noto Sans CJK SC", sans-serif;
+    display: flex; flex-direction: column; align-items: center; min-height: 100%;
+  }
+  header, footer { width: min(1100px, 100%); box-sizing: border-box; padding: 14px 8px 0; }
+  header { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: 0.02em; }
+  header p, footer { margin: 0; color: #5e584f; font-size: 13px; }
+  .stage { width: min(1100px, calc(100% - 24px)); margin-top: 10px; }
+  canvas { width: 100%; height: auto; background: #f7f3ea; border-radius: 10px; display: block; }
+  #rail { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  #rail button {
+    font: inherit; font-size: 12px; color: #1c1915; background: transparent;
+    border: 1px solid #c9c1b2; border-radius: 999px; padding: 4px 10px; cursor: pointer;
+  }
+  #rail button.on { background: #1c1915; color: #f7f3ea; border-color: #1c1915; }
+  .bar { height: 6px; background: #d9d2c4; border-radius: 99px; margin-top: 10px; cursor: pointer; }
+  .bar > div { height: 100%; width: 0; background: #b43324; border-radius: 99px; }
+  footer { padding-bottom: 18px; }
+  kbd { font-family: "Noto Sans Mono", ui-monospace, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Loop Runner · 从第一性原理推导</h1>
+  <p>给工程师 · 约 1 分 45 秒 · 无声</p>
+</header>
+<div class="stage">
+  <canvas id="c" width="1280" height="720"></canvas>
+  <div class="bar" id="bar" title="点击跳转"><div id="fill"></div></div>
+  <div id="rail"></div>
+</div>
+<footer>空格暂停，方向键切换段落。图里的名字是代码里的名字：<kbd>wakeIf</kbd>、<kbd>PlainMsg</kbd>、<kbd>chainId</kbd>、<kbd>REFUSED</kbd>。</footer>
+<script>
+const FONT = '"WenQuanYi Micro Hei", "Droid Sans Fallback", sans-serif';
+const MONO = '"Noto Sans Mono", ui-monospace, monospace';
+const INK = '#1c1915';
+const MUTED = '#6e675f';
+const FAINT = '#d9d1c3';
+const RED = '#b43324';
+const GREEN = '#1d6b45';
+const BLUE = '#1d4e89';
+const CARD = '#fffdf8';
+const W = 1280, H = 720;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const fill = document.getElementById('fill');
+const rail = document.getElementById('rail');
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
+const seg = (p, a, b) => clamp((p - a) / (b - a), 0, 1);
+const appear = (p, a) => ease(seg(p, a, a + 0.18));
+
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+}
+function label(text, x, y, size, color, align, font) {
+  ctx.fillStyle = color || INK;
+  ctx.font = `${size}px ${font || FONT}`;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+}
+function panel(x, y, w, h, opt = {}) {
+  ctx.save();
+  ctx.fillStyle = opt.fill || CARD;
+  ctx.strokeStyle = opt.stroke || INK;
+  ctx.lineWidth = opt.lw || 1.75;
+  ctx.globalAlpha = opt.alpha == null ? 1 : opt.alpha;
+  rr(x, y, w, h, opt.r == null ? 12 : opt.r);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+function arrow(x1, y1, x2, y2, color) {
+  const a = Math.atan2(y2 - y1, x2 - x1);
+  ctx.save();
+  ctx.strokeStyle = color || INK;
+  ctx.fillStyle = color || INK;
+  ctx.lineWidth = 1.75;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - 10 * Math.cos(a - 0.4), y2 - 10 * Math.sin(a - 0.4));
+  ctx.lineTo(x2 - 10 * Math.cos(a + 0.4), y2 - 10 * Math.sin(a + 0.4));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+function wrapped(text, x, y, size, color, max) {
+  ctx.fillStyle = color;
+  ctx.font = `${size}px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  const chars = [...text];
+  let line = '';
+  let yy = y;
+  for (const ch of chars) {
+    if (ctx.measureText(line + ch).width > max) {
+      ctx.fillText(line, x, yy);
+      line = ch;
+      yy += size + 6;
+    } else line += ch;
+  }
+  if (line) ctx.fillText(line, x, yy);
+}
+
+function footer(premise, so) {
+  ctx.fillStyle = '#f7f3ea';
+  ctx.fillRect(0, 575, W, H - 575);
+  ctx.strokeStyle = FAINT;
+  ctx.beginPath();
+  ctx.moveTo(48, 575);
+  ctx.lineTo(W - 48, 575);
+  ctx.stroke();
+  label('前提', 56, 602, 14, RED);
+  label(premise, 108, 602, 18, MUTED);
+  label('所以', 56, 648, 14, RED);
+  label(so, 108, 648, 26, INK);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#f7f3ea';
+  ctx.fillRect(0, 0, W, H);
+  label('给工程师', 640, 200, 18, RED, 'center');
+  label('模型没有循环', 640, 280, 64, INK, 'center');
+  label('Loop Runner 是补在一次请求外面的那一层', 640, 360, 24, MUTED, 'center');
+  label('下面每一步都从上一句直接推出来', 640, 430, 18, MUTED, 'center');
+}
+
+function drawFunction(p) {
+  const a = appear(p, 0.05);
+  ctx.save();
+  ctx.globalAlpha = a;
+  panel(390, 70, 500, 168);
+  label('一次请求', 430, 110, 16, RED);
+  label('f( 消息 )  →  文本或工具调用', 430, 158, 26, INK);
+  label('请求返回，这次调用就结束', 430, 200, 16, MUTED);
+  ctx.restore();
+  const slots = [['时钟', '它不会自己醒'], ['磁盘', '它不保管对话'], ['权限', '它不能自己约束自己']];
+  slots.forEach((s, i) => {
+    const t = appear(p, 0.28 + i * 0.16);
+    const x = 250 + i * 280;
+    ctx.save();
+    ctx.globalAlpha = t;
+    panel(x, 300, 240, 150, { stroke: RED });
+    label(s[0], x + 120, 352, 28, INK, 'center');
+    label(s[1], x + 120, 398, 16, MUTED, 'center');
+    ctx.restore();
+  });
+  footer('模型是一次请求，不是一个驻留进程。', '醒着、记忆和权限，都要由运行时另做。');
+}
+
+function drawOutside(p) {
+  const items = [
+    ['时钟', '每 20 秒看一次时刻表'],
+    ['队列', '磁盘上的工作项，一次取最老的'],
+    ['对话', 'PlainMsg，检查点按这个格式写']
+  ];
+  items.forEach((s, i) => {
+    const t = appear(p, 0.06 + i * 0.14);
+    const y = 78 + i * 145;
+    ctx.save();
+    ctx.globalAlpha = t;
+    panel(70, y, 430, 120);
+    label(s[0], 98, y + 42, 26, INK);
+    label(s[1], 98, y + 82, 16, MUTED);
+    ctx.restore();
+  });
+  const t = appear(p, 0.5);
+  ctx.save();
+  ctx.globalAlpha = t;
+  panel(760, 150, 420, 250);
+  label('只在被调用时存在', 790, 196, 16, RED);
+  label('f( 消息 )', 790, 250, 32, INK);
+  label('工具逐个执行，结果写回消息', 790, 310, 16, MUTED);
+  ctx.restore();
+  if (t > 0.2) {
+    ctx.globalAlpha = t;
+    arrow(500, 140, 760, 230);
+    arrow(500, 285, 760, 290);
+    ctx.globalAlpha = 1;
+    label('到点才调用', 560, 160, 14, MUTED);
+    label('消息从磁盘读出', 530, 330, 14, MUTED);
+  }
+  footer('调用结束之后，运行时只剩自己写下的数据。', '时钟、队列和对话记录放在模型外面。');
+}
+
+function drawWake(p) {
+  panel(70, 78, 250, 200);
+  label('时刻', 98, 120, 16, RED);
+  label('cron 到点', 98, 168, 28, INK);
+  label('还没有模型', 98, 214, 16, MUTED);
+
+  const quiet = appear(p, 0.12);
+  const live = appear(p, 0.55);
+  ctx.save();
+  ctx.globalAlpha = quiet;
+  panel(390, 78, 250, 200);
+  label('探测', 418, 118, 16, RED);
+  label('wakeIf', 418, 162, 28, INK, 'left', MONO);
+  label('普通进程，看退出码', 418, 214, 16, MUTED);
+  ctx.restore();
+  if (quiet > 0.2) { ctx.globalAlpha = quiet; arrow(320, 178, 390, 178); ctx.globalAlpha = 1; }
+
+  ctx.save();
+  ctx.globalAlpha = quiet;
+  panel(720, 70, 480, 150, { stroke: MUTED });
+  label('exit 1', 752, 112, 22, INK, 'left', MONO);
+  label('无事。模型不调用。token 为 0。', 752, 158, 18, MUTED);
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = live;
+  panel(720, 250, 480, 210, { stroke: GREEN });
+  label('exit 0', 752, 298, 22, GREEN, 'left', MONO);
+  label('stdout 成为工作项的上下文', 752, 348, 18, INK);
+  label('这时才发生第一次模型请求', 752, 394, 18, MUTED);
+  ctx.restore();
+  if (live > 0.2) { ctx.globalAlpha = live; arrow(640, 250, 720, 340); ctx.globalAlpha = 1; }
+
+  footer('模型调用要花钱，而大多数时刻没有事。', '先跑探测进程。退出码 1，模型不调用。');
+}
+
+function drawCheckpoint(p) {
+  panel(56, 80, 280, 130);
+  label('第 n 轮', 80, 118, 16, RED);
+  label('handoff 已入队', 80, 162, 22, INK);
+  const saved = appear(p, 0.12);
+  ctx.save();
+  ctx.globalAlpha = saved;
+  panel(370, 80, 300, 130, { stroke: BLUE });
+  label('检查点', 394, 118, 16, BLUE);
+  label('PlainMsg + step', 394, 162, 22, INK);
+  ctx.restore();
+  if (saved > 0.2) { ctx.globalAlpha = saved; arrow(336, 145, 370, 145); ctx.globalAlpha = 1; }
+
+  const bad = appear(p, 0.38);
+  const good = appear(p, 0.62);
+  ctx.save();
+  ctx.globalAlpha = bad;
+  panel(56, 280, 540, 210, { stroke: RED });
+  label('进程在下一轮请求时中断', 84, 322, 16, RED);
+  label('从零再跑', 84, 372, 28, INK);
+  label('同一条 handoff 会再入队一次', 84, 424, 18, MUTED);
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = good;
+  panel(640, 280, 570, 210, { stroke: GREEN });
+  label('队列里的项还在，检查点也在', 668, 322, 16, GREEN);
+  label('从 step n 继续', 668, 372, 28, INK);
+  label('已发生的写入和转交不重复', 668, 424, 18, MUTED);
+  ctx.restore();
+  footer('工具会改磁盘。中断后从头再跑，副作用会再来一遍。', '每轮结束写入检查点，续跑从这一轮之后开始。');
+}
+
+function drawGate(p) {
+  label('一个 worker', 70, 78, 16, RED);
+  const move = ease(seg(p, 0.08, 0.36));
+  panel(70, 266, 280, 64, { alpha: 0.35 });
+  label('再下一项', 94, 298, 18, MUTED);
+  const nextA = appear(p, 0.42);
+  panel(70, 188, 280, 64, { stroke: nextA > 0.6 ? GREEN : INK, alpha: 0.4 + 0.6 * nextA });
+  label('下一项', 94, 220, 18, nextA > 0.6 ? GREEN : INK);
+  if (move < 0.98) {
+    const x = lerp(70, 390, move);
+    const y = lerp(110, 128, move);
+    panel(x, y, 280, 64, { alpha: 1 - move });
+    label('最老的一项', x + 24, y + 32, 18, INK);
+  }
+
+  const park = appear(p, 0.15);
+  ctx.save();
+  ctx.globalAlpha = park;
+  panel(430, 110, 380, 150, { stroke: BLUE });
+  label('ask_human / request_approval', 454, 150, 16, BLUE);
+  label('对话写入检查点', 454, 196, 22, INK);
+  label('项移到 queue/_waiting', 454, 232, 16, MUTED);
+  ctx.restore();
+  if (park > 0.2) { ctx.globalAlpha = park; arrow(350, 142, 430, 170); ctx.globalAlpha = 1; }
+
+  const next = appear(p, 0.42);
+  if (next > 0.15) {
+    ctx.globalAlpha = next;
+    arrow(350, 220, 430, 300);
+    ctx.globalAlpha = 1;
+  }
+  ctx.save();
+  ctx.globalAlpha = next;
+  panel(430, 280, 380, 110, { stroke: GREEN });
+  label('worker 没有停', 454, 318, 22, GREEN);
+  label('立刻处理队列里的下一项', 454, 356, 16, MUTED);
+  ctx.restore();
+
+  const back = appear(p, 0.68);
+  ctx.save();
+  ctx.globalAlpha = back;
+  panel(860, 110, 360, 280);
+  label('人在控制台处理', 884, 156, 16, RED);
+  label('答复写回', 884, 210, 28, INK);
+  label('补在被暂停的那一次', 884, 258, 18, MUTED);
+  label('工具调用上，然后继续', 884, 292, 18, MUTED);
+  ctx.restore();
+  if (back > 0.2) { ctx.globalAlpha = back; arrow(810, 180, 860, 200); ctx.globalAlpha = 1; }
+
+  footer('只有一个 worker，而人不会守着这段对话。', '闸门把项停在磁盘上并让出 worker。答复写回同一次调用。');
+}
+
+function drawPolicy(p) {
+  const a = appear(p, 0.05);
+  ctx.save();
+  ctx.globalAlpha = a;
+  panel(56, 70, 300, 180);
+  label('模型发出', 80, 112, 16, RED);
+  label('run_command', 80, 160, 26, INK, 'left', MONO);
+  label('它只是提出调用', 80, 206, 16, MUTED);
+  ctx.restore();
+
+  const b = appear(p, 0.22);
+  ctx.save();
+  ctx.globalAlpha = b;
+  panel(420, 70, 360, 180, { stroke: RED });
+  label('策略在模型外面', 444, 112, 16, RED);
+  label('deny 先于 allow', 444, 160, 26, INK);
+  label('批准时再查一次', 444, 206, 16, MUTED);
+  ctx.restore();
+  if (b > 0.2) { ctx.globalAlpha = b; arrow(356, 160, 420, 160); ctx.globalAlpha = 1; }
+
+  const c = appear(p, 0.4);
+  ctx.save();
+  ctx.globalAlpha = c;
+  panel(850, 70, 370, 180, { stroke: GREEN });
+  label('工具结果', 874, 112, 16, GREEN);
+  label('REFUSED …', 874, 160, 26, INK, 'left', MONO);
+  label('循环继续，模型可以换路', 874, 206, 16, MUTED);
+  ctx.restore();
+  if (c > 0.2) { ctx.globalAlpha = c; arrow(780, 160, 850, 160); ctx.globalAlpha = 1; }
+
+  const d = appear(p, 0.62);
+  ctx.save();
+  ctx.globalAlpha = d;
+  panel(56, 300, 1164, 190);
+  label('密钥', 84, 342, 16, RED);
+  label('提示词里只有名字', 84, 392, 22, INK);
+  label('值在执行那一下注入子进程', 520, 392, 22, INK);
+  label('回到模型的输出里，值已经换成 ***', 84, 444, 20, MUTED);
+  ctx.restore();
+
+  footer('模型是被约束的一方，不能由它来执行约束。', '拒绝是工具结果，循环才不会停。密钥不进模型。');
+}
+
+function drawHandoff(p) {
+  panel(70, 110, 420, 280);
+  label('角色 A', 98, 156, 16, RED);
+  label('做完自己的一段', 98, 210, 26, INK);
+  const hop = appear(p, 0.25);
+  ctx.save();
+  ctx.globalAlpha = hop;
+  label('handoff', 98, 280, 22, INK, 'left', MONO);
+  label('chainId 不变，hop + 1', 98, 326, 18, MUTED);
+  ctx.restore();
+
+  if (hop > 0.2) { ctx.globalAlpha = hop; arrow(490, 250, 620, 250); ctx.globalAlpha = 1; }
+
+  const b = appear(p, 0.45);
+  ctx.save();
+  ctx.globalAlpha = b;
+  panel(620, 110, 580, 280, { stroke: GREEN });
+  label('角色 B 的新工作项', 652, 156, 16, GREEN);
+  label('同一条 chainId', 652, 214, 28, INK);
+  label('不读取 A 的内存', 652, 270, 20, MUTED);
+  label('上下文写在这个工作项上', 652, 318, 20, MUTED);
+  ctx.restore();
+
+  footer('角色之间不共享内存，也不能同时改同一份对话。', '转交是同一条 chainId 上、hop 加一的新工作项。');
+}
+
+function drawHuman(p) {
+  panel(80, 90, 700, 400, { r: 180, stroke: INK });
+  const spin = p * Math.PI * 2;
+  for (let i = 0; i < 3; i++) {
+    const ang = spin + i * 2.1;
+    const x = 430 + Math.cos(ang) * 250;
+    const y = 290 + Math.sin(ang) * 145;
+    panel(x - 28, y - 12, 56, 24, { r: 8, alpha: 0.9 });
+  }
+  ctx.fillStyle = '#f7f3ea';
+  ctx.beginPath();
+  ctx.ellipse(430, 290, 168, 78, 0, 0, Math.PI * 2);
+  ctx.fill();
+  label('队列在转', 430, 274, 28, INK, 'center');
+  label('worker 一次只拿一件', 430, 316, 18, MUTED, 'center');
+
+  const doors = appear(p, 0.2);
+  ctx.save();
+  ctx.globalAlpha = doors;
+  panel(860, 90, 340, 160, { stroke: RED });
+  label('闸门', 884, 132, 22, INK);
+  label('控制台里答复或批准', 884, 176, 16, MUTED);
+  label('批准越不过 deny', 884, 208, 16, MUTED);
+  panel(860, 280, 340, 180, { stroke: BLUE });
+  label('应用变更', 884, 326, 22, INK);
+  label('先看 diff，再写入', 884, 372, 16, MUTED);
+  label('角色改不了自己的定义', 884, 408, 16, MUTED);
+  ctx.restore();
+
+  footer('时钟、状态、权限和等待都已经在模型外面。', '你只在闸门和应用变更出现。其余时间队列自己向前。');
+}
+
+const scenes = [
+  { name: '起点', a: 0, b: 5.5, draw: drawTitle },
+  { name: '一次请求', a: 5.5, b: 17, draw: drawFunction },
+  { name: '状态在外', a: 17, b: 29, draw: drawOutside },
+  { name: '先探测', a: 29, b: 43, draw: drawWake },
+  { name: '断点', a: 43, b: 57, draw: drawCheckpoint },
+  { name: '闸门', a: 57, b: 73, draw: drawGate },
+  { name: '约束', a: 73, b: 87, draw: drawPolicy },
+  { name: '转交', a: 87, b: 99, draw: drawHandoff },
+  { name: '人在何处', a: 99, b: 112, draw: drawHuman }
+];
+const DURATION = scenes[scenes.length - 1].b;
+
+scenes.forEach((s, i) => {
+  const b = document.createElement('button');
+  b.textContent = `${i + 1} ${s.name}`;
+  b.onclick = () => { time = s.a + 0.05; playing = true; };
+  rail.appendChild(b);
+});
+
+const q = new URLSearchParams(location.search);
+let time = clamp(Number(q.get('t')) || 0, 0, DURATION - 0.05);
+let playing = q.get('pause') !== '1';
+let last = 0;
+
+function sceneAt(t) {
+  return scenes.find(s => t >= s.a && t < s.b) || scenes[scenes.length - 1];
+}
+function frame(t) {
+  const s = sceneAt(t);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#f7f3ea';
+  ctx.fillRect(0, 0, W, H);
+  s.draw(clamp((t - s.a) / (s.b - s.a), 0, 1));
+  [...rail.children].forEach((b, i) => b.classList.toggle('on', scenes[i] === s));
+  fill.style.width = `${(t / DURATION) * 100}%`;
+}
+function loop(now) {
+  if (!last) last = now;
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (playing) {
+    time += dt;
+    if (time >= DURATION) { time = DURATION - 0.04; playing = false; }
+  }
+  frame(time);
+  requestAnimationFrame(loop);
+}
+
+document.getElementById('bar').onclick = (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  time = clamp((e.clientX - r.left) / r.width, 0, 0.999) * DURATION;
+  playing = true;
+};
+addEventListener('keydown', (e) => {
+  if (e.key === ' ') { e.preventDefault(); playing = !playing; last = 0; }
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    const i = scenes.indexOf(sceneAt(time));
+    const n = clamp(i + (e.key === 'ArrowRight' ? 1 : -1), 0, scenes.length - 1);
+    time = scenes[n].a + 0.05;
+    playing = true;
+  }
+});
+
+document.fonts.ready.then(() => {
+  frame(time);
+  requestAnimationFrame(loop);
+});
+</script>
+</body>
+</html>

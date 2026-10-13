@@ -2,6 +2,8 @@
 
 让 VS Code 自定义 agent 在无人值守下运行的最小运行时，使用 Copilot 模型。
 
+推导（约 1 分 45 秒，给工程师）：用浏览器打开 [docs/explainer.html](docs/explainer.html)。从「模型是一次请求」推出时钟、队列、探测、断点、闸门，以及人站在循环外面。
+
 **分工**：能力在 Skill 里，角色就是 VS Code 原生的 `.github/agents/*.agent.md`。Loop Runner 只补 VS Code 原生缺的那一层：
 
 - 定时触发，并在启动模型前做零 token 的唤醒检查
