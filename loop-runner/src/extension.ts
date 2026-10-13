@@ -726,7 +726,10 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand('harborMate.runDoctor', async () => {
       svc.applyExtraPath();
       const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking agents…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json'), triggerPort: Number(svc.cfg().get<number>('triggerPort', 0)) })));
-      await showMarkdown('Harbor Mate · Doctor', md);
+      let models = 0;
+      try { models = (await vscode.lm.selectChatModels({})).length; } catch { /* not signed in */ }
+      const copilot = models ? `✅ **Copilot** is ready: ${models} model${models > 1 ? 's' : ''} available.` : '❌ **Copilot** has no models available. Sign in to GitHub Copilot in VS Code: agents cannot run without it.';
+      await showMarkdown('Harbor Mate · Doctor', `${copilot}\n\n${md}`);
     }),
     vscode.commands.registerCommand('harborMate.showHealth', async () => { await showMarkdown('Harbor Mate · Agent Health', healthMarkdown(healthReport(root()))); }),
     vscode.commands.registerCommand('harborMate.cleanUp', async () => {

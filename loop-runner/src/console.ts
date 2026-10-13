@@ -52,6 +52,8 @@ export interface ConsoleModel {
   pending: GateView[];
   /** Tasks agents have in progress (state open). Absent in older callers. */
   tasks?: Task[];
+  /** The last questions and approvals the human settled: an audit trail visible where it is needed. */
+  decisions?: { id: string; kind: Gate['kind']; agent: string; title: string; status: Gate['status']; at: string }[];
   agents: AgentRow[];
   runs: ConsoleRun[];
   /** Which page is showing. Chat is the default. */
@@ -111,6 +113,7 @@ export function consoleModel(root: string, state: { running: boolean; active?: A
     next: nw ? { agent: nw.agent, at: nw.at.toISOString() } : undefined,
     pending,
     tasks: listTasks(root).filter(t => t.state === 'open').slice(0, 30),
+    decisions: listGates(root).filter(g => g.status !== 'pending').map(g => ({ id: g.id, kind: g.kind, agent: g.agent, title: g.title, status: g.status, at: g.resolvedAt ?? g.createdAt })).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 6),
     agents,
     // A run whose last event says "running" but that no live worker owns (team stopped, or another agent is active)
     // was cut off, for example when VS Code closed. Say so instead of showing it as running forever.
@@ -179,6 +182,15 @@ const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
   interrupted: { label: 'Interrupted', tone: 'warn', ic: 'alert' },
   nothing_to_do: { label: 'Checked, nothing found', tone: 'mute', ic: 'check' }, open: { label: 'Not finished', tone: 'info', ic: 'clock' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
 };
+/** Why a run ended this way and what to do next, in words a first-time user can act on. */
+const STATUS_HINT: Record<string, string> = {
+  blocked: 'It could not go on. Open the steps to see what it was missing, then tell it in Chat.',
+  error: 'Something failed while it ran. Open the steps to see what; “Check agents” finds setup problems.',
+  stalled: 'It went in circles or ran out of time. Give it a narrower task, or tell it what to try.',
+  max_steps: 'It reached its step limit before finishing. Narrow the task, or raise its step limit.',
+  interrupted: 'VS Code closed, or the agents were stopped, while this ran. Start the agents and it is picked up again.',
+  retry: 'A temporary limit stopped it (rate or quota). It tries again by itself.'
+};
 /** Statuses the "Problems" filter shows. */
 const PROBLEMS = new Set(['error', 'stalled', 'blocked', 'max_steps', 'interrupted', 'retry']);
 const chip = (status: string) => { const s = STATUS[status] ?? { label: status, tone: 'mute', ic: 'dot' }; return `<span class="chip ${s.tone}">${icon(s.ic)}<span>${esc(s.label)}</span></span>`; };
@@ -225,7 +237,7 @@ function runCard(r: ConsoleRun): string {
   const live = r.status === 'running';
   return `<details class="run" ${live ? 'open' : ''} data-k="r-${esc(r.chainId)}" data-status="${esc(r.status)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
     <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span></summary>
-    <div class="run-body">${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
+    <div class="run-body">${STATUS_HINT[r.status] ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(STATUS_HINT[r.status])}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
     <div class="label">What happened</div><ol class="timeline">${shown || '<li class="muted">No steps recorded.</li>'}</ol>
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
@@ -435,10 +447,12 @@ export function renderBody(m: ConsoleModel): string {
   const tiles = [
     { k: 'Needs you', v: String(m.pending.length), tone: m.pending.length ? 'warn' : '', sub: m.pending.length ? 'waiting for your decision' : 'all clear' },
     { k: 'Agents', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
-    { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}` : 'no runs yet' },
+    { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}${STATUS_HINT[last.status] && PROBLEMS.has(last.status) ? ' · open it below' : ''}` : 'no runs yet' },
     { k: 'Next run', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
   ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
   const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
+  const DECIDED: Record<string, string> = { executed: 'Approved, ran', failed: 'Approved, failed', rejected: 'Rejected', answered: 'Answered' };
+  const decisions = (m.decisions ?? []).length ? `<details class="decisions"><summary>${icon('chevron', 'chev')}<span>Recent decisions</span><span class="count">${m.decisions!.length}</span></summary><ul>${m.decisions!.map(d => `<li><span class="chip ${d.status === 'failed' ? 'bad' : d.status === 'rejected' ? 'mute' : 'ok'}">${esc(DECIDED[d.status] ?? d.status)}</span><span class="grow ell" title="${esc(d.title)}">${esc(d.title)}</span><span class="tag">${esc(d.agent)}</span><span class="muted nowrap">${stamp(d.at, ago(d.at))}</span></li>`).join('')}</ul></details>` : '';
   const tasks = m.tasks ?? [];
   const openTasks = tasks.length ? `<h2>Tasks in progress<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
@@ -450,14 +464,14 @@ export function renderBody(m: ConsoleModel): string {
   const needBy = new Map<string, number>(); for (const g of m.pending) { needBy.set(g.agent, (needBy.get(g.agent) ?? 0) + 1); }
   const needsBanner = m.tab === 'chat' && m.chat && needBy.size ? `<div class="alert warn needs-banner" role="status">${icon('bell')}<span><b>${m.pending.length} ${m.pending.length === 1 ? 'thing needs' : 'things need'} you</b></span>${[...needBy].map(([a, n]) => btn(`${a}${n > 1 ? ` (${n})` : ''}`, `data-agent="${esc(a)}"`, 'secondary')).join('')}</div>` : '';
   const stoppedWithWork = !m.running && m.pending.length > 0;
-  const stoppedNote = stoppedWithWork ? `<div class="alert info" role="status">${icon('alert')}<span>The team is stopped. Your answer or approval is saved, but the agent only carries on once you start the team.</span>${btn('Start team', 'data-cmd="startTeam"', 'primary', 'play')}</div>` : '';
+  const stoppedNote = stoppedWithWork ? `<div class="alert info" role="status">${icon('alert')}<span>The team is stopped. Your answer or approval is saved, but the agent only carries on once you press Start team above.</span></div>` : '';
   const toolBtns = `${btn('Check agents', 'data-cmd="runDoctor" title="Check that every agent can run, and run their pre-checks once"', 'secondary', 'check')}${btn('Health report', 'data-cmd="showHealth" title="How each agent has been doing, and what to improve"', 'secondary', 'file')}${btn('Add an agent', 'data-cmd="getStarted" title="Add a starter agent"', 'secondary', 'play')}${btn('Clean up', 'data-cmd="cleanUp" title="Delete finished work you no longer need (asks first)"', 'secondary', 'file')}`;
-  const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<div class="tools" role="group" aria-label="Tools">${toolBtns}</div></div>${m.tab === 'overview' ? '<div class="muted tools-help"><b>Check agents</b> confirms each one can run · <b>Health report</b> shows how each is doing and what to improve · <b>Clean up</b> deletes finished work after asking · Or just ask <code>@mate</code> in Chat.</div>' : ''}` : '';
+  const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<div class="tools" role="group" aria-label="Tools">${toolBtns}</div></div>${true ? '<div class="muted tools-help"><b>Check agents</b> confirms each one can run · <b>Health report</b> shows how each is doing and what to improve · <b>Clean up</b> deletes finished work after asking · Or just ask <code>@mate</code> in Chat.</div>' : ''}` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
   return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
     ${note}${stoppedNote}${needsBanner}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
-    ${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
+    ${decisions}${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
 }
 
 const STYLE = `
@@ -465,7 +479,7 @@ const STYLE = `
 *{box-sizing:border-box}
 body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);line-height:1.45}
 .mono,code,pre{font-family:var(--vscode-editor-font-family,monospace);font-size:.92em}
-.start-wrap{margin-top:12px;padding:24px 20px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);display:flex;flex-direction:column;gap:16px}.start-head{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center}.start-head .empty-title{font-size:1.25em}.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 18px;margin:0;padding:0;list-style:none;counter-reset:s}.steps li{counter-increment:s;display:block;position:relative;padding:1px 0 1px 34px;min-height:24px;line-height:1.45;font-size:1.02em}.steps li:before{content:counter(s);position:absolute;left:0;top:0;flex:none;width:24px;height:24px;border-radius:50%;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);display:inline-flex;align-items:center;justify-content:center;font-size:.85em}.starters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.starter{display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background)}.starter .btn{margin-top:auto;align-self:flex-start}.starter .tiny{margin:0}.starter-title{font-weight:600;font-size:1.05em}.tabrow{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}.tabrow .tabs{flex:1}.tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:0 0 6px}.tools .btn{padding:3px 9px;font-size:.92em}.tools-label{font-size:.8em;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}.tools-help{font-size:.85em;margin:8px 2px 4px}.alert .btn{margin-left:auto}.needs-banner .btn{margin-left:0}.needs-banner span:first-of-type{margin-right:6px}textarea{border:1px solid var(--vscode-input-border,var(--vscode-panel-border))}.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none!important}
+.start-wrap{margin-top:12px;padding:24px 20px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);display:flex;flex-direction:column;gap:16px}.start-head{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center}.start-head .empty-title{font-size:1.25em}.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 18px;margin:0;padding:0;list-style:none;counter-reset:s}.steps li{counter-increment:s;display:block;position:relative;padding:3px 0 3px 36px;min-height:30px;line-height:1.5;font-size:1.02em}.steps li:before{content:counter(s);position:absolute;left:0;top:3px;flex:none;width:24px;height:24px;border-radius:50%;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);display:inline-flex;align-items:center;justify-content:center;font-size:.85em}.starters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.starter{display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background)}.starter .btn{margin-top:auto;align-self:flex-start}.starter .tiny{margin:0}.starter-title{font-weight:600;font-size:1.05em}.hintbox{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;margin:0 0 8px;border-radius:var(--r);background:var(--vscode-textCodeBlock-background);border-left:3px solid var(--info)}.hintbox.warn{border-left-color:var(--warn)}.hintbox .ic{flex:none;margin-top:2px}.decisions{margin:10px 0 4px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:6px 10px}.decisions summary{cursor:pointer;display:flex;gap:8px;align-items:center;list-style:none}.decisions ul{list-style:none;margin:8px 0 2px;padding:0;display:flex;flex-direction:column;gap:6px}.decisions li{display:flex;gap:8px;align-items:center;min-width:0}.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tabrow{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}.tabrow .tabs{flex:1}.tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:0 0 6px}.tools .btn{padding:3px 9px;font-size:.92em}.tools-label{font-size:.8em;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}.tools-help{font-size:.85em;margin:8px 2px 4px}.alert .btn{margin-left:auto}.needs-banner .btn{margin-left:0}.needs-banner span:first-of-type{margin-right:6px}textarea{border:1px solid var(--vscode-input-border,var(--vscode-panel-border))}.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none!important}
 .ic{flex:none}.big{width:28px;height:28px}.lead{width:18px;height:18px;margin-top:2px}.spin{animation:sp 1.2s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;padding:12px 0;margin-bottom:4px;background:var(--vscode-editor-background);border-bottom:1px solid var(--vscode-panel-border)}
