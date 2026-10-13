@@ -85,6 +85,7 @@ ok(/class="daysep"[^]*Today/.test(inChat({ kind: 'status', ts: now, label: 'x', 
 const old = new Date(Date.now() - 3 * 86_400_000).toISOString();
 const twoDays = renderBody({ ...base, tab: 'chat', chat: { agents: [{ name: 'a', description: 'd', state: 'idle', avatar: 'idle', line: 'x', pendingMessages: 0, needsYou: 0 }], selected: 'a', events: [{ kind: 'status', ts: old, label: 'x', tone: 'info', chainId: 'c1' }, { kind: 'status', ts: now, label: 'y', tone: 'info', chainId: 'c2' }], hidden: 0, gates: [] } });
 ok((twoDays.match(/class="daysep"/g) || []).length === 2, 'and again when the day changes, not between events of one day');
+ok(/class="turn"><span class="turn-av">/.test(chatAllow) && !/Harbor Mate Inbox/.test(renderBody({ ...base, running: false, agents: [], runs: [], tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'a result card carries its mate\'s avatar, and the first-run text no longer names a second place to look');
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');
 console.log(`${n} console wording checks passed`);
