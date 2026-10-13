@@ -18,7 +18,7 @@ const vscodeMock = {
   LanguageModelChatToolMode: { Auto: 1, Required: 2 },
   LanguageModelError: class extends Error {},
   // Just enough for TeamService (the worker pool test): a folder, settings, cancellation and an info message.
-  workspace: { workspaceFolders: undefined, getConfiguration: () => ({ get: (k, d) => (k in vscodeSettings ? vscodeSettings[k] : d) }) },
+  workspace: { workspaceFolders: undefined, getConfiguration: () => ({ get: (k, d) => (k in vscodeSettings ? vscodeSettings[k] : d), inspect: () => undefined }) },
   window: { showInformationMessage: () => Promise.resolve(undefined) },
   CancellationTokenSource: class {
     constructor() { this.cbs = []; this.token = { isCancellationRequested: false, onCancellationRequested: cb => { this.cbs.push(cb); return { dispose() {} }; } }; }
