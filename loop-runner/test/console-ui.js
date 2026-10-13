@@ -105,7 +105,7 @@ ok(/title="Talk to a mate/.test(head) && /title="Everything at a glance/.test(he
 ok(/Check &amp; tools/.test(head), 'the menu name says that checking is in there');
 ok(/class="tab-sub">talk to a mate/.test(head) && /class="tab-sub">all mates and runs/.test(head), 'each tab says in words what it is for, without hovering');
 const card2 = renderBody({ ...base, agents: [{ ...agent, file: '.github/agents/a.agent.md', triggers: [{ kind: 'schedule', text: '0 9 * * *' }] }] });
-ok(/data-agent="a"[^>]*>[^]*Chat/.test(card2) && /data-open="\.github\/agents\/a\.agent\.md"[^>]*>[^]*Edit file/.test(card2), 'an overview card links to that mate\'s chat and its file');
+ok(/data-agent="a"[^>]*>[^]*Chat/.test(card2) && /data-open="\.github\/agents\/a\.agent\.md"[^>]*aria-label="Edit file"/.test(card2), 'an overview card links to that mate\'s chat and its file');
 ok(/Give a mate a task/.test(renderBody(base)) && /title="Stop every mate/.test(renderBody(base)) && /title="Open the newest file any mate wrote"/.test(renderBody(base)), 'the top buttons say whom they affect');
 ok(/class="chips-row"[^]*ask for status/.test(head) && !/ask for status/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ state: 'running' }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'an idle mate gets a ready-made question to try, a running one does not');
 ok(/appears at the top once you have a mate/.test(renderBody({ ...base, running: false, agents: [], runs: [], tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'the disabled Start says why');
