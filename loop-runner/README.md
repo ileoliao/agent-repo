@@ -97,6 +97,8 @@ agent 会记住自己手上还没做完的任务，可以同时有好几个，�
 - **永远不会自动删**:待回答的提问和审批、排队或等待中的工作项、未完成的任务、以 `blocked`、`error`、`max_steps`、`stalled` 结束的工作项及其运行记录。
 - **手动**:命令 `Harbor Mate: Clean Up Finished Work` 先列出数量再确认。在 Chat 里说 `@mate 清理已完成的` 会先出预览,点 Apply 才删。
 - **其他管理**:`@mate` 还能取消排队、等待或运行中的工作(`propose_cancel`)、关闭任务(`propose_task_close`)、暂停或恢复某个 agent 的定时(`propose_pause`,不改文件,手动给的任务照常运行)、把 agent 移出团队(`propose_agent_remove`,文件归档到 `.loop/archive/agents/`,移回去即可恢复),以及查看队列、占用和单次运行详情(`list_queue`、`storage_usage`、`get_run`)。
+- **状态文件损坏**:崩溃或手改导致某个队列、提问或检查点文件无法解析时,它会被移到 `.loop/corrupt/` 保留备查,其余照常读取,不会让调度停转。写入使用临时文件加重命名,崩溃不会留下写了一半的文件。
+
 
 ## 多个目标与并发
 

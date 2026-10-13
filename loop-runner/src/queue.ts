@@ -85,10 +85,27 @@ export function newId(): string {
 }
 
 const L = (root: string, ...p: string[]) => path.join(root, '.loop', ...p);
-const writeJson = (f: string, v: unknown) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(v, null, 2)); };
-const readJson = <T>(f: string): T | undefined => (fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : undefined);
+/** Written to a temporary file and renamed, so a crash leaves the old file or the new one, never half of one. */
+const writeJson = (f: string, v: unknown) => { fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = `${f}.${process.pid}.tmp`; fs.writeFileSync(tmp, JSON.stringify(v, null, 2)); fs.renameSync(tmp, f); };
+/**
+ * A state file that cannot be parsed (a crash mid-write, a bad hand edit) is moved to `.loop/corrupt/` and treated as
+ * absent, so one bad file never stops the scheduler or hides the rest of the queue. The original is kept for inspection.
+ */
+export const quarantined: string[] = [];
+function quarantine(f: string, root = f.split(`${path.sep}.loop${path.sep}`)[0]): void {
+  try {
+    const dest = path.join(root, '.loop', 'corrupt', `${new Date().toISOString().replace(/[:.]/g, '-')}-${path.basename(f)}`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.renameSync(f, dest);
+    quarantined.push(dest);
+  } catch { /* leave it; it is skipped anyway */ }
+}
+const readJson = <T>(f: string): T | undefined => {
+  if (!fs.existsSync(f)) { return undefined; }
+  try { return JSON.parse(fs.readFileSync(f, 'utf8')) as T; } catch { quarantine(f); return undefined; }
+};
 const readDir = <T>(d: string): T[] =>
-  fs.existsSync(d) ? fs.readdirSync(d).filter(f => f.endsWith('.json')).map(f => JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')) as T) : [];
+  fs.existsSync(d) ? fs.readdirSync(d).filter(f => f.endsWith('.json')).flatMap(f => { const v = readJson<T>(path.join(d, f)); return v === undefined ? [] : [v]; }) : [];
 
 // ---- work items ----
 export function enqueue(root: string, item: WorkItem): void {
