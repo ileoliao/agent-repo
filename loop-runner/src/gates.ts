@@ -1,6 +1,6 @@
 import { Gate, audit, getGate, saveGate, wake } from './queue';
 import { Policy, hardReject } from './policy';
-import { exec } from './exec';
+import { exec, redact } from './exec';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -91,4 +91,31 @@ export async function notify(root: string, command: string | undefined, ev: Loop
   });
   if (ev.chainId) { audit(root, ev.chainId, { type: 'notify', kind: ev.kind, gateId: ev.gateId, ok: r.code === 0 }); }
   return r;
+}
+
+const HEADLINE: Record<LoopEvent['kind'], string> = {
+  question: 'asks you', approval: 'needs your approval', blocked: 'is blocked', error: 'failed', max_steps: 'ran out of steps', stalled: 'stalled', alert: 'raised an alert', goal_silent: 'has gone quiet'
+};
+
+/** The JSON a given chat service expects. Slack and Teams read `text`, Discord reads `content`; anything else gets the event itself. */
+export function webhookBody(url: string, ev: LoopEvent, secrets: Record<string, string> = {}): unknown {
+  const text = redact(`Harbor Mate: ${ev.agent} ${HEADLINE[ev.kind] ?? ev.kind}\n${ev.title}${ev.detail ? `\n${ev.detail.slice(0, 600)}` : ''}${ev.gateId ? `\nOpen the Harbor Mate inbox in VS Code to answer.` : ''}`, secrets);
+  let host = '';
+  try { host = new URL(url).hostname; } catch { /* rejected by the caller */ }
+  if (/(^|\.)discord(app)?\.com$/.test(host)) { return { content: text }; }
+  if (/(^|\.)(slack\.com|office\.com|office365\.com|webhook\.office\.com)$/.test(host) || /logic\.azure\.com$/.test(host)) { return { text }; }
+  return { text, event: { ...ev, detail: ev.detail && redact(ev.detail, secrets) } };
+}
+
+/** Post an event to a chat webhook. Only https URLs are used (http only for localhost, so it can be tested). Never throws. */
+export async function notifyWebhook(url: string | undefined, ev: LoopEvent, secrets: Record<string, string> = {}, post: typeof fetch = fetch): Promise<{ ok: boolean; error?: string } | undefined> {
+  if (!url || !url.trim()) { return undefined; }
+  let u: URL;
+  try { u = new URL(url.trim()); } catch { return { ok: false, error: 'notifyWebhook is not a valid URL.' }; }
+  const local = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) { return { ok: false, error: 'notifyWebhook must be an https URL.' }; }
+  try {
+    const res = await post(u.toString(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(webhookBody(u.toString(), ev, secrets)), signal: AbortSignal.timeout(15_000) });
+    return res.ok ? { ok: true } : { ok: false, error: `The webhook answered ${res.status}.` };
+  } catch (e: any) { return { ok: false, error: `The webhook could not be reached: ${e?.message ?? e}` }; }
 }

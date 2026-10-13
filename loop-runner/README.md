@@ -69,7 +69,9 @@ loop:                                # ← Harbor Mate 专用，VS Code 不使�
 - 每轮最多发起一个闸门
 - deny 规则在申请时和执行时各检查一次，人工批准也越不过 deny 列表
 
-**通知**：有新问题或审批、工作项 blocked 或出错、`wakeIf` 失败时，VS Code 会弹窗。要推到 VS Code 外，在用户设置里配置 `harborMate.notifyCommand`，指向你的通知 skill 脚本；事件放在环境变量 `LOOP_EVENT`（JSON）里。
+**Webhook 通知**：最简单的是在用户设置里填 `harborMate.notifyWebhook`，粘贴 Slack、Teams 或 Discord 的 incoming webhook 地址，有问题、审批、阻塞或失败时直接发到群里（其他 https 地址收到事件的 JSON）。只在用户设置里生效，工作区设置不能改它；仅 https（本机地址可用 http 调试）；发出前会遮掉 secret。需要更复杂的渠道时再用脚本通知。
+
+**脚本通知**：有新问题或审批、工作项 blocked 或出错、`wakeIf` 失败时，VS Code 会弹窗。要推到 VS Code 外，在用户设置里配置 `harborMate.notifyCommand`，指向你的通知 skill 脚本；事件放在环境变量 `LOOP_EVENT`（JSON）里。
 
 ## 进行中的任务
 

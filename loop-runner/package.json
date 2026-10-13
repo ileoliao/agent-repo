@@ -274,6 +274,12 @@
           "default": 30,
           "minimum": 1,
           "description": "Days to keep done or dropped tasks. Open tasks are never removed."
+        },
+        "harborMate.notifyWebhook": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "Post a message here when an agent needs you (a question, an approval, a blocked or failed run). Paste an incoming-webhook URL from Slack, Microsoft Teams or Discord; any other https URL receives the event as JSON. Set it in your user settings, not in a workspace."
         }
       }
     },

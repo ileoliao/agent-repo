@@ -129,5 +129,29 @@ const skill = (R, name, script) => { w(R, `.github/skills/${name}/SKILL.md`, `--
     fs.rmSync(R, { recursive: true, force: true });
   }
 
+  console.log('webhook notification');
+  {
+    const http = require('http');
+    const { notifyWebhook, webhookBody } = require(`${OUT}/gates.js`);
+    const got = [];
+    let status = 200;
+    const srv = http.createServer((req, res) => { let b = ''; req.on('data', d => b += d); req.on('end', () => { got.push({ url: req.url, body: JSON.parse(b), type: req.headers['content-type'] }); res.statusCode = status; res.end('ok'); }); });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${srv.address().port}/hook`;
+    const ev = { kind: 'approval', agent: 'deployer', title: 'Roll out v2', detail: 'token=SECRETVALUE in the log', gateId: 'g1' };
+    const r1 = await notifyWebhook(url, ev, { TOKEN: 'SECRETVALUE' });
+    ok(r1.ok && got.length === 1 && got[0].type === 'application/json' && /deployer needs your approval/.test(got[0].body.text) && got[0].body.event.gateId === 'g1', 'an event is posted as JSON with a readable message');
+    ok(!JSON.stringify(got[0].body).includes('SECRETVALUE'), 'secrets are masked in what is sent');
+    status = 500;
+    const r2 = await notifyWebhook(url, ev);
+    ok(r2.ok === false && /500/.test(r2.error), 'a failing webhook is reported, not thrown');
+    srv.close();
+    const dead = await notifyWebhook('http://127.0.0.1:1/x', ev);
+    ok(dead.ok === false && /could not be reached/.test(dead.error), 'an unreachable webhook is reported, not thrown');
+    ok((await notifyWebhook('http://example.com/x', ev)).ok === false && (await notifyWebhook('not a url', ev)).ok === false, 'plain http to a remote host and bad URLs are refused');
+    ok((await notifyWebhook('', ev)) === undefined, 'no webhook configured means nothing happens');
+    ok('content' in webhookBody('https://discord.com/api/webhooks/1/x', ev) && !('event' in webhookBody('https://hooks.slack.com/services/T/B/x', ev)) && 'text' in webhookBody('https://hooks.slack.com/services/T/B/x', ev), 'Slack and Discord get the shape they expect');
+  }
+
   console.log(`${pass} doctor and health checks passed`);
 })().catch(e => { console.error('FAILED:', e.message); process.exit(1); });
