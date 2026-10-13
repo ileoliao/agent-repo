@@ -1,6 +1,6 @@
-# Authoring reference for Loop Runner (for `@loop`)
+# Authoring reference for Harbor Mate (for `@mate`)
 
-Loop Runner runs the user's custom agents unattended. It knows nothing about the business: every capability lives in a skill, and every agent is one file. This is how to read, change and create them through the tools you have. The human sees every change as a diff and presses Apply; you never write files yourself.
+Harbor Mate runs the user's custom agents unattended. It knows nothing about the business: every capability lives in a skill, and every agent is one file. This is how to read, change and create them through the tools you have. The human sees every change as a diff and presses Apply; you never write files yourself.
 
 ## How to work
 
@@ -18,14 +18,30 @@ Loop Runner runs the user's custom agents unattended. It knows nothing about the
 | give an agent a skill that already exists in the workspace, or take one away | `propose_skills` |
 | write a new skill (instructions and scripts) | `propose_skill`, after `get_authoring_guide` with `topic: "skills"` |
 | change an existing skill | `get_skill`, then `propose_skill_edit` |
+| only wake it when something happens (a probe) | write the probe with `propose_skill`, then `propose_schedule` or `propose_goals` with `wakeIf` (see "Writing a probe for the human") |
 | change how an agent works (its role instructions) | `propose_role_edit` |
 | create a new agent | `propose_agent` |
 | a lasting rule or preference for an agent | `propose_remember` / `propose_forget` |
 | do something once, now | `propose_run` |
+| stop work that is queued, parked or running | `list_queue`, then `propose_cancel` (an item id, or an agent name to stop its current run) |
+| close a task nobody should continue | `list_tasks`, then `propose_task_close` |
+| stop an agent's scheduled wakes for a while, without editing it | `propose_pause` (`paused: true`, or `false` to resume) |
+| clear out finished work | `storage_usage`, then `propose_cleanup` (finished items, run logs, answered questions and closed tasks; pending questions, queued work, open tasks and failed runs are kept unless `include_problems`) |
+| take an agent off the team | `propose_agent_remove` (its file is archived under `.loop/archive/agents/`, not deleted) |
 
 You can create a skill with `propose_skill` and change one with `propose_skill_edit` (read the skills guide first), but you cannot write policy files. If a request needs a policy, say so: the human writes it, and then you can wire it up. A policy goes in `.loop/policies/<name>.json`.
 
 With `propose_goals` update, an empty string clears a field (for example `wakeIf: ""`). Only the goal you name is rewritten; the other goals keep their exact text.
+
+## Writing a probe for the human
+
+A `wakeIf` probe is a small script that answers "is there anything to do?" without a model call. The human says it in plain words ("only wake it when there is a new failed deploy"); you write the script. Do not suggest a probe for a daily or weekly schedule, and do not push one: it is optional.
+
+1. Ask what the data source is and which command or API gives it, unless you were told. Never invent a command-line tool.
+2. Create the probe as a skill script with `propose_skill` (read the skills guide first; it has a skeleton). It must exit 0 when there is work (and print what, briefly), 1 when there is nothing, 2 when it could not check.
+3. The probe must be in a skill the agent lists, so add the skill with `propose_skills` if the agent does not have it yet.
+4. Set it with `propose_schedule` (`wakeIf`) for the agent's single schedule, or `propose_goals` for a goal. The command is `python3 .github/skills/<skill>/scripts/check.py`.
+5. Tell the human to run the script once by hand (section 6 of the skills guide) before relying on it.
 
 ## Creating an agent with `propose_agent`
 
@@ -47,9 +63,9 @@ With `propose_goals` update, an empty string clears a field (for example `wakeIf
 
 <!-- shared reference: the same text is the body of .github/skills/loop-team-authoring/SKILL.md (a test keeps them identical) -->
 
-# Authoring roles and skills for a Loop Runner team
+# Authoring roles and skills for a Harbor Mate team
 
-Loop Runner runs VS Code custom agents unattended on Copilot models. It knows nothing about the business: every capability must live in a skill, and every role is a normal VS Code agent file with an extra `loop:` block. Follow these conventions exactly; the runtime depends on them.
+Harbor Mate runs VS Code custom agents unattended on Copilot models. It knows nothing about the business: every capability must live in a skill, and every role is a normal VS Code agent file with an extra `loop:` block. Follow these conventions exactly; the runtime depends on them.
 
 ## 1. Role file: `.github/agents/<name>.agent.md`
 
@@ -111,9 +127,9 @@ loop:
 - Schedule state, the daily cap and wake history are kept per goal.
 - A goal without a schedule never runs on its own; it only records a responsibility.
 
-## 3. The wakeIf probe (zero-token schedule gate)
+## 3. The wakeIf probe (optional zero-token gate)
 
-A scheduled goal with `wakeIf` costs nothing until there is work. The probe is usually the skill's detection script with an exit-code mode:
+Optional. Worth it when a goal runs more than once an hour and most runs would find nothing; a daily report does not need one. A scheduled goal with `wakeIf` costs nothing until there is work. The probe is a script in a skill the agent lists (the command passes the agent's policy like any other), usually the skill's detection script with an exit-code mode:
 
 | Exit code | Meaning | What happens |
 |---|---|---|
@@ -147,7 +163,7 @@ A skill is a folder with `SKILL.md` (frontmatter `name`, `description`; body: ho
 
 ## 6. Giving a role a memory
 
-Every run starts from nothing. If a role should build on what it did before (not reopen something a human chose to watch, say what changed since last time), add the shared skill `loop-memory` (source: `skills/loop-memory/` in the Loop Runner repository; copy it into the workspace's `.github/skills/`) to its `loop.skills`, and give it two lines in the body: start with `now` and `recall --agent <name>`, finish with `note --agent <name>`. Use `check --key <subject> --value <number>` before acting on something that may already be known, and `track` when a subject should be followed or a human has decided about it. The skill's own SKILL.md carries the protocol, so the role file does not repeat it. Do not give a role its own note-taking instructions or file layout.
+Every run starts from nothing. If a role should build on what it did before (not reopen something a human chose to watch, say what changed since last time), add the shared skill `loop-memory` (source: `skills/loop-memory/` in the Harbor Mate repository; copy it into the workspace's `.github/skills/`) to its `loop.skills`, and give it two lines in the body: start with `now` and `recall --agent <name>`, finish with `note --agent <name>`. Use `check --key <subject> --value <number>` before acting on something that may already be known, and `track` when a subject should be followed or a human has decided about it. The skill's own SKILL.md carries the protocol, so the role file does not repeat it. Do not give a role its own note-taking instructions or file layout.
 
 ## 7. Designing an effective agent
 
@@ -157,11 +173,11 @@ An unattended agent starts every run knowing nothing, cannot ask a colleague, an
 
 1. **One role, one owner.** An agent is a role with a clear area of responsibility. Several standing responsibilities of the *same* role are goals of one agent. Split into separate agents when the **permissions or the trust level of the data** differ (one reads untrusted input and has narrow rights; another writes), because the policy is per agent.
 2. **Least privilege.** Give each agent its own policy with only the commands and paths it needs; read-only roles get `"writablePaths": []`. Give it only the skills it uses, and credentials only to the skills that need them. Loosen a policy only for an agent that reads nothing written by outsiders.
-3. **Cheap first.** Let a zero-token `wakeIf` probe decide whether the model runs at all; let scripts filter, count and aggregate so the model sees a short result; cap cost with `maxRunsPerDay` and `maxSteps`.
+3. **Cheap first.** Let scripts filter, count and aggregate so the model sees a short result, and cap cost with `maxRunsPerDay` and `maxSteps`. A `wakeIf` probe is optional: it pays only when a goal runs more than once an hour and most runs would find nothing, because it decides in zero tokens whether the model runs at all.
 4. **Decide in the instructions, don't hope.** Write the decision rules ("if X, do Y, otherwise Z"), the inputs it will have and the output it must produce. Say what it must never do and why.
 5. **Judgement goes to a human.** Unattended, a guess is worse than a pause. Where the right answer depends on preference or risk, instruct the agent to `ask_human` with the options. Anything with outside effects (sending, publishing, deploying, deleting) goes through `request_approval` with a draft file the human can read and edit.
 6. **A defined end.** Every run finishes with one of: `done`, `nothing_to_do`, `blocked` (say what is missing), or `open` with a `next` step when it is waiting for something. Name the file it should leave as a deliverable.
-7. **Small, explicit handoffs.** Hand off only to a teammate whose `description` says it handles this; put ids, paths and evidence in the handoff context, because the receiver sees nothing else. Expect a bounded number of hops (`loopRunner.maxHops`) and never design two agents to hand work back and forth.
+7. **Small, explicit handoffs.** Hand off only to a teammate whose `description` says it handles this; put ids, paths and evidence in the handoff context, because the receiver sees nothing else. Expect a bounded number of hops (`harborMate.maxHops`) and never design two agents to hand work back and forth.
 8. **Memory through the shared skill.** If it must build on earlier runs, use `loop-memory`; do not invent note files in the instructions.
 9. **Prove it manually, then schedule it.** Create it with no schedule, give it a one-off task, read what it did, fix the instructions, and only then add a schedule with a conservative cadence and a daily cap.
 10. **Facts live where they can be updated.** Put stable procedure in the instructions and changing facts (thresholds, owners, lists) in a skill reference file or in memory, so that updating them does not mean rewriting the role.
@@ -173,7 +189,7 @@ An unattended agent starts every run knowing nothing, cannot ask a colleague, an
 | **The do-everything agent** (many skills, many goals, a long prompt) | Instructions blur, mistakes are hard to trace, and one policy must cover every job | Split by role and by permission |
 | **One agent per tiny task** | Overhead, handoff chatter, nobody owns the outcome | Make it a goal of the role that owns the area |
 | **Vague mandate** ("monitor X and handle issues") | The model invents its own definition of "handle" | State the trigger, the decision rules, the output and the stopping point |
-| **Scheduling without a probe** | The model is called every interval to find nothing | Add a `wakeIf` probe, or lower the frequency |
+| **A frequent schedule with no probe** (more than once an hour, mostly nothing to do) | The model is called every interval to find nothing | Add a `wakeIf` probe, or lower the frequency. A daily or weekly schedule does not need one |
 | **Using the model for arithmetic and filtering** | Slow, costly, and sometimes wrong | A skill script computes; the model interprets the result |
 | **"Use your best judgement" unattended** | A confident guess on a risky call | Tell it when to `ask_human` |
 | **Outside effects without approval**, or text embedded in the approval command | The human cannot review or edit what will happen | Draft in `.loop/outbox/`, approve a command that reads the draft |
@@ -188,9 +204,9 @@ An unattended agent starts every run knowing nothing, cannot ask a colleague, an
 
 ## 8. Checklist before finishing
 
-- [ ] Role file parses: run "Loop Runner: Reload & Validate Team" and fix every reported problem.
+- [ ] Role file parses: run "Harbor Mate: Reload & Validate Team" and fix every reported problem.
 - [ ] Every `loop.skills` entry exists, and the body names the skills for Chat mode.
-- [ ] Scheduled roles have a `task`; probes follow the exit-code contract and were run once by hand.
+- [ ] Scheduled roles have a `task`; a probe, if there is one, follows the exit-code contract and was run once by hand.
 - [ ] The instructions say what to do, what never to do, when to ask the human, and how to finish.
 - [ ] External effects go through approval with a draft in `.loop/outbox/`.
 - [ ] Scripts are non-interactive, read secrets from the environment, and print small JSON.

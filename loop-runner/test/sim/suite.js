@@ -67,20 +67,24 @@ function writeScript(data) {
 }
 
 async function phasePark(check) {
-  const ext = vscode.extensions.getExtension('local.loop-runner');
+  const ext = vscode.extensions.getExtension('local.harbor-mate');
   if (ext && !ext.isActive) await ext.activate();
   check('activate', !!(ext && ext.isActive), ext ? `${ext.id} active=${ext.isActive}` : 'extension missing');
   const cmds = await vscode.commands.getCommands(true);
-  check('Start Team command is registered', cmds.includes('loopRunner.startTeam') && cmds.includes('loopRunner.stopTeam'), 'loopRunner.startTeam');
+  check('Start Team command is registered', cmds.includes('harborMate.startTeam') && cmds.includes('harborMate.stopTeam'), 'harborMate.startTeam');
+
+  const wanted = ['getStarted', 'runDoctor', 'showHealth', 'cleanUp', 'openConsole', 'menu'].map(n => `harborMate.${n}`);
+  check('the new commands are registered in real VS Code', wanted.every(c => cmds.includes(c)), wanted.filter(c => !cmds.includes(c)).join(', ') || 'all present');
+  check('the old loopRunner commands are gone', !cmds.some(c => c.startsWith('loopRunner.')), cmds.filter(c => c.startsWith('loopRunner.')).join(', '));
 
   const activation = readJson(path.join(WS, '.loop', 'sim-activation.json'));
   check('first open does not auto-start', activation.willAutoStart === false, JSON.stringify(activation));
-  check('status bar is painted at the end of activation', String(activation.bar).includes('Loop'), activation.bar);
+  check('status bar is painted at the end of activation', String(activation.bar).includes('Harbor Mate'), activation.bar);
 
-  const before = await vscode.commands.executeCommand('loopRunner._sim.snapshot');
+  const before = await vscode.commands.executeCommand('harborMate._sim.snapshot');
   check('team stays idle until Start Team', before && before.running === false, JSON.stringify(before));
 
-  await vscode.commands.executeCommand('loopRunner.startTeam');
+  await vscode.commands.executeCommand('harborMate.startTeam');
 
   const hits = wakeHits();
   check('missed cron catch-up runs wakeIf once', hits.length === 1, hits.join(' | ') || '(none)');
@@ -105,12 +109,12 @@ async function phasePark(check) {
 
   const notes = notifyLines();
   check('the question was notified', notes.length === 1 && notes[0].startsWith('question|Which colour?'), notes.join('\n'));
-  const snap = await vscode.commands.executeCommand('loopRunner._sim.snapshot');
+  const snap = await vscode.commands.executeCommand('harborMate._sim.snapshot');
   check('Start Team left the team running', !!(snap && snap.running), snap && snap.status);
 }
 
 async function phaseResume(check) {
-  const ext = vscode.extensions.getExtension('local.loop-runner');
+  const ext = vscode.extensions.getExtension('local.harbor-mate');
   if (ext && !ext.isActive) await ext.activate();
 
   const activation = readJson(path.join(WS, '.loop', 'sim-activation.json'));
@@ -124,14 +128,14 @@ async function phaseResume(check) {
   check('pending gate is notified again even though notifiedAt was set', notes.filter(l => l.startsWith('question|')).length >= 2, notes.join('\n'));
 
   const snap = await poll('auto-start', async () => {
-    const s = await vscode.commands.executeCommand('loopRunner._sim.snapshot');
+    const s = await vscode.commands.executeCommand('harborMate._sim.snapshot');
     return s && s.running ? s : null;
   });
   check('auto-start runs without another Start Team', String(snap.status).includes('running: true'), snap.status);
 
   const gate = listJson(path.join(WS, '.loop', 'gates')).find(g => g.status === 'pending' && g.kind === 'question');
   check('the parked question is still pending', !!gate, gate && gate.id);
-  await vscode.commands.executeCommand('loopRunner._sim.answer', gate.id, 'green');
+  await vscode.commands.executeCommand('harborMate._sim.answer', gate.id, 'green');
   const finished = await poll('resume', () => listJson(path.join(WS, '.loop', 'queue', '_done')).find(d => d.summary && d.summary.includes('colour was green')) || null);
   check('answer resumes the same item through to done', finished.status === 'done' && finished.agent === 'clerk', JSON.stringify({ id: finished.id, status: finished.status, summary: finished.summary }));
   check('resume was audited', audits().some(e => e.type === 'resume' && e.itemId === finished.id), finished.id);
@@ -139,7 +143,7 @@ async function phaseResume(check) {
   const hitsBefore = wakeHits().length;
   fs.writeFileSync(path.join(WS, '.loop', 'sim-now.txt'), process.env.LOOP_SIM_LATER);
   writeScript({ scout: [{ calls: [{ name: 'finish', input: { status: 'done', summary: 'live cron' } }] }], clerk: [] });
-  await vscode.commands.executeCommand('loopRunner._sim.tick');
+  await vscode.commands.executeCommand('harborMate._sim.tick');
   const hitsAfter = await poll('live wake', () => wakeHits().length === hitsBefore + 1 ? wakeHits() : null);
   check('the current cron minute runs wakeIf', hitsAfter.length === hitsBefore + 1, `${hitsBefore} -> ${hitsAfter.length}: ${hitsAfter.join(' | ')}`);
   const live = await poll('live item', () => listJson(path.join(WS, '.loop', 'queue', '_done')).find(d => d.summary === 'live cron') || null);
@@ -152,7 +156,7 @@ async function phaseResume(check) {
       { calls: [{ name: 'finish', input: { status: 'done', summary: 'retried after rate limit' } }] }
     ]
   });
-  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'hit the limit');
+  await vscode.commands.executeCommand('harborMate._sim.submit', 'clerk', 'hit the limit');
   const keptRate = await poll('rate-limit keep', () => readTrace().find(e => e.event === 'kept-queued' && e.reason === 'rate-limit') || null);
   check('rate limit keeps the item in the agent queue', keptRate.queued === true && keptRate.agent === 'clerk', JSON.stringify(keptRate));
   const retried = await poll('rate-limit retry', () => listJson(path.join(WS, '.loop', 'queue', '_done')).find(d => d.id === keptRate.id) || null, 15000);
@@ -163,19 +167,19 @@ async function phaseResume(check) {
     scout: [],
     clerk: [{ hold: true, calls: [{ name: 'finish', input: { status: 'done', summary: 'should not finish while held' } }] }]
   });
-  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'cancel me');
+  await vscode.commands.executeCommand('harborMate._sim.submit', 'clerk', 'cancel me');
   await poll('hold', () => readTrace().some(e => e.event === 'hold-started') ? true : null);
   writeScript({
     scout: [],
     clerk: [{ calls: [{ name: 'finish', input: { status: 'done', summary: 'finished after cancel' } }] }]
   });
-  await vscode.commands.executeCommand('loopRunner.stopTeam');
+  await vscode.commands.executeCommand('harborMate.stopTeam');
   const keptCancel = await poll('cancel keep', () => readTrace().find(e => e.event === 'kept-queued' && e.reason === 'cancelled') || null);
   check('cancel keeps the item in the agent queue', keptCancel.queued === true, JSON.stringify(keptCancel));
   const queuedFile = path.join(WS, '.loop', 'queue', 'clerk', `${keptCancel.id}.json`);
   const doneEarly = listJson(path.join(WS, '.loop', 'queue', '_done')).some(d => d.id === keptCancel.id);
   check('cancelled item was not completed into _done', fs.existsSync(queuedFile) && !doneEarly, queuedFile);
-  await vscode.commands.executeCommand('loopRunner.startTeam');
+  await vscode.commands.executeCommand('harborMate.startTeam');
   const afterCancel = await poll('cancel retry', () => listJson(path.join(WS, '.loop', 'queue', '_done')).find(d => d.id === keptCancel.id) || null);
   check('the next Start Team retries the cancelled item', afterCancel.status === 'done' && afterCancel.summary === 'finished after cancel', JSON.stringify(afterCancel));
 
@@ -186,7 +190,7 @@ async function phaseResume(check) {
 
   // an idle agent: your message starts a run
   writeScript({ scout: [], clerk: [fin('answered the chat')] });
-  await vscode.commands.executeCommand('loopRunner._sim.chatSend', 'clerk', 'hello from the chat window');
+  await vscode.commands.executeCommand('harborMate._sim.chatSend', 'clerk', 'hello from the chat window');
   const fromChat = await poll('chat starts a run', () => doneItems().find(d => d.from === 'chat' && d.task === 'hello from the chat window') || null);
   check('chat: a message to an idle agent starts a run with that message as the task', fromChat.status === 'done' && fromChat.agent === 'clerk', JSON.stringify(fromChat));
   const m1 = chatFiles('clerk').find(m => m.text === 'hello from the chat window');
@@ -194,9 +198,9 @@ async function phaseResume(check) {
 
   // a working agent: it reads your message at its next step
   writeScript({ scout: [], clerk: [{ delay: 2500, calls: [{ name: 'list_dir', input: { path: '.' } }] }, fin('saw the message')] });
-  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'long task');
+  await vscode.commands.executeCommand('harborMate._sim.submit', 'clerk', 'long task');
   await poll('delay started', () => readTrace().some(e => e.event === 'delay-started' && e.agent === 'clerk') ? true : null);
-  await vscode.commands.executeCommand('loopRunner._sim.chatSend', 'clerk', 'change of plan: only look at the root');
+  await vscode.commands.executeCommand('harborMate._sim.chatSend', 'clerk', 'change of plan: only look at the root');
   const midRun = await poll('delivered in run', () => chatFiles('clerk').find(m => m.text.startsWith('change of plan') && m.status === 'delivered') || null);
   check('chat: a message to a working agent is read at its next step, in the same run', midRun.via === 'turn' && !!midRun.itemId, JSON.stringify(midRun));
   const longDone = await poll('long task done', () => doneItems().find(d => d.task === 'long task') || null);
@@ -205,35 +209,35 @@ async function phaseResume(check) {
 
   // an agent waiting for you: it reads your message when it continues
   writeScript({ scout: [], clerk: [{ calls: [{ name: 'ask_human', input: { question: 'Which colour?', context: 'pick', options: ['red', 'blue'] } }] }, fin('continued')] });
-  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'needs an answer');
+  await vscode.commands.executeCommand('harborMate._sim.submit', 'clerk', 'needs an answer');
   const gateQ = await poll('chat gate', () => listJson(path.join(WS, '.loop', 'gates')).find(g => g.title === 'Which colour?' && g.status === 'pending') || null);
-  await vscode.commands.executeCommand('loopRunner._sim.chatSend', 'clerk', 'by the way, blue is the brand colour');
+  await vscode.commands.executeCommand('harborMate._sim.chatSend', 'clerk', 'by the way, blue is the brand colour');
   const whileWaiting = chatFiles('clerk').find(m => m.text.startsWith('by the way'));
   check('chat: a message while it waits for you is not delivered yet', whileWaiting && whileWaiting.status === 'pending', JSON.stringify(whileWaiting));
-  await vscode.commands.executeCommand('loopRunner._sim.answer', gateQ.id, 'blue');
+  await vscode.commands.executeCommand('harborMate._sim.answer', gateQ.id, 'blue');
   const afterWait = await poll('delivered on resume', () => chatFiles('clerk').find(m => m.text.startsWith('by the way') && m.status === 'delivered') || null);
   check('chat: it is delivered when the agent resumes, with your answer', afterWait.via === 'resume', JSON.stringify(afterWait));
 
   // cancel this run: ended for good, not retried
   writeScript({ scout: [], clerk: [{ hold: true, calls: [{ name: 'finish', input: { status: 'done', summary: 'must not finish' } }] }, fin('next run is fine')] });
-  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'cancel this one');
+  await vscode.commands.executeCommand('harborMate._sim.submit', 'clerk', 'cancel this one');
   await poll('hold again', () => readTrace().filter(e => e.event === 'hold-started').length >= 2 ? true : null);
-  const cancelled = await vscode.commands.executeCommand('loopRunner._sim.cancelRun', 'clerk');
+  const cancelled = await vscode.commands.executeCommand('harborMate._sim.cancelRun', 'clerk');
   const cancelledItem = await poll('cancelled done', () => doneItems().find(d => d.task === 'cancel this one') || null);
   check('chat: Cancel this run ends the run as cancelled, not queued for a retry', cancelled === true && cancelledItem.status === 'cancelled' && cancelledItem.summary === 'cancelled by the human' && !fs.existsSync(path.join(WS, '.loop', 'queue', 'clerk', `${cancelledItem.id}.json`)), JSON.stringify(cancelledItem));
   check('chat: the audit closes it with an end event', audits().some(e => e.type === 'end' && e.itemId === cancelledItem.id && e.status === 'cancelled'), cancelledItem.id);
-  check('chat: cancelling an agent that is not running says so', (await vscode.commands.executeCommand('loopRunner._sim.cancelRun', 'clerk')) === false, '');
+  check('chat: cancelling an agent that is not running says so', (await vscode.commands.executeCommand('harborMate._sim.cancelRun', 'clerk')) === false, '');
   // The held turn stays at the head of the script (that is what a retry needs); this run was dropped, so clear it.
   writeScript({ scout: [], clerk: [fin('next run is fine')] });
-  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'after the cancel');
+  await vscode.commands.executeCommand('harborMate._sim.submit', 'clerk', 'after the cancel');
   const after = await poll('after cancel', () => doneItems().find(d => d.task === 'after the cancel') || null);
   check('chat: the team carries on with the next work after a cancel', after.status === 'done' && after.summary === 'next run is fine', JSON.stringify(after));
 
   // a run that fails while you were writing: your words are not lost, they start a follow-up run
   writeScript({ scout: [], clerk: [{ delay: 2000, error: 'boom: the model failed' }, fin('handled the follow-up')] });
-  await vscode.commands.executeCommand('loopRunner._sim.submit', 'clerk', 'this one will fail');
+  await vscode.commands.executeCommand('harborMate._sim.submit', 'clerk', 'this one will fail');
   await poll('delay again', () => readTrace().filter(e => e.event === 'delay-started').length >= 2 ? true : null);
-  await vscode.commands.executeCommand('loopRunner._sim.chatSend', 'clerk', 'please also tidy up afterwards');
+  await vscode.commands.executeCommand('harborMate._sim.chatSend', 'clerk', 'please also tidy up afterwards');
   const failed = await poll('failed done', () => doneItems().find(d => d.task === 'this one will fail') || null);
   check('chat: the run that failed is closed as an error', failed.status === 'error', JSON.stringify(failed));
   const followUp = await poll('follow-up', () => doneItems().find(d => d.from === 'chat' && d.task === 'please also tidy up afterwards') || null);

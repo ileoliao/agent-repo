@@ -1,4 +1,4 @@
-/** The few pi-ai pieces the agent loop needs (Loop Runner file; the sources are listed in THIRD_PARTY_NOTICES.md). */
+/** The few pi-ai pieces the agent loop needs (Harbor Mate file; the sources are listed in THIRD_PARTY_NOTICES.md). */
 export * from "./types";
 export * from "./event-stream";
 export * from "./transcript";

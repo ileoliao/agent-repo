@@ -3,7 +3,7 @@ import * as path from 'path';
 import { parseFrontmatter } from './frontmatter';
 import { validateCron } from './cron';
 
-/** A capability. Loop Runner never knows what a skill does; it only loads and exposes it. */
+/** A capability. Harbor Mate never knows what a skill does; it only loads and exposes it. */
 export interface SkillDef {
   name: string;
   description: string;
@@ -35,7 +35,7 @@ export interface GoalDef {
 
 /**
  * A role, defined in VS Code's own custom-agent format (.github/agents/*.agent.md) so the same file
- * works interactively in Copilot Chat and unattended in Loop Runner. Native fields are reused
+ * works interactively in Copilot Chat and unattended in Harbor Mate. Native fields are reused
  * (name, description, model, handoffs); loop-only settings live under a `loop:` block, which
  * VS Code does not use. Only agents with a `loop:` block join the team.
  */

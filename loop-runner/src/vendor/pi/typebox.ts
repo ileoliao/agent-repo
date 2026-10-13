@@ -1,7 +1,7 @@
 /**
  * Minimal stand-in for the `typebox` package pi's tool schemas import.
  *
- * Loop Runner does not publish these schemas to the model (it keeps its own tool
+ * Harbor Mate does not publish these schemas to the model (it keeps its own tool
  * contract). The shim only has to build the objects the vendored modules construct
  * at load time, so the extension does not depend on typebox.
  */

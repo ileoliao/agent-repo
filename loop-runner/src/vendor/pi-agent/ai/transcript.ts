@@ -2,7 +2,7 @@
  * Vendored from pi (https://github.com/earendil-works/pi), packages/ai/src/utils/transcript.ts, version 1.1.0.
  * Copyright (c) 2025 Mario Zechner. MIT License. See loop-runner/THIRD_PARTY_NOTICES.md.
  *
- * Adaptations for Loop Runner: removed the constrained-sampling field and an unused, deprecated helper for one provider.
+ * Adaptations for Harbor Mate: removed the constrained-sampling field and an unused, deprecated helper for one provider.
  */
 
 import type { Context, Message, SystemMessage, Tool, ToolReference, TranscriptContext } from "./types";

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Memory for unattended Loop Runner agents, as one shared skill. Python 3 standard library only.
+"""Memory for unattended Harbor Mate agents, as one shared skill. Python 3 standard library only.
 
 Two things are remembered, both as plain files the human can open, edit and delete:
   notes     what an agent did and learned, one file per run:  .loop/outbox/memory/notes/<agent>/<date-time>.md

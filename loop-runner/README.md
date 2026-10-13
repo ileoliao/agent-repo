@@ -1,8 +1,8 @@
-# Loop Runner 1.0
+# Harbor Mate 1.0
 
 让 VS Code 自定义 agent 在无人值守下运行的最小运行时，使用 Copilot 模型。
 
-**分工**：能力在 Skill 里，角色就是 VS Code 原生的 `.github/agents/*.agent.md`。Loop Runner 只补 VS Code 原生缺的那一层：
+**分工**：能力在 Skill 里，角色就是 VS Code 原生的 `.github/agents/*.agent.md`。Harbor Mate 只补 VS Code 原生缺的那一层：
 
 - 定时触发，并在启动模型前做零 token 的唤醒检查
 - 角色之间转交
@@ -22,7 +22,7 @@ handoffs:
   - label: Hand to techlead
     agent: techlead
     prompt: Investigate the anomaly above.
-loop:                                # ← Loop Runner 专用，VS Code 不使用
+loop:                                # ← Harbor Mate 专用，VS Code 不使用
   skills: [harbor-anomaly-detect]
   schedule: "*/15 9-21 * * 1-5"      # 本机时区的 cron
   wakeIf: python3 .github/skills/harbor-anomaly-detect/scripts/detect.py --exit-code
@@ -35,10 +35,10 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 ```
 
 - **白天**：在 Copilot Chat 的 agent 下拉框里选 `sentinel`，跟它对话，按钮式转交给 techlead
-- **无人值守**：Loop Runner 按 `loop:` 块来调度
+- **无人值守**：Harbor Mate 按 `loop:` 块来调度
 - 只有带 `loop:` 块的 agent 才会加入团队，纯交互的 agent 不受影响
 - 转交对象来自原生的 `handoffs[].agent`
-- 模型选择顺序：`loop.model`（按 family 匹配）→ 原生 `model` 列表（按显示名匹配）→ 设置 `loopRunner.modelFamily` → 第一个可用模型
+- 模型选择顺序：`loop.model`（按 family 匹配）→ 原生 `model` 列表（按显示名匹配）→ 设置 `harborMate.modelFamily` → 第一个可用模型
 - 打开文件时 VS Code 可能会提示 `loop` 字段不受支持，可以忽略
 
 ## wakeIf：没事时不花 token
@@ -58,7 +58,7 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 - **`ask_human`**：agent 拿不准时提问，附上它的判断和选项
 - **`request_approval`**：需要签字的动作，给出确切命令和可编辑的草稿
 
-两者都会让工作项暂停，并把对话存成 checkpoint。你在资源管理器的 **Loop Inbox** 里处理后，它从原地续跑，之前的上下文都还在：
+两者都会让工作项暂停，并把对话存成 checkpoint。你在资源管理器的 **Harbor Mate Inbox** 里处理后，它从原地续跑，之前的上下文都还在：
 
 - 答复后：拿到你的答复继续
 - 批准后：执行的是你改过的草稿，并拿到执行结果继续
@@ -69,7 +69,7 @@ loop:                                # ← Loop Runner 专用，VS Code 不使�
 - 每轮最多发起一个闸门
 - deny 规则在申请时和执行时各检查一次，人工批准也越不过 deny 列表
 
-**通知**：有新问题或审批、工作项 blocked 或出错、`wakeIf` 失败时，VS Code 会弹窗。要推到 VS Code 外，在用户设置里配置 `loopRunner.notifyCommand`，指向你的通知 skill 脚本；事件放在环境变量 `LOOP_EVENT`（JSON）里。
+**通知**：有新问题或审批、工作项 blocked 或出错、`wakeIf` 失败时，VS Code 会弹窗。要推到 VS Code 外，在用户设置里配置 `harborMate.notifyCommand`，指向你的通知 skill 脚本；事件放在环境变量 `LOOP_EVENT`（JSON）里。
 
 ## 进行中的任务
 
@@ -79,8 +79,24 @@ agent 会记住自己手上还没做完的任务，可以同时有好几个，�
 - 模型只通过两个工具告诉运行时：`finish` 的状态 `open`（任务没做完，下次接着做；必须在 `next` 里写下一步和在等什么），以及 `update_task`（把自己手上某个已解决的旧任务标为 `done` 或 `dropped`，或更新下一步）
 - 每次新的运行，提示词里会有 “Your open tasks”：这个 agent 手上其他未完成的任务，含下一步。接手转交的 agent 还会看到 “Task history”
 - **回头叫醒**：A 把活转给 B，然后用 `open` 结束（“等 B 的分析出来再回复”）。B 以 `done` 结束后，A 会收到一个新的工作项（`from: task`），内容是 B 做了什么和 A 自己写下的下一步；受 `maxHops` 限制
-- 控制台的 Overview 页有 “Open tasks”，每个任务可以点 Close（记为 `dropped`，不再有人持有）；`@loop` 可以用 `list_tasks` 查看
+- 控制台的 Overview 页有 “Open tasks”，每个任务可以点 Close（记为 `dropped`，不再有人持有）；`@mate` 可以用 `list_tasks` 查看
 - 它和 `loop-memory` 不同：`loop-memory` 存知识和被跟踪的对象，任务是“进行中的承诺”，谁持有要随 `handoff` 变化，只有运行时看得见，所以由运行时记账
+
+## 上手、体检与健康报告
+
+- **Get Started**:命令 `Harbor Mate: Get Started (Add a Starter Agent)` 提供两个开箱即用的模板(每日提交报告、文件夹监听,后者演示 `wakeIf` 探针),也可以选"Describe what you want"直接在 Chat 里用自己的话描述。模板只写文件、从不覆盖,写完立刻体检,告诉你能不能跑。
+- **体检(Doctor)**:`Harbor Mate: Check Agents (Doctor)` 或 Chat 里 `@mate /doctor`。不调用模型,检查 skill 是否存在、脚本需要的解释器是否装好、policy 文件能否读取、`wakeIf` 是否会被 policy 拒绝,并且把每个探针真实跑一次,确认退出码是 0 或 1。`@mate` 创建或修改 agent 后会自动做不跑探针的版本,并在结果里告诉你"可以运行"或"还缺什么"。
+- **健康报告**:`Harbor Mate: Agent Health Report` 或 `@mate /health`。从审计记录统计每个 agent 近 14 天的结果、步数、问你的次数、被 policy 拒绝的次数、有没有产出文件、探针跳过比例,并给出发现和对应的修法(总是 nothing_to_do 的该加探针或降频、反复失败的、被拒绝的、问同一类问题的、探针坏了的)。
+- **优化**:`@mate /improve <agent>` 会综合体检、健康发现和 agent 文件,只提最小的修改,由你 Apply。
+
+## 清理与管理
+
+`.loop/` 里的已完成工作不会无限增长:
+
+- **自动清理**:启动团队时和之后每天一次,按保留期删除已结束的内容。默认:完成的工作项、已处理的提问和审批保留 14 天;运行记录(审计)和已完成或已放弃的任务保留 30 天。可在设置里改 `harborMate.retention.doneDays / runsDays / gateDays / taskDays`。每次清理在 `.loop/maintenance.jsonl` 留一行汇总。
+- **永远不会自动删**:待回答的提问和审批、排队或等待中的工作项、未完成的任务、以 `blocked`、`error`、`max_steps`、`stalled` 结束的工作项及其运行记录。
+- **手动**:命令 `Harbor Mate: Clean Up Finished Work` 先列出数量再确认。在 Chat 里说 `@mate 清理已完成的` 会先出预览,点 Apply 才删。
+- **其他管理**:`@mate` 还能取消排队、等待或运行中的工作(`propose_cancel`)、关闭任务(`propose_task_close`)、暂停或恢复某个 agent 的定时(`propose_pause`,不改文件,手动给的任务照常运行)、把 agent 移出团队(`propose_agent_remove`,文件归档到 `.loop/archive/agents/`,移回去即可恢复),以及查看队列、占用和单次运行详情(`list_queue`、`storage_usage`、`get_run`)。
 
 ## 多个目标与并发
 
@@ -103,7 +119,7 @@ loop:
 
 - 原来单个 `schedule`/`wakeIf`/`task` 的写法不变，等价于 id 为 `default` 的一个目标
 - 调度状态、补跑、每日上限、唤醒记录都按目标分开
-- 设置 `loopRunner.workers`（默认 2，最小 1）是同时运行的工作项数。同一条转交链永远不会同时跑两个；非 urgent 的最多占 `workers - 1` 个，留一个给 urgent。默认 2 即一个普通加一个 urgent；要两个普通一起跑请设 3。设为 1 就是原来的先来先处理
+- 设置 `harborMate.workers`（默认 2，最小 1）是同时运行的工作项数。同一条转交链永远不会同时跑两个；非 urgent 的最多占 `workers - 1` 个，留一个给 urgent。默认 2 即一个普通加一个 urgent；要两个普通一起跑请设 3。设为 1 就是原来的先来先处理
 - urgent 目标的探针，在它上一个工作项还没结束（比如夜里停在 `ask_human`）时也会继续跑：发现新问题照样先通知你（输出和上次通知完全相同则不重复），但不会再入队第二个工作项。所以这类探针必须是幂等的，不能消耗事件
 - 目标有未结束的工作项而跳过检查时，会记一次 `open` 检查，不会误报 `goal_silent`
 - 同一个 agent 有多个运行时，你发的消息给最早开始的那个
@@ -185,16 +201,16 @@ loop:
 
 ## 上手
 
-0. **先装好扩展**：本机需要 Node.js（20 或更高）和网络（会用 `npx` 拉取 `@vsce`）。克隆仓库后在 `loop-runner` 目录运行 `npm install && npm run package`，得到 `loop-runner-1.0.0.vsix`；在扩展面板 → `…` → 从 VSIX 安装。
+0. **先装好扩展**：本机需要 Node.js（20 或更高）和网络（会用 `npx` 拉取 `@vsce`）。克隆仓库后在 `loop-runner` 目录运行 `npm install && npm run package`，得到 `harbor-mate-1.0.0.vsix`；在扩展面板 → `…` → 从 VSIX 安装。
 1. **先跑冒烟测试**：克隆本仓库后，单独打开源码里的 `examples/smoke`（不在 vsix 里），按该目录的 `README.md` 操作。10 分钟走通安装、模型、定时、提问、审批和续跑，不碰任何真实系统
 2. 把示例的 `.github/agents/` 和 `.loop/policies/` 复制到工作区，按实际 skill 名修改
-3. 运行 `Loop Runner: Reload & Validate Team`，会报告缺失的 skill、无法无人值守的转交目标、写错的 cron
-4. 运行 `Loop Runner: Set Secret` 配置 `HARBOR_PAT`、`JIRA_TOKEN` 等凭证
-5. 运行 `Loop Runner: Start Team`。首次会弹出 Copilot 授权，必须由人点这个命令来触发：授权框在 Start Team 时就会弹出（扩展会对每个还没授权的模型发一个极小的请求），不会拖到第一次无人值守的唤醒。如果此时 Copilot 还没登录好、模型列表为空，会最多等 2 分钟，仍为空就报错，登录好后重新 Start Team。成功启动过之后（按工作区记录，互不影响），再次打开该工作区会自动接着跑，并先处理队列里没做完的项。`Stop Team` 会取消这个自动启动
+3. 运行 `Harbor Mate: Reload & Validate Team`，会报告缺失的 skill、无法无人值守的转交目标、写错的 cron
+4. 运行 `Harbor Mate: Set Secret` 配置 `HARBOR_PAT`、`JIRA_TOKEN` 等凭证
+5. 运行 `Harbor Mate: Start Team`。首次会弹出 Copilot 授权，必须由人点这个命令来触发：授权框在 Start Team 时就会弹出（扩展会对每个还没授权的模型发一个极小的请求），不会拖到第一次无人值守的唤醒。如果此时 Copilot 还没登录好、模型列表为空，会最多等 2 分钟，仍为空就报错，登录好后重新 Start Team。成功启动过之后（按工作区记录，互不影响），再次打开该工作区会自动接着跑，并先处理队列里没做完的项。`Stop Team` 会取消这个自动启动
    - `gh`、`git push` 需要的令牌（`GH_TOKEN`、`GITHUB_TOKEN` 等）不会从 VS Code 的环境继承，请用 `Set Secret` 配置。`SSH_AUTH_SOCK`、DBus、代理（`HTTP(S)_PROXY`、`NO_PROXY`）和自签 CA（`NODE_EXTRA_CA_CERTS`、`SSL_CERT_FILE`）这类非密钥变量会传给命令
    - 代理地址里如果带了用户名密码，会被命令看到，建议改用不带凭据的代理或单独的 skill 脚本
-   - 没有在角色里指定模型时，用 Copilot 列表里的第一个，顺序不固定。建议先设置 `loopRunner.modelFamily`（`List Available Models` 能看到可用的 family）
-6. 可选：配置 `loopRunner.notifyCommand`，用 `Send a Test Notification` 测试
+   - 没有在角色里指定模型时，用 Copilot 列表里的第一个，顺序不固定。建议先设置 `harborMate.modelFamily`（`List Available Models` 能看到可用的 family）
+6. 可选：配置 `harborMate.notifyCommand`，用 `Send a Test Notification` 测试
 
 **日常使用**：状态栏左侧有几个按钮，一点即可：
 - `Loop`：显示团队状态和待处理数量，点击打开收件箱。
@@ -202,13 +218,13 @@ loop:
 - `Result`：打开最新结果（`.loop/outbox/` 下最近修改的文件）。
 - `☰`：打开完整菜单，包含重新加载、派任务、查看状态，以及设置凭证、列出模型等不常用的操作。这些命令在命令面板里被隐藏，但仍可通过菜单使用。
 
-收件箱（侧边栏 Loop Inbox）从上到下：
+收件箱（侧边栏 Harbor Mate Inbox）从上到下：
 
 - **待你处理**：问题和审批，可直接回答、批准或拒绝。
 - **Agents**：团队里每个 agent 的状态（running / waiting / idle）、下次运行时间和上次唤醒检查的结果。点一行打开 agent 文件。
 - **Recent runs**：最近 15 次运行，显示 agent、状态、步数、时间和摘要。展开一条可以看到它写过的文件，点文件直接打开；点运行本身打开审计日志（JSONL）。
 
-状态栏会显示当前在做什么：`Loop: <agent> · step N`，空闲时显示 `Loop · idle · next HH:MM`。`Result` 按钮打开最近一次运行写出的文件，并说明是哪个 agent、哪次运行产生的。
+状态栏会显示当前在做什么：`Mate: <agent> · step N`，空闲时显示 `Mate · idle · next HH:MM`。`Result` 按钮打开最近一次运行写出的文件，并说明是哪个 agent、哪次运行产生的。
 
 ## 测试
 
@@ -231,29 +247,29 @@ loop:
 - 正则策略是启发式的，不是沙箱
 - 发给模型的数据需要先确认合规，脱敏放在 skill 脚本里做
 
-## 控制台 (Loop Console)
+## 控制台 (Harbor Mate Console)
 
-状态栏左侧的 Loop 项或命令 `Loop Runner: Open Console` 会打开一个页面:顶部是运行状态和 启动/停止/下任务 按钮;「Needs you」里直接回答问题、批准(显示将要执行的完整命令)或拒绝;下面是各 agent 的状态,以及每次运行的步骤时间线和产出的文件(点击打开)。页面每 5 秒自动刷新。
+状态栏左侧的 Loop 项或命令 `Harbor Mate: Open Console` 会打开一个页面:顶部是运行状态和 启动/停止/下任务 按钮;「Needs you」里直接回答问题、批准(显示将要执行的完整命令)或拒绝;下面是各 agent 的状态,以及每次运行的步骤时间线和产出的文件(点击打开)。页面每 5 秒自动刷新。
 
 ## 防护与写权限建议
 
-- **卡住保护**:同一个调用连续 3 次得到相同结果,或单次运行超过 `loopRunner.maxMinutes`(默认 30 分钟),运行会以 `stalled` 结束并通知你。
+- **卡住保护**:同一个调用连续 3 次得到相同结果,或单次运行超过 `harborMate.maxMinutes`(默认 30 分钟),运行会以 `stalled` 结束并通知你。
 - **每日上限**:agent 的 `loop:` 里可加 `maxRunsPerDay: 4`,限制每个本地日的定时唤醒次数。
 - **审批绑定内容**:在控制台批准时,页面显示每个草稿文件的内容,批准的是你看到的那一版;文件之后被改动则不会执行,需要重新审核。
 - **不要让 agent 直接改工作区**:让 agent 只写 `.loop/outbox/`,把补丁作为草稿放进审批;应用补丁用一个受审批的 skill(在 `loop/<agent>/<item>` 分支的 worktree 里应用并开草稿 PR)。给任何 loop 写权限之前,先在一次性仓库里跑 `npm test` 里的 planted-secret 检查。
 
-## 在 Chat 里和 agent 对话:`@loop`
+## 在 Chat 里和 agent 对话:`@mate`
 
-在 VS Code 的 Chat 窗口输入 `@loop`,可以:
+在 VS Code 的 Chat 窗口输入 `@mate`,可以:
 
-- `@loop /status`:团队、各 agent 的状态、定时和下次唤醒。`@loop /pending`:等你处理的问题和审批。
+- `@mate /status`:团队、各 agent 的状态、定时和下次唤醒。`@mate /pending`:等你处理的问题和审批。
 - 直接说话,例如「把 sentinel 改成工作日 9 点到 18 点每 30 分钟跑一次」「以后所有报告都用中文」「让 collector 现在跑一次,查一下磁盘」「他们问的那个问题,回答 mac-mini」。
 - 它先用工具查清现状,然后给出**提案**:改定时/任务/角色指令会显示 diff,长期要求会写成备忘,一次性任务和回答也一样。你点 **Apply** 才生效,点 Dismiss 就作废。它自己不会改文件、不会运行 agent、不会替你回答。
 - **创建和修改 agent**:「新建一个 release-watch,负责盯发布」「给 sentinel 加一个目标:Harbor 发布正常,每 15 分钟检查,紧急」「把 loop-memory 这个 skill 加给 briefer」。它会先读内置的说明书(随扩展打包的 `guides/authoring.md`)和现状,再提议;校验不通过(skill 不存在、cron 非法、转交目标不存在、goal id 重复等)就**不给你看 diff**,而是告诉你原因。提案卡片最上面会写明这个 agent **会不会自己运行**:新建的 agent 默认**不带定时**,只在你给它任务时运行;只有你明确要求才会带定时或目标。
 - **创建 skill**:「写一个 skill,查 harbor 的发布状态,只输出一行 JSON」。它会先读 skill 写作规范(`guides/skill-authoring.md`,也是可复制到工作区的 `loop-skill-authoring` skill),然后一次提议整个 skill 文件夹。**审批卡会完整展示每个文件的代码**,并明说:脚本会无人值守地运行、对所有用到这个 skill 的 agent 预先放行、不受 policy 检查——所以请先读代码再 Apply。提议前有自动检查,拦下的:脚本提示输入(无人值守时 stdin 是关的)、把令牌写进脚本、写 `.github/` 或 `.loop/` 里的定义和状态文件、`..` 路径、重名、描述为空或太长、SKILL.md 超过 500 行等;只提醒不拦的:联网、拼 shell 命令、整份环境变量打印、说明里没提到某个文件、描述没说什么时候用。它只创建,不覆盖也不修改已有 skill。创建后还要用「把它加给某某 agent」接上才会生效。
 - **修改 skill**:「把 release-check 的超时改成 30 秒」「给它加一个列出服务的脚本」。它先用 `get_skill` 读完整文件和使用它的 agent,再提议最小改动(替换一处文字、整个文件替换或新增、删除一个文件、改描述)。卡片会写明**哪些 agent 在用这个 skill、改动会在它们下一次无人值守运行时生效**。只检查被改动的脚本,旧脚本里已有的问题不会挡住不相关的修改;`loop-memory` 等随扩展提供的 skill、以及不在 `.github/skills` 下的 skill 不在这里改。多个文件的改动全有或全无:任何一个文件在提议后被改过,整个提议作废。
-- **创建 agent 的设计检查**:提议创建或修改 agent 时,卡片末尾会有一段「Design review」,列出值得再想一想的设计:指令太短、指令里没提它用的 skill、有定时却没有 `wakeIf` 探针、比每 5 分钟更频繁、没有 `maxRunsPerDay`、skill/目标/转交太多、把判断留给模型而没说何时问人、有对外动作(发送、发布、部署、删除)却没提审批。这些只提醒,不拦。设计原则和反模式写在说明书 `guides/authoring.md` 的第 7 节(也是 `loop-team-authoring` skill 的一部分):一个角色一个负责人、最小权限、先便宜(探针和脚本)、判断交给人、明确的结束状态、先手动跑通再加定时,以及「全能 agent」「没探针就定时」「用模型做计算」「没审批的对外动作」「转交来回弹」等常见坑。
-- **它做不到的**:不创建或修改 policy 文件(`policy` 只能引用 `.loop/policies/` 里已有的文件),不修改随扩展提供的 skill。这些需要你(或 Copilot Chat 里的 agent)自己做,做好后再让 `@loop` 接上。
+- **创建 agent 的设计检查**:提议创建或修改 agent 时,卡片末尾会有一段「Design review」,列出值得再想一想的设计:指令太短、指令里没提它用的 skill、比每小时还频繁却没有 `wakeIf` 探针(探针是可选的,每天或每周跑一次的不需要)、比每 5 分钟更频繁、没有 `maxRunsPerDay`、skill/目标/转交太多、把判断留给模型而没说何时问人、有对外动作(发送、发布、部署、删除)却没提审批。这些只提醒,不拦。设计原则和反模式写在说明书 `guides/authoring.md` 的第 7 节(也是 `loop-team-authoring` skill 的一部分):一个角色一个负责人、最小权限、先便宜(探针和脚本)、判断交给人、明确的结束状态、先手动跑通再加定时,以及「全能 agent」「没探针就定时」「用模型做计算」「没审批的对外动作」「转交来回弹」等常见坑。
+- **它做不到的**:不创建或修改 policy 文件(`policy` 只能引用 `.loop/policies/` 里已有的文件),不修改随扩展提供的 skill。这些需要你(或 Copilot Chat 里的 agent)自己做,做好后再让 `@mate` 接上。
 - **备忘**保存在 `.loop/memory/<agent>.md`(`_all.md` 对所有 agent 生效),之后每一次新的运行都会把它放进提示词。想看或改,直接打开这个文本文件。
 - **审批**不在聊天里决定:要在控制台看清完整命令和文件内容后再批准。
 - 它用的是 Chat 模型选择器里当前选中的模型,需要支持工具调用;不支持时用 `/status`、`/pending` 仍可用。
@@ -286,4 +302,4 @@ loop:
 
 **Cancel this run**(对话标题栏右侧,正在运行时出现,需要点两次确认):把当前这次运行**真正结束**,记为「已取消」,不会重试。这和 Stop team 不同,后者只是停下整个团队,被中断的任务下次启动会接着做。
 
-聊天记录存在 `.loop/chat/<agent>/`(你写的)和 `.loop/runs/`(agent 做的),都是普通文件。给 agent 的长期要求仍然用 `@loop`(「记住……」)或长期备忘,而不是聊天:聊天里说的话只对**这一次**运行和之后的对话有效。
+聊天记录存在 `.loop/chat/<agent>/`(你写的)和 `.loop/runs/`(agent 做的),都是普通文件。给 agent 的长期要求仍然用 `@mate`(「记住……」)或长期备忘,而不是聊天:聊天里说的话只对**这一次**运行和之后的对话有效。

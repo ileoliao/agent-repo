@@ -1,4 +1,4 @@
-# Runtime state written by Loop Runner; only the policies are kept in git.
+# Runtime state written by Harbor Mate; only the policies are kept in git.
 .loop/*
 !.loop/policy.json
 !.loop/policies/

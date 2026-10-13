@@ -10,7 +10,7 @@ Local file and shell tools under `src/vendor/pi/` are adapted from
 - Commit: `ea448f454af474f3e2fe9733b331e17b0662f5d6`
 
 The published package `@earendil-works/pi-coding-agent` is ESM-only and its main
-entry loads the TUI, the coding-agent CLI, and their dependencies. Loop Runner is
+entry loads the TUI, the coding-agent CLI, and their dependencies. Harbor Mate is
 a CommonJS VS Code extension, so these files are vendored instead of imported
 from npm. TUI renderers are not included. Image attachment handling (pi-ai /
 photon) is not included. pi's fd/ripgrep downloader is not included; `find` and
@@ -40,7 +40,7 @@ Vendored paths:
 - `packages/coding-agent/src/utils/output-files.ts`
 
 `src/vendor/pi/typebox.ts`, `src/vendor/pi/types.ts`, and `src/vendor/pi/ensure-tool.ts`
-are Loop Runner shims, not pi source.
+are Harbor Mate shims, not pi source.
 
 ```
 MIT License
@@ -117,10 +117,10 @@ versions `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` 1.1.0.
 - License: MIT
 
 The npm packages are ESM-only and `pi-ai` pulls in the SDKs of many model providers (AWS Bedrock, Anthropic, Google,
-OpenAI and others, about 70 MB), none of which Loop Runner uses: it reaches the model only through VS Code's Language
+OpenAI and others, about 70 MB), none of which Harbor Mate uses: it reaches the model only through VS Code's Language
 Model API. So the loop is vendored and the provider code is left out. What was removed or replaced is listed in the
 header of each file. Not included: the model and provider layer, the proxy transport, TypeBox (arguments are checked by
-`ai/validation.ts`, which converts and checks the JSON Schema subset Loop Runner's tools use).
+`ai/validation.ts`, which converts and checks the JSON Schema subset Harbor Mate's tools use).
 
 Vendored paths:
 

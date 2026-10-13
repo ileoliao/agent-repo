@@ -1,6 +1,6 @@
 /**
  * Minimal stand-ins for `@earendil-works/pi-agent-core` AgentTool and pi's
- * extension ToolDefinition. Loop Runner calls the tool execute functions directly
+ * extension ToolDefinition. Harbor Mate calls the tool execute functions directly
  * and does not load the agent runtime or the TUI.
  */
 

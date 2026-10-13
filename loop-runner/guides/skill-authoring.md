@@ -1,4 +1,4 @@
-# Writing skills with `@loop` (`propose_skill`)
+# Writing skills with `@mate` (`propose_skill`)
 
 A skill is what lets an unattended agent do something: query a system, aggregate data, call a local command. Its scripts are pre-approved for every agent that lists the skill, so the human reads every file before it is written. Your job is to propose a skill that is small, plain and easy to read.
 
@@ -23,9 +23,9 @@ A policy file is still the human's to write. If the skill needs commands the age
 
 <!-- shared reference: the same text is the body of .github/skills/loop-skill-authoring/SKILL.md (a test keeps them identical) -->
 
-# Writing a skill for Loop Runner agents
+# Writing a skill for Harbor Mate agents
 
-A skill is a folder an agent can use: instructions in `SKILL.md`, and optionally scripts and reference files. Under Loop Runner agents run **unattended**, and the scripts of every skill an agent lists are **pre-approved**: the runtime runs them without checking what they do inside. So the code of a skill is the trust boundary. Keep scripts small, plain and readable, because a human reads them once, when the skill is created, and then they run on their own.
+A skill is a folder an agent can use: instructions in `SKILL.md`, and optionally scripts and reference files. Under Harbor Mate agents run **unattended**, and the scripts of every skill an agent lists are **pre-approved**: the runtime runs them without checking what they do inside. So the code of a skill is the trust boundary. Keep scripts small, plain and readable, because a human reads them once, when the skill is created, and then they run on their own.
 
 ## 1. Does this need a script?
 
@@ -62,7 +62,7 @@ A skill is a folder an agent can use: instructions in `SKILL.md`, and optionally
 Commands run with stdin closed and a hard timeout (default 180 s), so:
 
 - **Non-interactive.** Never prompt, open a pager or wait for input. Take values from arguments or environment variables.
-- **Credentials come from environment variables** (for example `HARBOR_PAT`). The human stores them with "Loop Runner: Set Secret". Never write a token into a script, never print one; the runtime redacts known secrets from output, but do not rely on that.
+- **Credentials come from environment variables** (for example `HARBOR_PAT`). The human stores them with "Harbor Mate: Set Secret". Never write a token into a script, never print one; the runtime redacts known secrets from output, but do not rely on that.
 - **Print small, machine-readable output** (JSON preferred). Output beyond about 16 KB is cut to its head and tail. Whatever a script prints goes to the model, so mask or aggregate sensitive business data inside the script.
 - **Meaningful exit codes.** 0 is success; non-zero is failure with the reason on stderr. A `wakeIf` probe follows its own contract: 0 means there is work, 1 means nothing to do, 2 or anything else means the probe is broken (use 2 when data could not be fetched, never 1).
 - **Write only under `.loop/outbox/`.** A script must not touch `.github/` (agent and skill definitions) or other `.loop/` state (policies, queue, gates, tasks, memory). Those files define what the team may do, and only a human changes them. The automatic checks reject a script that mentions them.
@@ -72,6 +72,33 @@ Commands run with stdin closed and a hard timeout (default 180 s), so:
 - **Idempotent where you can**: running it twice should not do the thing twice.
 - Prefer the standard library. Do not install packages from inside a script.
 - Plain file names in `scripts/` ending in `.py`, `.js`, `.mjs`, `.cjs`, `.sh` or `.ps1`; no sub-folders.
+
+### A `wakeIf` probe in practice
+
+A probe answers "is there anything to do?" without a model call. It prints what it found (briefly) and exits 0, exits 1 when there is nothing, and exits 2 when it could not check. A skeleton (replace the command with the real one):
+
+```python
+#!/usr/bin/env python3
+"""Exit 0: something to handle (print what). 1: nothing to do. 2: could not check."""
+import json, subprocess, sys
+
+try:
+    out = subprocess.run(["<your-cli>", "list", "--status", "failed"], capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        print(out.stderr.strip()[:500], file=sys.stderr)
+        sys.exit(2)
+    items = json.loads(out.stdout)
+except Exception as e:
+    print(f"could not check: {e}", file=sys.stderr)
+    sys.exit(2)
+
+if not items:
+    sys.exit(1)
+print(json.dumps({"count": len(items), "items": items[:20]}))
+sys.exit(0)
+```
+
+The agent must list the skill the probe lives in, and `wakeIf: python3 .github/skills/<skill>/scripts/check.py` is the command.
 
 ## 5. How an agent calls it
 

@@ -3,7 +3,7 @@
  *
  * Same contract as pi's: arguments the model sent are checked against the tool's JSON Schema, sensible string values
  * are converted ("5" to 5, "true" to true), and a mismatch throws an Error whose message the model reads as the tool's result.
- * Only the parts of JSON Schema that Loop Runner's tools use are supported: object, array, string, number, integer,
+ * Only the parts of JSON Schema that Harbor Mate's tools use are supported: object, array, string, number, integer,
  * boolean, enum, required, nested properties and items. Unknown properties are allowed.
  */
 import type { Tool, ToolCall } from "./types";

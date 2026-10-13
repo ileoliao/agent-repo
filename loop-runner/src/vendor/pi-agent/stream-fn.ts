@@ -2,7 +2,7 @@
  * Vendored from pi (https://github.com/earendil-works/pi), packages/agent/src/stream-fn.ts, version 1.1.0.
  * Copyright (c) 2025 Mario Zechner. MIT License. See loop-runner/THIRD_PARTY_NOTICES.md.
  *
- * Adaptations for Loop Runner: none.
+ * Adaptations for Harbor Mate: none.
  */
 
 import type { StreamFn } from "./types";

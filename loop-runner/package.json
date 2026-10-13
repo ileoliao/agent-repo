@@ -1,6 +1,6 @@
 {
-  "name": "loop-runner",
-  "displayName": "Loop Runner",
+  "name": "harbor-mate",
+  "displayName": "Harbor Mate",
   "description": "Unattended runtime for VS Code custom agents on Copilot models: schedules with zero-token wake checks, handoffs, ask/approve gates that resume, policy and audit.",
   "version": "1.0.0",
   "publisher": "local",
@@ -20,224 +20,268 @@
   "contributes": {
     "commands": [
       {
-        "command": "loopRunner.startTeam",
+        "command": "harborMate.startTeam",
         "title": "Start Team",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.stopTeam",
+        "command": "harborMate.stopTeam",
         "title": "Stop Team",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.reloadTeam",
+        "command": "harborMate.reloadTeam",
         "title": "Reload & Validate Team",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.openConsole",
+        "command": "harborMate.openConsole",
         "title": "Open Console",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.menu",
+        "command": "harborMate.menu",
         "title": "Menu",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.openLatestResult",
+        "command": "harborMate.openLatestResult",
         "title": "Open Latest Result",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.status",
+        "command": "harborMate.status",
         "title": "Show Team Status",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.runAgent",
+        "command": "harborMate.runAgent",
         "title": "Give an Agent a Task",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.setSecret",
+        "command": "harborMate.getStarted",
+        "title": "Get Started (Add a Starter Agent)",
+        "category": "Harbor Mate"
+      },
+      {
+        "command": "harborMate.runDoctor",
+        "title": "Check Agents (Doctor)",
+        "category": "Harbor Mate"
+      },
+      {
+        "command": "harborMate.showHealth",
+        "title": "Agent Health Report",
+        "category": "Harbor Mate"
+      },
+      {
+        "command": "harborMate.cleanUp",
+        "title": "Clean Up Finished Work",
+        "category": "Harbor Mate"
+      },
+      {
+        "command": "harborMate.setSecret",
         "title": "Set Secret (env var for skill scripts)",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.testNotify",
+        "command": "harborMate.testNotify",
         "title": "Send a Test Notification",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.listModels",
+        "command": "harborMate.listModels",
         "title": "List Available Models",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.focusInbox",
+        "command": "harborMate.focusInbox",
         "title": "Open Inbox",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.openGate",
+        "command": "harborMate.openGate",
         "title": "Open",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.answer",
+        "command": "harborMate.answer",
         "title": "Answer",
-        "category": "Loop Runner",
+        "category": "Harbor Mate",
         "icon": "$(reply)"
       },
       {
-        "command": "loopRunner.approve",
+        "command": "harborMate.approve",
         "title": "Approve",
-        "category": "Loop Runner",
+        "category": "Harbor Mate",
         "icon": "$(check)"
       },
       {
-        "command": "loopRunner.reject",
+        "command": "harborMate.reject",
         "title": "Reject",
-        "category": "Loop Runner",
+        "category": "Harbor Mate",
         "icon": "$(close)"
       },
       {
-        "command": "loopRunner.refreshInbox",
+        "command": "harborMate.refreshInbox",
         "title": "Refresh",
-        "category": "Loop Runner",
+        "category": "Harbor Mate",
         "icon": "$(refresh)"
       },
       {
-        "command": "loopRunner.chat.apply",
+        "command": "harborMate.chat.apply",
         "title": "Apply proposal",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       },
       {
-        "command": "loopRunner.chat.dismiss",
+        "command": "harborMate.chat.dismiss",
         "title": "Dismiss proposal",
-        "category": "Loop Runner"
+        "category": "Harbor Mate"
       }
     ],
     "views": {
       "explorer": [
         {
-          "id": "loopRunner.inbox",
-          "name": "Loop Inbox"
+          "id": "harborMate.inbox",
+          "name": "Harbor Mate Inbox"
         }
       ]
     },
     "menus": {
       "view/title": [
         {
-          "command": "loopRunner.refreshInbox",
-          "when": "view == loopRunner.inbox",
+          "command": "harborMate.refreshInbox",
+          "when": "view == harborMate.inbox",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "loopRunner.answer",
-          "when": "view == loopRunner.inbox && viewItem == question-pending",
+          "command": "harborMate.answer",
+          "when": "view == harborMate.inbox && viewItem == question-pending",
           "group": "inline"
         },
         {
-          "command": "loopRunner.approve",
-          "when": "view == loopRunner.inbox && viewItem == approval-pending",
+          "command": "harborMate.approve",
+          "when": "view == harborMate.inbox && viewItem == approval-pending",
           "group": "inline"
         },
         {
-          "command": "loopRunner.reject",
-          "when": "view == loopRunner.inbox && viewItem == approval-pending",
+          "command": "harborMate.reject",
+          "when": "view == harborMate.inbox && viewItem == approval-pending",
           "group": "inline"
         }
       ],
       "commandPalette": [
         {
-          "command": "loopRunner.setSecret",
+          "command": "harborMate.setSecret",
           "when": "false"
         },
         {
-          "command": "loopRunner.listModels",
+          "command": "harborMate.listModels",
           "when": "false"
         },
         {
-          "command": "loopRunner.testNotify",
+          "command": "harborMate.testNotify",
           "when": "false"
         },
         {
-          "command": "loopRunner.openGate",
+          "command": "harborMate.openGate",
           "when": "false"
         },
         {
-          "command": "loopRunner.answer",
+          "command": "harborMate.answer",
           "when": "false"
         },
         {
-          "command": "loopRunner.approve",
+          "command": "harborMate.approve",
           "when": "false"
         },
         {
-          "command": "loopRunner.reject",
+          "command": "harborMate.reject",
           "when": "false"
         },
         {
-          "command": "loopRunner.chat.apply",
+          "command": "harborMate.chat.apply",
           "when": "false"
         },
         {
-          "command": "loopRunner.chat.dismiss",
+          "command": "harborMate.chat.dismiss",
           "when": "false"
         }
       ]
     },
     "configuration": {
-      "title": "Loop Runner",
+      "title": "Harbor Mate",
       "properties": {
-        "loopRunner.modelFamily": {
+        "harborMate.modelFamily": {
           "type": "string",
           "default": "",
           "description": "Default Copilot model family for agents without a 'model' field. Empty = first available."
         },
-        "loopRunner.maxSteps": {
+        "harborMate.maxSteps": {
           "type": "number",
           "default": 40,
           "description": "Default max model turns per work item."
         },
-        "loopRunner.maxMinutes": {
+        "harborMate.maxMinutes": {
           "type": "number",
           "default": 30,
           "description": "Wall-clock cap for one run, in minutes. The run ends as stalled when it is exceeded."
         },
-        "loopRunner.workers": {
+        "harborMate.workers": {
           "type": "number",
           "default": 2,
           "minimum": 1,
           "description": "How many work items run at the same time. With more than one, one slot is kept free for urgent items. 1 = one at a time."
         },
-        "loopRunner.maxHops": {
+        "harborMate.maxHops": {
           "type": "number",
           "default": 5,
           "description": "Max handoffs in one chain."
         },
-        "loopRunner.policyFile": {
+        "harborMate.policyFile": {
           "type": "string",
           "default": ".loop/policy.json",
           "description": "Default policy for agents without their own 'policy' field."
         },
-        "loopRunner.notifyCommand": {
+        "harborMate.notifyCommand": {
           "type": "string",
           "default": "",
           "scope": "machine",
           "description": "Command run whenever the team needs you (question, approval, blocked, error). Receives the event as JSON in LOOP_EVENT, plus LOOP_EVENT_KIND and LOOP_EVENT_TITLE; secrets are injected. Typically a notify skill script, e.g. \"python3 .github/skills/notify-wecom/scripts/send.py\". User settings only, so a repository cannot set it."
+        },
+        "harborMate.retention.doneDays": {
+          "type": "number",
+          "default": 14,
+          "minimum": 1,
+          "description": "Days to keep finished work items. Items that ended blocked, error, max_steps or stalled are never removed automatically."
+        },
+        "harborMate.retention.runsDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Days to keep run logs (audit). Logs of unfinished or failed work are kept."
+        },
+        "harborMate.retention.gateDays": {
+          "type": "number",
+          "default": 14,
+          "minimum": 1,
+          "description": "Days to keep answered, rejected or executed questions and approvals. Pending ones are never removed."
+        },
+        "harborMate.retention.taskDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Days to keep done or dropped tasks. Open tasks are never removed."
         }
       }
     },
     "chatParticipants": [
       {
-        "id": "loopRunner.loop",
-        "name": "loop",
-        "fullName": "Loop Runner",
+        "id": "harborMate.mate",
+        "name": "mate",
+        "fullName": "Harbor Mate",
         "description": "Talk to your agents: see what they are doing, give tasks, change schedules, leave standing notes",
         "isSticky": true,
         "commands": [
@@ -248,6 +292,18 @@
           {
             "name": "pending",
             "description": "Questions and approvals waiting for you"
+          },
+          {
+            "name": "doctor",
+            "description": "Check that your agents can run, and run their probes once"
+          },
+          {
+            "name": "health",
+            "description": "How each agent has been doing, and what to improve"
+          },
+          {
+            "name": "improve",
+            "description": "Review an agent and propose the smallest fixes"
           }
         ]
       }
@@ -257,7 +313,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "rm -rf out && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.js && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository",
-    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js",
+    "test": "tsc -p ./ && node test/e2e.js && node test/console-dom.js && node test/loop-memory.js && node test/harbor-team.js && node test/maintenance.js && node test/doctor.js",
     "sim": "node test/sim/run.js"
   },
   "devDependencies": {

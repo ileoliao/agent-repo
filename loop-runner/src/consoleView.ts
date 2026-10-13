@@ -19,10 +19,10 @@ export interface ConsoleActions {
 }
 
 const COMMANDS: Record<string, string> = {
-  startTeam: 'loopRunner.startTeam',
-  stopTeam: 'loopRunner.stopTeam',
-  runAgent: 'loopRunner.runAgent',
-  openLatestResult: 'loopRunner.openLatestResult'
+  startTeam: 'harborMate.startTeam',
+  stopTeam: 'harborMate.stopTeam',
+  runAgent: 'harborMate.runAgent',
+  openLatestResult: 'harborMate.openLatestResult'
 };
 
 /** Webview console: one page with what needs you, the agents, and what each run did. */
@@ -38,7 +38,7 @@ export class ConsolePanel {
 
   show(): void {
     if (this.panel) { this.panel.reveal(); this.refresh(true); return; }
-    const panel = vscode.window.createWebviewPanel('loopRunner.console', 'Loop Console', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
+    const panel = vscode.window.createWebviewPanel('harborMate.console', 'Harbor Mate Console', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
     this.panel = panel;
     this.lastHtml = '';
     panel.onDidDispose(() => { this.panel = undefined; this.lastHtml = ''; });
@@ -63,14 +63,14 @@ export class ConsolePanel {
   }
 
   private title(pending: number): void {
-    if (this.panel) { this.panel.title = pending ? `Loop Console (${pending})` : 'Loop Console'; }
+    if (this.panel) { this.panel.title = pending ? `Harbor Mate Console (${pending})` : 'Harbor Mate Console'; }
   }
 
   private model(): ConsoleModel {
     const r = this.a.root();
     if (!r) {
       return { tab: this.view.tab, running: false, next: undefined, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
-        note: { tone: 'info', text: 'Open a folder in VS Code to use Loop Runner.' } };
+        note: { tone: 'info', text: 'Open a folder in VS Code to use Harbor Mate.' } };
     }
     try {
       return consoleModel(r, { ...this.a.state(), tab: this.view.tab, agent: this.view.agent });
@@ -82,7 +82,7 @@ export class ConsolePanel {
 
   private async handle(m: any): Promise<void> {
     const r = this.a.root();
-    if (!r) { void vscode.window.showWarningMessage('Loop Runner: open a folder first.'); return; }
+    if (!r) { void vscode.window.showWarningMessage('Harbor Mate: open a folder first.'); return; }
     try {
       switch (m?.type) {
         case 'ready': this.refresh(true); return;
@@ -102,7 +102,7 @@ export class ConsolePanel {
         case 'closeTask': closeTaskByHuman(r, String(m.id)); break;
         case 'chatSend': this.a.chatSend(String(m.agent), String(m.text ?? '')); break;
         case 'chatCancel':
-          if (!this.a.chatCancel(String(m.agent))) { void vscode.window.showInformationMessage(`Loop Runner: ${m.agent} is not running right now.`); }
+          if (!this.a.chatCancel(String(m.agent))) { void vscode.window.showInformationMessage(`Harbor Mate: ${m.agent} is not running right now.`); }
           break;
         case 'open': case 'openAbs': {
           // Only files inside the workspace; the page cannot ask for anything else.
@@ -113,7 +113,7 @@ export class ConsolePanel {
         }
       }
     } catch (e: any) {
-      vscode.window.showWarningMessage(`Loop Runner: ${e?.message ?? e}`);
+      vscode.window.showWarningMessage(`Harbor Mate: ${e?.message ?? e}`);
     }
     this.refresh(true);
   }

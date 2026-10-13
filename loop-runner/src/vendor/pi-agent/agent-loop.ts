@@ -2,7 +2,7 @@
  * Vendored from pi (https://github.com/earendil-works/pi), packages/agent/src/agent-loop.ts, version 1.1.0.
  * Copyright (c) 2025 Mario Zechner. MIT License. See loop-runner/THIRD_PARTY_NOTICES.md.
  *
- * Adaptations for Loop Runner: removed API-key resolution before each request; imports point at the local copy of the few pi-ai pieces it needs.
+ * Adaptations for Harbor Mate: removed API-key resolution before each request; imports point at the local copy of the few pi-ai pieces it needs.
  */
 
 /**

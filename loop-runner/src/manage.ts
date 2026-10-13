@@ -2,8 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createTwoFilesPatch } from 'diff';
 import { parseFrontmatter } from './frontmatter';
-import { validateCron } from './cron';
+import { cronMatches, validateCron } from './cron';
 import { AgentDef, agentFromText, loadAllAgents, problemsIfWritten } from './team';
+import { listQueue } from './maintenance';
 
 /**
  * Changes the human asks for in conversation (schedule, task text, role instructions, standing memory).
@@ -102,7 +103,7 @@ const readAgent = (root: string, name: string): Read => {
 };
 
 /** Change an agent's cron schedule and/or scheduled task text. `schedule: null` turns scheduling off. */
-export function proposeSchedule(root: string, name: string, p: { schedule?: string | null; task?: string }): Proposed {
+export function proposeSchedule(root: string, name: string, p: { schedule?: string | null; task?: string; wakeIf?: string }): Proposed {
   const r = readAgent(root, name);
   if (!r.ok) { return { error: r.error }; }
   if (!r.agent.inLoop) { return { error: `${name} has no loop: block, so it does not run unattended. Add one first.` }; }
@@ -126,7 +127,14 @@ export function proposeSchedule(root: string, name: string, p: { schedule?: stri
     after = setLoopField(after, 'task', p.task.trim())!;
     notes.push('task text');
   }
-  if (!notes.length) { return { error: 'Nothing to change: give a schedule, a task, or both.' }; }
+  if (p.wakeIf !== undefined) {
+    // An empty string removes the probe. A probe needs a schedule to gate.
+    const probe = p.wakeIf.trim();
+    if (probe && !parseFrontmatter(after).meta.loop?.schedule) { return { error: `${name} has no schedule, and a wakeIf probe only gates scheduled runs. Give a schedule too.` }; }
+    after = setLoopField(after, 'wakeIf', probe || undefined)!;
+    notes.push(probe ? `wakeIf \`${probe}\`` : 'wakeIf removed');
+  }
+  if (!notes.length) { return { error: 'Nothing to change: give a schedule, a task, a wakeIf probe, or a combination.' }; }
   // A schedule needs a task to run; check the result, not the request.
   const fm = parseFrontmatter(after).meta.loop ?? {};
   if (fm.schedule && !fm.task) { return { error: `${name} has no task text, and a schedule needs one. Give a task too.` }; }
@@ -136,10 +144,11 @@ export function proposeSchedule(root: string, name: string, p: { schedule?: stri
 }
 
 /** The patched file must read back as exactly what was asked, or nothing is proposed. */
-function verify(after: string, p: { schedule?: string | null; task?: string }, loop: any): string | undefined {
+function verify(after: string, p: { schedule?: string | null; task?: string; wakeIf?: string }, loop: any): string | undefined {
   if (typeof p.schedule === 'string' && String(loop.schedule) !== p.schedule.trim()) { return 'Could not write that schedule safely.'; }
   if (p.schedule === null && loop.schedule) { return 'Could not turn the schedule off safely.'; }
   if (p.task !== undefined && String(loop.task) !== p.task.trim()) { return 'Could not write that task text safely; try simpler wording.'; }
+  if (p.wakeIf !== undefined && String(loop.wakeIf ?? '') !== p.wakeIf.trim()) { return 'Could not write that wakeIf command safely; try simpler wording.'; }
   return parseFrontmatter(after).body === undefined ? 'The agent file would no longer parse.' : undefined;
 }
 
@@ -295,8 +304,10 @@ export function designWarnings(a: AgentDef): string[] {
   const unnamed = a.skills.filter(s => !body.includes(s));
   if (unnamed.length) { w.push(`The instructions never name ${unnamed.length === 1 ? 'the skill' : 'the skills'} ${unnamed.join(', ')}. Chat mode does not read loop.skills, and an agent uses a skill more reliably when told to by name.`); }
   const sched = a.goals.filter(g => g.schedule);
-  const noProbe = sched.filter(g => !g.wakeIf);
-  if (noProbe.length) { w.push(`${noProbe.length === 1 ? 'A schedule has' : `${noProbe.length} schedules have`} no wakeIf probe, so the model runs every time even when there is nothing to do. If most runs would find nothing, add a zero-token probe.`); }
+  // A probe is optional. It only pays when the schedule is frequent and most runs find nothing; a daily report does not need one.
+  const perDay = (cron: string) => { const d = new Date(2026, 0, 7).getTime(); let n = 0; for (let m = 0; m < 1440; m++) { if (cronMatches(cron, new Date(d + m * 60000))) { n++; } } return n; };
+  const busy = sched.filter(g => !g.wakeIf && perDay(g.schedule!) > 24);
+  if (busy.length) { w.push(`${busy.length === 1 ? 'A schedule wakes' : `${busy.length} schedules wake`} the model more than once an hour (up to ${Math.max(...busy.map(g => perDay(g.schedule!)))} times a day) with no wakeIf probe, so it is called even when nothing happened. A probe is optional: if most runs would find nothing, ask for one. It is a small script that costs no model tokens.`); }
   const everyMinutes = (cron: string) => { const m = /^(\*|\*\/(\d+))\s+\*\s+\*\s+\*\s+\*$/.exec(cron.trim()); return m ? (m[2] ? Number(m[2]) : 1) : undefined; };
   const fast = sched.filter(g => { const n = everyMinutes(g.schedule!); return n !== undefined && n < 5; });
   if (fast.length) { w.push(`Runs more often than every 5 minutes (${fast.map(g => g.schedule).join(', ')}). Each run costs model calls; check the cadence is really needed.`); }
@@ -452,7 +463,7 @@ export function proposeSkills(root: string, name: string, p: { add?: string[]; r
   return checked(root, r.file, r.text, after, `${name}: skills ${shown}`, a => (a.skills.join('|') === next.join('|') ? undefined : 'Could not write the skills safely.'));
 }
 
-const RESERVED_NAMES = ['loop', 'chief-of-staff'];
+const RESERVED_NAMES = ['loop', 'mate', 'chief-of-staff'];
 
 export interface NewAgent {
   name: string; description: string; instructions: string;
@@ -585,4 +596,27 @@ export function applyChange(root: string, c: Change): void {
   if (now !== c.before) { throw new Error(`${c.file} changed since this was proposed. Ask again so the change is built on the current file.`); }
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   if (c.delete || (c.after === '' && c.file.startsWith(MEMORY_DIR))) { fs.rmSync(abs, { force: true }); } else { fs.writeFileSync(abs, c.after); }
+}
+
+/**
+ * Take an agent off the team. The file is moved to `.loop/archive/agents/`, never deleted, so putting it back is a move.
+ * Refused while it still has unfinished work or another agent can hand work to it.
+ */
+export function proposeAgentRemove(root: string, name: string): { changes: Change[]; summary: string; notes: string } | { error: string } {
+  const r = readAgent(root, name);
+  if (!r.ok) { return { error: r.error }; }
+  const open = listQueue(root).filter(q => q.agent === name);
+  if (open.length) { return { error: `${name} still has ${open.length} unfinished item(s). Cancel them first (list_queue, propose_cancel).` }; }
+  const from = [...loadAllAgents(root).values()].filter(a => a.name !== name && a.handoffs.includes(name)).map(a => a.name);
+  if (from.length) { return { error: `${from.join(', ')} can hand work to ${name}. Remove that handoff first, or the removal would leave a broken team.` }; }
+  const file = r.agent.file;
+  const before = fs.readFileSync(path.join(root, file), 'utf8');
+  const stamp = new Date().toISOString().slice(0, 10);
+  const archive = `.loop/archive/agents/${stamp}-${path.basename(file)}`;
+  if (fs.existsSync(path.join(root, archive))) { return { error: `${archive} already exists. Ask again tomorrow, or move it away.` }; }
+  return {
+    summary: `Remove agent ${name}`,
+    notes: `${name} leaves the team and stops running. Its file moves to ${archive}; to bring it back, move it to ${file}. Its standing notes and finished runs are kept until cleanup.`,
+    changes: [{ file: archive, before: null, after: before, summary: `archive ${name}` }, { file, before, after: '', summary: `remove ${name}`, delete: true }]
+  };
 }

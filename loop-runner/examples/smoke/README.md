@@ -1,4 +1,4 @@
-# 冒烟测试：10 分钟走通 Loop Runner
+# 冒烟测试：10 分钟走通 Harbor Mate
 
 只读写本文件夹内的文件，不访问任何外部系统。逐步确认安装、模型调用、定时、wakeIf、提问、审批、续跑和凭证脱敏。
 
@@ -10,19 +10,19 @@
 
 ## 1. 安装与模型（最关键的一步）
 
-0. 生成 VSIX（需要网络，会用 `npx` 拉取 vsce）：在源码仓库的 `loop-runner` 目录运行 `npm install && npm run package`，得到 `loop-runner-1.0.0.vsix`。在 Node 20 上可能出现 `EBADENGINE` 警告，可以忽略
-1. 扩展面板 → `…` → 从 VSIX 安装 → 选 `loop-runner-1.0.0.vsix`
-2. 命令面板运行 `Loop Runner: List Available Models`
+0. 生成 VSIX（需要网络，会用 `npx` 拉取 vsce）：在源码仓库的 `loop-runner` 目录运行 `npm install && npm run package`，得到 `harbor-mate-1.0.0.vsix`。在 Node 20 上可能出现 `EBADENGINE` 警告，可以忽略
+1. 扩展面板 → `…` → 从 VSIX 安装 → 选 `harbor-mate-1.0.0.vsix`
+2. 命令面板运行 `Harbor Mate: List Available Models`
    - ✅ 输出面板列出若干 Copilot 模型，这一步通过
    - ❌ 列表为空或报错：组织可能禁止了扩展调用 Copilot 模型。到这里停下，先解决这个问题
 
 ## 2. 启动
 
-1. 运行 `Loop Runner: Reload & Validate Team`，应输出 `Team reloaded OK`
-2. 运行 `Loop Runner: Set Secret`，名称填 `SMOKE_TOKEN`，值随便填，比如 `abc12345`
-3. 运行 `Loop Runner: Start Team`
+1. 运行 `Harbor Mate: Reload & Validate Team`，应输出 `Team reloaded OK`
+2. 运行 `Harbor Mate: Set Secret`，名称填 `SMOKE_TOKEN`，值随便填，比如 `abc12345`
+3. 运行 `Harbor Mate: Start Team`
    - 首次会在这一步弹出 Copilot 模型授权，选允许（扩展会向每个还没授权的模型发一个极小的请求来触发它）。必须由人点这个命令，扩展激活时不会自己弹授权
-   - 冒烟 agent 没指定模型，会用 Copilot 列表里的第一个，顺序不固定，可能不是你想要的。Start 之前先在设置里填 `loopRunner.modelFamily`（用 `List Available Models` 看 family）
+   - 冒烟 agent 没指定模型，会用 Copilot 列表里的第一个，顺序不固定，可能不是你想要的。Start 之前先在设置里填 `harborMate.modelFamily`（用 `List Available Models` 看 family）
    - 状态栏出现 `Loop`
    - 之后关掉 VS Code 再打开这个文件夹，团队会自动接着跑，并先处理队列里没做完的项。点 `Stop Team` 会取消这次自动启动
 
@@ -36,7 +36,7 @@
 ## 4. 提问 → 续跑
 
 - 右下角弹出通知 "smoke asks: …"，状态栏出现铃铛
-- 打开资源管理器里的 **Loop Inbox**，点问题旁的回复按钮，选 `green`
+- 打开资源管理器里的 **Harbor Mate Inbox**，点问题旁的回复按钮，选 `green`
 - agent 从原地继续，把颜色写进草稿
 
 ## 5. 审批 → 执行 → 续跑
@@ -61,7 +61,7 @@
 | Reload 报 skill 找不到 | 打开的文件夹不对，必须是 `examples/smoke` 本身 |
 | 弹出 "wakeIf check is failing" | `python3`、`python`、`py` 都不可用，或 `node` 不在 PATH 里 |
 | `Copilot returned no models` | Copilot 还没登录好或网络没通（列表为空时会先等最多 2 分钟）。等 Copilot 就绪后重新运行 Start Team；改 `modelFamily` 没用 |
-| `no Copilot model matches` | 列表不为空但没有匹配的模型：核对 `loop.model`，或在 `loopRunner.modelFamily` 里填一个 List Available Models 列出的 family |
-| 一直没反应 | 运行 `Loop Runner: Show Team Status`，确认 running 为 true；cron 每分钟才检查一次 |
+| `no Copilot model matches` | 列表不为空但没有匹配的模型：核对 `loop.model`，或在 `harborMate.modelFamily` 里填一个 List Available Models 列出的 family |
+| 一直没反应 | 运行 `Harbor Mate: Show Team Status`，确认 running 为 true；cron 每分钟才检查一次 |
 
 全部走通后，再按根目录的 README 接入真实的角色和 Skill。

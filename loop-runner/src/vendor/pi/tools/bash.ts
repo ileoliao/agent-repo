@@ -4,7 +4,7 @@
  * Source: packages/coding-agent/src/core/tools/bash.ts
  * Commit: ea448f454af474f3e2fe9733b331e17b0662f5d6
  *
- * Adaptations for Loop Runner:
+ * Adaptations for Harbor Mate:
  * - Removed the TUI renderer import and the renderer spread on the tool definition.
  * - BASH_UPDATE_THROTTLE_MS (100) is inlined; it lived in renderers/bash.ts.
  * - Imports rewired onto this vendor tree (local type and typebox shims).

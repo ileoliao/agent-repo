@@ -4,7 +4,7 @@
  * Source: packages/coding-agent/src/utils/child-process.ts
  * Commit: ea448f454af474f3e2fe9733b331e17b0662f5d6
  *
- * Adaptations for Loop Runner:
+ * Adaptations for Harbor Mate:
  * - Replaced cross-spawn with node:child_process so the extension has no extra spawn dependency. bash.ts already spawns with node:child_process.
  */
 import {
