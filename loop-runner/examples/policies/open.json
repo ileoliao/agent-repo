@@ -1,0 +1,20 @@
+{
+  "allowCommands": [
+    "^(ls|cat|head|tail|wc|grep|rg|jq|sort|uniq|cut|tr|diff|awk|sed)\\b",
+    "^(python3?|py|node)\\s+\\S",
+    "^(bash|sh)\\s+[\\w./-]+\\.sh\\b",
+    "^git (status|diff|log|show|branch)\\b"
+  ],
+  "denyCommands": [
+    "\\brm\\s+-[a-z]*r",
+    "\\bgit (push|reset --hard|clean)\\b",
+    "\\b(curl|wget|ssh|scp|nc|Invoke-WebRequest)\\b",
+    "\\bsudo\\b",
+    ">\\s*/",
+    "(^|[\\s/])\\.\\.(/|\\s|$)"
+  ],
+  "writablePaths": ["**"],
+  "protectedPaths": [".loop/**", ".git/**", ".github/**", ".vscode/**", "**/*.env", "**/secrets/**"],
+  "commandTimeoutSec": 300,
+  "maxOutputBytes": 16000
+}

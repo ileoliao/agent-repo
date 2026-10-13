@@ -130,6 +130,8 @@ loop:
 .loop/runs/<date>/<chainId>.jsonl    审计，一条转交链一个文件；wake-<date>.jsonl 记录每次唤醒检查
 ```
 
+**让某个 agent 少受限制**:策略就是一个 JSON 文件,不需要新功能。`examples/policies/open.json` 是一份宽松的:允许运行工作区里的 `python3`/`node`/`bash` 脚本(包括 agent 自己写的)、整个工作区可写,但仍然拒绝联网命令、`rm -r`、`git push`、`..` 路径,以及改写 `.loop/`、`.github/`、`.env`。复制到 `.loop/policies/`,在要放宽的 agent 里写 `policy: .loop/policies/open.json` 即可,其他 agent 不受影响。适合只处理你自己文件和公司内部数据的 agent;如果它会读不是你写的内容(客户留言、外部网页、issue 评论),被夹带指令时这份策略不会拦,请不要用。`protectedPaths` 是底线:策略里自己写的会追加到默认值上,删不掉默认项。
+
 ## 设计说明
 
 **三条原则**
