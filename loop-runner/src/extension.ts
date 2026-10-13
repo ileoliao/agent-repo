@@ -615,6 +615,16 @@ export function activate(ctx: vscode.ExtensionContext) {
     out.appendLine(`✔ ${g.title}: ${r.ok ? 'executed' : 'FAILED'}\n${r.text}`);
     after(r.woke);
   };
+  // Whether Copilot is signed in decides whether any agent can run; the console shows it, so it is checked now and every minute.
+  let copilotCount: number | undefined;
+  const probeCopilot = async () => {
+    let n = 0;
+    try { n = (await vscode.lm.selectChatModels({})).length; } catch { n = 0; }
+    if (n !== copilotCount) { copilotCount = n; consolePanel?.refresh(); }
+  };
+  void probeCopilot();
+  const copilotTimer = setInterval(() => void probeCopilot(), 60_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(copilotTimer) }, vscode.lm.onDidChangeChatModels(() => void probeCopilot()));
   consolePanel = new ConsolePanel({
     root: () => svc.root(),
     state: () => ({ running: svc.running, active: svc.activeAgents }),
@@ -622,7 +632,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     approve: approveGate,
     reject: (id, fb) => after(rejectApproval(root(), id, fb).woke),
     chatSend: (agent, text) => { svc.chatSend(agent, text); },
-    chatCancel: agent => svc.cancelRun(agent)
+    chatCancel: agent => svc.cancelRun(agent),
+    copilotModels: () => copilotCount
   });
   registerLoopChat(ctx, () => {
     const r = svc.root();

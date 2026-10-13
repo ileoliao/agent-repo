@@ -17,6 +17,8 @@ export interface ConsoleActions {
   chatSend: (agent: string, text: string) => void;
   /** Cancel the agent's current run (it is not retried). */
   chatCancel: (agent: string) => boolean;
+  /** Copilot models VS Code offers right now (undefined while unknown). */
+  copilotModels?: () => number | undefined;
 }
 
 const COMMANDS: Record<string, string> = {
@@ -79,7 +81,7 @@ export class ConsolePanel {
         note: { tone: 'info', text: 'Open a folder in VS Code to use Harbor Mate.' } };
     }
     try {
-      return consoleModel(r, { ...this.a.state(), tab: this.view.tab, agent: this.view.agent });
+      return { ...consoleModel(r, { ...this.a.state(), tab: this.view.tab, agent: this.view.agent }), copilot: this.a.copilotModels?.() };
     } catch (e: any) {
       return { tab: this.view.tab, running: this.a.state().running, active: this.a.state().active, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
         note: { tone: 'bad', text: `Could not read .loop data: ${e?.message ?? e}. Showing nothing rather than something stale.` } };

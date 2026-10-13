@@ -33,6 +33,20 @@ const stopped = renderBody({ ...base, running: false, pending: [{ id: 'g', kind:
 ok(/team is stopped/i.test(stopped) && (stopped.match(/data-cmd="startTeam"/g) || []).length === 1, 'stopped with work waiting says so, with a single Start control');
 ok(/data-cmd="runDoctor"/.test(renderBody(base)) && /data-cmd="showHealth"/.test(renderBody(base)) && /data-cmd="cleanUp"/.test(renderBody(base)), 'tools are reachable from the console');
 
+console.log('copilot, why-in-the-row, the thread');
+ok(/Copilot ready/.test(renderBody({ ...base, copilot: 3 })) && !/not signed in/.test(renderBody({ ...base, copilot: 3 })), 'a ready Copilot shows a quiet chip');
+const off = renderBody({ ...base, copilot: 0 });
+ok(/Copilot not signed in/.test(off) && /none can run until you sign in/.test(off), 'no Copilot models: a chip and a banner say agents cannot run');
+ok(!/Copilot/.test(renderBody({ ...base })), 'unknown Copilot state shows nothing');
+ok(/class="run-why"/.test(renderBody({ ...base, runs: [run('blocked')] })) && !/class="run-why"/.test(renderBody({ ...base, runs: [run('done')] })), 'a blocked run says why on its collapsed row');
+const interrupted = renderBody({ ...base, runs: [run('interrupted')] });
+ok(/Last run/.test(interrupted) && !/tile warn"><div class="tile-k">Last run/.test(interrupted), 'an interrupted run does not raise an alarm tile');
+ok(!/tile-k">Needs you/.test(renderBody({ ...base })), 'needs-you is not repeated as a tile');
+const chat = (extra, gates = []) => renderBody({ ...base, tab: 'chat', chat: { agents: [{ name: 'a', description: 'd', state: extra.state, avatar: 'working', line: 'read app.js', pendingMessages: 0, needsYou: gates.length }], selected: 'a', events: [], hidden: 0, gates } });
+ok(/class="working"[^]*is working: read app.js/.test(chat({ state: 'running' })) && !/class="working"/.test(chat({ state: 'idle' })), 'a running agent is visibly working in its thread');
+const gate = kind => ({ id: 'g', kind, agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now, previews: [] });
+ok(/use the buttons above/.test(chat({ state: 'waiting' }, [gate('approval')])) && /Answer the question above/.test(chat({ state: 'waiting' }, [gate('question')])), 'the message box says whether it answers the approval or question');
+
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');
 console.log(`${n} console wording checks passed`);

@@ -63,6 +63,7 @@ const THEMES = {
     ['overview', R, { running: true, active: undefined, tab: 'overview' }],
     ['chat-running', R, { running: true, active: 'daily-report', tab: 'chat', agent: 'daily-report' }],
     ['stopped', R, { running: false, tab: 'overview' }],
+    ['copilot-off', empty, { running: false, tab: 'chat' }],
     ['empty-workspace', empty, { running: false, tab: 'chat' }]
   ];
   const browser = await chromium.launch();
@@ -71,7 +72,7 @@ const THEMES = {
     const ctx = await browser.newContext({ viewport: { width: 900, height: 1400 } });
     for (const [name, root, st] of scenes) {
       const page = await ctx.newPage();
-      const model = consoleModel(root, st, now);
+      const model = { ...consoleModel(root, st, now), copilot: name === 'copilot-off' ? 0 : 3 };
       let html = renderPage(model, 'n', 'x').replace(/<meta http[^>]*>/, '').replace('<script nonce="n">', '<script>');
       html = html.replace('<head>', `<head><style>:root{${Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')}} body{background:${vars['--vscode-editor-background']}}</style><script>window.acquireVsCodeApi=()=>({postMessage(){}});</script>`);
       await page.setContent(html);
