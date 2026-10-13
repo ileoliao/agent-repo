@@ -59,7 +59,7 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
     },
     {
       name: 'write_file',
-      description: 'Create/overwrite a workspace file. Drafts for human review go under .loop/outbox/.',
+      description: 'Create/overwrite a workspace file. Drafts for human review go under .loop/outbox/. A path your policy does not allow is REFUSED, so write what you produce to .loop/outbox/ rather than trying other places.',
       inputSchema: {
         type: 'object',
         properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -68,7 +68,7 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
     },
     {
       name: 'edit_file',
-      description: 'Replace exactly one occurrence of oldText with newText in a workspace file.',
+      description: 'Replace exactly one occurrence of oldText with newText in a workspace file. oldText must match the file exactly, whitespace included, and be unique: keep it as small as possible while still unique, and do not pad it with unchanged lines.',
       inputSchema: {
         type: 'object',
         properties: { path: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' } },
@@ -79,6 +79,7 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
       name: 'run_command',
       description:
         "Run a non-interactive shell command at the workspace root. Your skills' scripts are pre-approved. " +
+        'Output beyond about 16 KB is cut to its head and tail, so prefer a skill script that prints a small summary over dumping raw data. ' +
         'A REFUSED result will repeat if you retry it: use a different route, use request_approval only if the message offers it, otherwise report the gap.',
       inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] }
     },
@@ -156,7 +157,7 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
   if (agent.handoffs.length > 0) {
     tools.push({
       name: 'handoff',
-      description: 'Pass work to a teammate. Include everything they need in context; they do not see your conversation.',
+      description: 'Pass work that is outside your role to a teammate. Include everything they need in context (ids, paths, evidence); they do not see your conversation. Hand off one way: do not pass back work you were handed, the receiver is expected to finish it.',
       inputSchema: {
         type: 'object',
         properties: {
