@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Change, Proposed, applyChange, diffOf, memoryFor, proposeForget, proposeRemember, proposeRoleEdit, proposeSchedule } from './manage';
-import { loadAllAgents } from './team';
+import { Change, GoalInput, Proposed, applyChange, diffOf, memoryFor, proposeAgent, proposeForget, proposeGoals, proposeRemember, proposeRoleEdit, proposeSchedule, proposeSkills } from './manage';
+import { proposeSkill, proposeSkillEdit } from './skillAuthoring';
+import { loadAllAgents, loadSkills } from './team';
 import { listGates } from './queue';
 import { recentRuns } from './runs';
 import { agentRows } from './status';
@@ -25,6 +26,10 @@ export interface ChatHost {
   power(on: boolean): Promise<void>;
   /** Re-read agent files; returns config problems. */
   reload(): Promise<string[]>;
+  /** The agent authoring guide shipped with the extension. Defaults to guides/authoring.md next to out/. */
+  guidePath?: string;
+  /** The skill authoring guide. Defaults to guides/skill-authoring.md next to out/. */
+  skillGuidePath?: string;
 }
 
 export interface Proposal {
@@ -58,6 +63,40 @@ export const CHAT_TOOLS: ChatTool[] = [
     description: "Propose a change to an agent's role instructions: replace exactly one occurrence of old_text with new_text. Read the agent first and quote old_text exactly.",
     inputSchema: obj({ agent: str('Agent name'), old_text: str('Exact existing text'), new_text: str('Replacement') }, ['agent', 'old_text', 'new_text'])
   },
+  {
+    name: 'propose_goals',
+    description: "Propose adding, changing or removing one goal (a standing responsibility with its own schedule) of an agent. op is add, update or remove. For add, give id (lowercase letters, digits, hyphens) and text; schedule is a 5-field cron in LOCAL time; wakeIf is a zero-token pre-check command (needs a schedule). update changes only the fields you give. The single top-level schedule of an agent is changed with propose_schedule, not here. Call get_authoring_guide first. The human must apply it.",
+    inputSchema: obj({ agent: str('Agent name'), op: { type: 'string', enum: ['add', 'update', 'remove'] }, id: str('Goal id'), text: str('What the agent is responsible for'), schedule: str('Cron expression'), wakeIf: str('Pre-check command'), task: str('What a run does (defaults to text)'),
+      skills: { type: 'array', items: { type: 'string' }, description: 'Extra skills for runs of this goal only' }, policy: str('Existing file under .loop/policies/'), urgent: { type: 'boolean', description: 'Tell the human as soon as the pre-check finds something' }, maxSilence: str('For example 2h: tell the human if no pre-check ran for this long'), maxRunsPerDay: { type: 'number', description: 'Whole number, at least 1' } }, ['agent', 'op', 'id'])
+  },
+  {
+    name: 'propose_skills',
+    description: "Propose adding or removing skills in an agent's loop.skills. A skill must already exist in the workspace (list them by reading an agent's file or the authoring guide); this tool does not create skills. The human must apply it.",
+    inputSchema: obj({ agent: str('Agent name'), add: { type: 'array', items: { type: 'string' } }, remove: { type: 'array', items: { type: 'string' } } }, ['agent'])
+  },
+  {
+    name: 'propose_agent',
+    description: "Propose creating a new agent file. Call get_authoring_guide and list_agents first. The new agent does NOT run on its own unless you give it a schedule or goals; leave them out unless the human asked for automatic runs. Skills and the policy must already exist (policy is a file under .loop/policies/; this tool cannot create skills or policies). The human must apply it.",
+    inputSchema: obj({ name: str('Lowercase letters, digits and hyphens'), description: str('One sentence: what it does (teammates read this to decide handoffs)'), instructions: str('The role instructions: how the agent works'),
+      skills: { type: 'array', items: { type: 'string' } }, handoffs: { type: 'array', items: { type: 'string' }, description: 'Names of existing team agents it may hand work to' }, model: str('Optional VS Code model display name'),
+      schedule: str('Optional cron (LOCAL time); needs task'), task: str('What a scheduled run does'), goals: { type: 'array', items: { type: 'object' }, description: 'Optional goals, same fields as propose_goals' },
+      policy: str('Existing file under .loop/policies/'), maxSteps: { type: 'number' }, maxRunsPerDay: { type: 'number' } }, ['name', 'description', 'instructions'])
+  },
+  {
+    name: 'propose_skill',
+    description: "Propose creating a new skill (a folder with SKILL.md and optional scripts and reference files) that agents can list in loop.skills. Read get_authoring_guide with topic 'skills' first. It never overwrites an existing skill. The scripts run unattended and are pre-approved for every agent that uses the skill, so the human reads all the code before applying: write small, plain scripts. The human must apply it.",
+    inputSchema: obj({ name: str('Lowercase letters, digits and hyphens'), description: str('What the skill does AND when an agent should use it (this is what makes an agent pick it)'), instructions: str('The SKILL.md body: how to use the skill; mention every script and reference file by name'),
+      scripts: { type: 'array', items: { type: 'object', properties: { name: str('File name, for example report.py'), content: str('The full file') }, required: ['name', 'content'] }, description: 'Files for scripts/ (.py .js .mjs .cjs .sh .ps1)' },
+      references: { type: 'array', items: { type: 'object', properties: { name: str('File name, for example fields.md'), content: str('The full file') }, required: ['name', 'content'] }, description: 'Files for references/ (.md .txt .json .csv)' } }, ['name', 'description', 'instructions'])
+  },
+  {
+    name: 'propose_skill_edit',
+    description: "Propose a change to an existing skill under .github/skills: a new description, an edit to the instructions, and edits to its scripts and reference files. Read the skill's files first (get_skill) and quote text exactly. Each edit is { file, old_text + new_text } (replace exactly one occurrence), or { file, content } (replace or add a whole file), or { file, delete: true }. file is SKILL.md, scripts/<name> or references/<name>. The card names the agents that use the skill, because the change reaches their next unattended run. Read get_authoring_guide with topic 'skills' first. The human must apply it.",
+    inputSchema: obj({ skill: str('Skill name'), description: str('New description (what it does and when to use it)'),
+      edits: { type: 'array', items: { type: 'object', properties: { file: str('SKILL.md, scripts/<name> or references/<name>'), old_text: str('Exact text to replace (one occurrence)'), new_text: str('Replacement'), content: str('Whole new file content'), delete: { type: 'boolean' } }, required: ['file'] } } }, ['skill'])
+  },
+  { name: 'get_skill', description: "Read one skill's files: SKILL.md, scripts and reference files, and which agents use it. Use before changing a skill.", inputSchema: obj({ skill: str('Skill name') }, ['skill']) },
+  { name: 'get_authoring_guide', description: "The reference for writing agents and goals for Loop Runner (topic 'agents', the default) or skills (topic 'skills'): file format, every field, conventions. Read it before proposing a new agent, goal or skill.", inputSchema: obj({ topic: { type: 'string', enum: ['agents', 'skills'] } }, []) },
   { name: 'propose_remember', description: "Propose a standing note that every new run of an agent (or 'all' agents) is told. Use for lasting preferences and rules, not one-off tasks.", inputSchema: obj({ agent: str("Agent name or 'all'"), note: str('One short sentence') }, ['agent', 'note']) },
   { name: 'propose_forget', description: 'Propose removing the one standing note that contains the given text.', inputSchema: obj({ agent: str("Agent name or 'all'"), match: str('Text that identifies the note') }, ['agent', 'match']) },
   { name: 'propose_run', description: 'Propose giving a team agent a one-off task to run now.', inputSchema: obj({ agent: str('Agent name'), task: str('The task') }, ['agent', 'task']) },
@@ -72,10 +111,10 @@ function fromChange(p: Proposed, host: ChatHost): ToolResult {
   if ('error' in p) { return { text: `Not proposed: ${p.error}` }; }
   const c: Change = p.change;
   return {
-    text: `Proposal ready: "${c.summary}". It is shown to the human with an Apply button; nothing has changed yet. Tell them briefly what it does and wait.`,
+    text: `Proposal ready: "${c.summary}". It is shown to the human with an Apply button; nothing has changed yet. Tell them briefly what it does${c.notes ? ` (${c.notes.replace(/\*\*/g, '').replace(/\n/g, ' ')})` : ''} and wait.`,
     proposal: {
       title: c.summary,
-      detail: '```diff\n' + diffOf(c) + '\n```',
+      detail: `${c.notes ? c.notes + '\n\n' : ''}` + '```diff\n' + diffOf(c) + '\n```',
       apply: async () => {
         applyChange(host.root, c);
         const problems = c.file.startsWith('.github/') ? await host.reload() : [];
@@ -85,7 +124,34 @@ function fromChange(p: Proposed, host: ChatHost): ToolResult {
   };
 }
 
+/** A multi-file proposal (a skill): every file in full on the card, all-or-nothing on Apply. */
+function changeSet(p: { changes: Change[]; summary: string; notes: string } | { error: string }, host: ChatHost, verb: 'created' | 'changed'): ToolResult {
+  if ('error' in p) { return { text: `Not proposed: ${p.error}` }; }
+  const root = host.root;
+  return {
+    text: `Proposal ready: "${p.summary}" (${p.changes.length} files). It is shown to the human with an Apply button, with every file in full; nothing has been written. Tell them briefly what ${verb === 'created' ? 'the skill does' : 'changes'}, any warnings, and that scripts run unattended; then wait.\n\n${p.notes.replace(/\*\*/g, '')}`,
+    proposal: {
+      title: p.summary,
+      detail: `${p.notes}\n\n` + p.changes.map(c => `**${c.file}**${c.delete ? ' (deleted)' : ''}\n\n\`\`\`diff\n${diffOf(c)}\n\`\`\``).join('\n\n'),
+      apply: async () => {
+        // All or nothing: every file is checked against what was proposed, and what was written is taken back if a later write fails.
+        const undo: { file: string; before: string | null }[] = [];
+        try { for (const c of p.changes) { applyChange(root, c); undo.push({ file: c.file, before: c.before }); } }
+        catch (e) { for (const u of undo) { const f = path.join(root, u.file); if (u.before === null) { fs.rmSync(f, { force: true }); } else { fs.writeFileSync(f, u.before); } } throw e; }
+        const problems = await host.reload();
+        return problems.length ? `Applied ${p.changes.length} files, but the team has config problems:\n${problems.join('\n')}` : `${p.summary} done (${p.changes.length} files). Team reloaded.`;
+      }
+    }
+  };
+}
+
 export async function runChatTool(name: string, input: any, host: ChatHost): Promise<ToolResult> {
+  // Whatever the model sends, a tool answers with text; an exception would end the whole chat turn and hide the cause.
+  try { return await runTool(name, input && typeof input === 'object' ? input : {}, host); }
+  catch (e: any) { return { text: `Not proposed: that input could not be used (${e?.message ?? e}). Check the tool's parameters and try again.` }; }
+}
+
+async function runTool(name: string, input: any, host: ChatHost): Promise<ToolResult> {
   const root = host.root;
   const agents = loadAllAgents(root);
   switch (name) {
@@ -114,6 +180,31 @@ export async function runChatTool(name: string, input: any, host: ChatHost): Pro
       return fromChange(proposeSchedule(root, String(input.agent), { schedule: input.off ? null : input.schedule, task: input.task }), host);
     case 'propose_role_edit':
       return fromChange(proposeRoleEdit(root, String(input.agent), String(input.old_text ?? ''), String(input.new_text ?? '')), host);
+    case 'propose_goals':
+      return fromChange(proposeGoals(root, String(input.agent), String(input.op) as 'add' | 'update' | 'remove', input as GoalInput), host);
+    case 'propose_skills':
+      return fromChange(proposeSkills(root, String(input.agent), { add: input.add, remove: input.remove }), host);
+    case 'propose_agent':
+      return fromChange(proposeAgent(root, input), host);
+    case 'propose_skill':
+      return changeSet(proposeSkill(root, input), host, 'created');
+    case 'propose_skill_edit': {
+      const p = proposeSkillEdit(root, input);
+      return changeSet(p, host, 'changed');
+    }
+    case 'get_skill': {
+      const sk = loadSkills(root).get(String(input.skill));
+      if (!sk) { return { text: `No skill named "${input.skill}". Skills: ${[...loadSkills(root).keys()].join(', ') || 'none'}.` }; }
+      const base = path.join(root, sk.relDir);
+      const files = ['SKILL.md', ...['scripts', 'references'].flatMap(d => (fs.existsSync(path.join(base, d)) ? fs.readdirSync(path.join(base, d)).filter(f => fs.statSync(path.join(base, d, f)).isFile()).map(f => `${d}/${f}`) : []))];
+      const users = [...agents.values()].filter(a => a.inLoop && (a.skills.includes(sk.name) || a.goals.some(g => g.skills.includes(sk.name)))).map(a => a.name);
+      return { text: `Skill ${sk.name} (${sk.relDir}). Used by: ${users.join(', ') || 'no agent yet'}.\n\n` + files.map(f => `===== ${f} =====\n${clip(fs.readFileSync(path.join(base, f), 'utf8'), 12000)}`).join('\n\n') };
+    }
+    case 'get_authoring_guide': {
+      const skills = input.topic === 'skills';
+      try { return { text: fs.readFileSync(skills ? host.skillGuidePath ?? path.join(__dirname, '..', 'guides', 'skill-authoring.md') : host.guidePath ?? path.join(__dirname, '..', 'guides', 'authoring.md'), 'utf8') }; }
+      catch { return { text: 'The authoring guide could not be read. Say so, and work from get_agent on an existing agent instead.' }; }
+    }
     case 'propose_remember':
       return fromChange(proposeRemember(root, String(input.agent), String(input.note ?? '')), host);
     case 'propose_forget':
