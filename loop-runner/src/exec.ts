@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { createLocalShellOperations, type BashOperations } from './vendor/pi/tools/bash';
 import { createLocalPowerShellOperations } from './vendor/pi/tools/powershell';
 import { getPowerShellConfig, getShellConfig, POWERSHELL_ARGS, type ShellConfig } from './vendor/pi/utils/shell';
@@ -70,6 +71,11 @@ const ENV_ALLOW = new Set([
  * Environment passed to a child. pi's getShellEnv copies process.env; Harbor Mate does not,
  * so a secret sitting in the extension host environment cannot reach a command or the model.
  */
+/** Directories put in front of PATH for every command, from `harborMate.extraPath`. For a CLI installed where VS Code's own PATH does not reach. */
+let extraPath: string[] = [];
+export function setExtraPath(dirs: string[]): void { extraPath = dirs.map(d => d.trim()).filter(Boolean); }
+export const getExtraPath = (): string[] => extraPath;
+
 export function buildShellEnv(secrets: Record<string, string>, extra?: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -77,6 +83,8 @@ export function buildShellEnv(secrets: Record<string, string>, extra?: Record<st
     const lower = key.toLowerCase();
     if (ENV_ALLOW.has(lower) || lower.startsWith('lc_')) env[key] = value;
   }
+  const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+  if (extraPath.length) { env[pathKey] = [...extraPath, env[pathKey]].filter(Boolean).join(path.delimiter); }
   return {
     ...env,
     ...extra,

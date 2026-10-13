@@ -1,5 +1,6 @@
 import { TriggerServer, handleWebhook, newToken, scanFileTriggers, startTriggerServer } from './triggers';
 import { TEMPLATES, installTemplate } from './templates';
+import { setExtraPath } from './exec';
 import { doctorMarkdown, runDoctor } from './doctor';
 import { healthMarkdown, healthReport } from './health';
 import { DEFAULT_RETENTION, Retention, autoCleanup, describeResult, pausedAgents, planCleanup, runCleanup } from './maintenance';
@@ -113,6 +114,9 @@ export class TeamService {
   /** Settings live under `harborMate`; a value still set under the old `loopRunner` prefix keeps working. */
   private triggerServer?: TriggerServer;
 
+  /** Folders added in front of PATH for every agent command (`harborMate.extraPath`). */
+  applyExtraPath(): void { setExtraPath(this.cfg().get<string[]>('extraPath', []) ?? []); }
+
   /** The secret a webhook caller must present. Created once and kept in SecretStorage, never in the workspace. */
   async triggerToken(): Promise<string> {
     let t = await this.ctx.secrets.get('harborMate.triggerToken');
@@ -214,6 +218,7 @@ export class TeamService {
   /** `user` is true for the Start Team command; only then may Copilot's consent dialog be raised. */
   async start(user = false): Promise<void> {
     if (this.running || this.starting) return;
+    this.applyExtraPath();
     this.starting = true;
     try {
       await this.startInner(user);
@@ -591,6 +596,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     }
   };
   const svc: TeamService = new TeamService(ctx, out, refresh, g => void showGate(root(), g));
+  svc.applyExtraPath();
+  ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => { if (e.affectsConfiguration('harborMate.extraPath')) { svc.applyExtraPath(); } }));
   svc.reload();
 
   const root = () => {
@@ -716,6 +723,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       vscode.window.showInformationMessage('Harbor Mate: a curl example with your token is on the clipboard. Replace <name> with the webhook name from the agent\'s on: webhook:<name>.');
     }),
     vscode.commands.registerCommand('harborMate.runDoctor', async () => {
+      svc.applyExtraPath();
       const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking agents…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json'), triggerPort: Number(svc.cfg().get<number>('triggerPort', 0)) })));
       await showMarkdown('Harbor Mate · Doctor', md);
     }),

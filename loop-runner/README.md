@@ -84,6 +84,10 @@ agent 会记住自己手上还没做完的任务，可以同时有好几个，�
 - 控制台的 Overview 页有 “Open tasks”，每个任务可以点 Close（记为 `dropped`，不再有人持有）；`@mate` 可以用 `list_tasks` 查看
 - 它和 `loop-memory` 不同：`loop-memory` 存知识和被跟踪的对象，任务是“进行中的承诺”，谁持有要随 `handoff` 变化，只有运行时看得见，所以由运行时记账
 
+## 配套 CLI(例如 harbor)
+
+agent 不直接拼 CLI 命令,而是调用 skill 里的薄包装脚本(脚本固定子命令、用 `--json`),这样 policy 只需放行脚本,CLI 升级只改脚本。在 `SKILL.md` 里写 `requires: [harbor]`,Doctor 会检查它是否装好、能否 `--version`。如果终端里能用而 VS Code 找不到(从 Dock 或开始菜单启动时常见),在用户设置里把它所在目录加到 `harborMate.extraPath`。需要让 agent 灵活查询时,给它一个只含只读子命令的 policy,写操作走 `request_approval`。
+
 ## 事件触发:不只靠时钟
 
 目标(goal)可以用 `on:` 被事件叫醒,而不只是按 cron:

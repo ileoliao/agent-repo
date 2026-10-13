@@ -10,6 +10,8 @@ export interface SkillDef {
   description: string;
   relDir: string;
   body: string;
+  /** Programs the skill's scripts call (for example `harbor`). The doctor checks each is installed and reachable. */
+  requires: string[];
 }
 
 /**
@@ -82,7 +84,7 @@ export function loadSkills(root: string): Map<string, SkillDef> {
       const { meta, body } = parseFrontmatter(fs.readFileSync(f, 'utf8'));
       const name = String(meta.name ?? d.name);
       if (!skills.has(name)) {
-        skills.set(name, { name, description: String(meta.description ?? ''), relDir: path.posix.join(base, d.name), body });
+        skills.set(name, { name, description: String(meta.description ?? ''), relDir: path.posix.join(base, d.name), body, requires: list(meta.requires).map(String).filter(r => /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(r)) });
       }
     }
   }
