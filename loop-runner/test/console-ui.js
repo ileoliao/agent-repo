@@ -30,7 +30,7 @@ const fresh = renderBody({ ...base, running: false, agents: [], tab: 'chat', cha
 ok(/Set up your first mate/.test(fresh) && /data-arg="daily-report"/.test(fresh) && /data-cmd="describeAgent"/.test(fresh) && /Copilot/.test(fresh), 'a new workspace offers starters, describing one, and mentions Copilot');
 ok(!/data-cmd="startTeam"/.test(fresh) && !/data-tab=/.test(fresh), 'and no team controls or tabs that would do nothing');
 const stopped = renderBody({ ...base, running: false, pending: [{ id: 'g', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now, previews: [] }] });
-ok(/mates are off/i.test(stopped) && (stopped.match(/data-cmd="startTeam"/g) || []).length === 1, 'stopped with work waiting says so, with a single Start control');
+ok(/nothing will run until you press start mates/i.test(stopped) && (stopped.match(/data-cmd="startTeam"/g) || []).length === 1, 'stopped with work waiting says so, with a single Start control');
 ok(/data-cmd="runDoctor"/.test(renderBody(base)) && /data-cmd="showHealth"/.test(renderBody(base)) && /data-cmd="cleanUp"/.test(renderBody(base)), 'tools are reachable from the console');
 
 console.log('copilot, why-in-the-row, the thread');

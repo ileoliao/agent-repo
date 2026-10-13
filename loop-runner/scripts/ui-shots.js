@@ -34,7 +34,7 @@ function demo() {
   w(R, 'src/app.js', 'x');
   run('c1', 'daily-report', 190, 'done', [{ name: 'run_command', input: { command: 'git log --since="1 day ago" --stat' }, result: '[exit 0]\n12 commits' }, { name: 'write_file', input: { path: '.loop/outbox/daily-report/today.md' }, result: 'Wrote .loop/outbox/daily-report/today.md.' }], 'Report written: 12 commits across 3 areas.', ['.loop/outbox/daily-report/today.md']);
   w(R, '.loop/outbox/daily-report/today.md', '# Daily report\n\n- Payments: retry logic reworked (3 commits)\n- Docs: onboarding guide updated\n');
-  run('c2', 'release-watch', 60, 'nothing_to_do', [{ name: 'run_command', input: { command: 'harbor status --json' } }], 'All releases healthy.');
+  run('c2', 'release-watch', 60, 'nothing_to_do', [{ name: 'run_command', input: { command: 'harbor status --json' } }, { name: 'read_file', input: { path: 'README.md' } }, { name: 'read_file', input: { path: 'docs/ops.md' } }], 'All releases healthy.');
   run('c3', 'release-watch', 30, 'blocked', [{ name: 'run_command', input: { command: 'harbor releases status --json' }, decision: 'deny', result: 'REFUSED by policy (no allow rule matched). Retrying will fail the same way.' }], 'Could not check releases: harbor is not on the allowed commands.');
   run('c4', 'daily-report', 3, null, [{ name: 'run_command', input: { command: 'git log --since="1 day ago" --stat' }, result: '[exit 0]' }, { name: 'read_file', input: { path: 'src/app.js' } }], '');
   q('c1', 'daily-report', 'done', 'Report written', 190); q('c2', 'release-watch', 'nothing_to_do', 'healthy', 60); q('c3', 'release-watch', 'blocked', 'refused', 30);
