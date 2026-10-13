@@ -108,6 +108,21 @@ console.log('pause and cancel');
   fs.rmSync(R, { recursive: true, force: true });
 }
 
+console.log('damaged state files');
+{
+  const Q = require(`${OUT}/queue.js`);
+  const { R } = world();
+  fs.writeFileSync(path.join(R, '.loop/queue/a/broken.json'), '{"id": "half');
+  fs.writeFileSync(path.join(R, '.loop/gates/bad.json'), 'not json');
+  const ids = Q.pending(R, 'a').map(i => i.id);
+  ok(ids.length === 1 && ids[0] === 'queued', 'a torn queue file is skipped and the rest of the queue still reads');
+  ok(!exists(R, '.loop/queue/a/broken.json') && fs.readdirSync(path.join(R, '.loop/corrupt')).some(f => f.endsWith('broken.json')), 'the damaged file is kept under .loop/corrupt for inspection');
+  ok(Q.listGates(R).every(g => g.id) && !exists(R, '.loop/gates/bad.json'), 'a damaged gate does not break the inbox');
+  Q.enqueue(R, { id: 'fresh', agent: 'a', task: 't', from: 'user', chainId: 'cf', hop: 0, createdAt: new Date().toISOString() });
+  ok(Q.pending(R, 'a').some(i => i.id === 'fresh') && !fs.readdirSync(path.join(R, '.loop/queue/a')).some(f => f.endsWith('.tmp')), 'writes leave no temporary file behind');
+  fs.rmSync(R, { recursive: true, force: true });
+}
+
 console.log('the chat tools');
 (async () => {
   const { R } = world();
