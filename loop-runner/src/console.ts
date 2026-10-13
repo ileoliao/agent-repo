@@ -4,7 +4,7 @@ import { sha256Of } from './gates';
 import * as path from 'path';
 import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
-import { Active, brief, clip, firstLine, isActive } from './textutil';
+import { refusalOf, Active, brief, clip, firstLine, isActive } from './textutil';
 import { Task, listTasks } from './tasks';
 import { AvatarState, ChatState, ThreadEvent, ThreadStep, Tone, buildThread, glance } from './thread';
 
@@ -16,6 +16,8 @@ export interface Step {
   detail?: string;
   /** false for REFUSED / ERROR results. */
   ok: boolean;
+  /** A command policy refused, and the rule that did: `no allow rule matched` can be allowed with one click; a deny rule cannot. */
+  refused?: { command: string; rule: string };
 }
 
 export interface ConsoleRun extends RunSummary { steps: Step[] }
@@ -36,7 +38,7 @@ function previewsOf(root: string, g: Gate): GateView['previews'] {
 }
 
 export interface ChatModel {
-  agents: { name: string; description: string; state: ChatState; avatar: AvatarState; line: string; at?: string; pendingMessages: number; needsYou: number }[];
+  agents: { name: string; description: string; file?: string; triggers?: AgentRow['triggers']; paused?: boolean; state: ChatState; avatar: AvatarState; line: string; at?: string; pendingMessages: number; needsYou: number }[];
   selected?: string;
   events: ThreadEvent[];
   /** Earlier events that are not shown. */
@@ -52,6 +54,8 @@ export interface ConsoleModel {
   pending: GateView[];
   /** Tasks agents have in progress (state open). Absent in older callers. */
   tasks?: Task[];
+  /** The last questions and approvals the human settled: an audit trail visible where it is needed. */
+  decisions?: { id: string; kind: Gate['kind']; agent: string; title: string; status: Gate['status']; at: string }[];
   agents: AgentRow[];
   runs: ConsoleRun[];
   /** Which page is showing. Chat is the default. */
@@ -60,6 +64,8 @@ export interface ConsoleModel {
   chat?: ChatModel;
   /** ISO time this view was built. */
   updatedAt: string;
+  /** How many Copilot models VS Code offers right now; undefined while unknown. 0 means agents cannot run. */
+  copilot?: number;
   /** Page-level message: no workspace, or the data could not be read. */
   note?: { tone: 'bad' | 'info'; text: string };
 }
@@ -80,7 +86,8 @@ export function stepsOf(file: string): Step[] {
     } else if (e.type === 'tool') {
       const result = String(e.result ?? '');
       const ok = !/^(REFUSED|ERROR|Not sent)/.test(result);
-      out.push({ step, kind: e.gateId ? 'gate' : 'tool', title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`, detail: clip(firstLine(result), 160) || undefined, ok });
+      const refusal = refusalOf(e.name, e.input, result);
+      out.push({ step, kind: e.gateId ? 'gate' : 'tool', title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`, detail: clip(firstLine(result), 160) || undefined, ok, ...(refusal ? { refused: refusal } : {}) });
     } else if (e.type === 'end') {
       out.push({ step, kind: 'end', title: `${e.status ?? 'done'}${e.summary ? ` · ${clip(String(e.summary), 140)}` : ''}`, ok: e.status === 'done' || e.status === undefined });
     } else if (e.type === 'error') {
@@ -98,7 +105,7 @@ export function consoleModel(root: string, state: { running: boolean; active?: A
   const pending = listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) }));
   let chat: ChatModel | undefined;
   if (tab === 'chat') {
-    const rows = agents.map(a => ({ name: a.name, description: a.description, ...glance(root, a.name, a.description, state.active, now) }));
+    const rows = agents.map(a => ({ name: a.name, description: a.description, file: a.file, triggers: a.triggers, paused: a.paused, ...glance(root, a.name, a.description, state.active, now) }));
     const selected = rows.find(r => r.name === state.agent)?.name ?? rows.find(r => r.needsYou)?.name ?? rows.find(r => r.state === 'running')?.name ?? rows[0]?.name;
     const th = selected ? buildThread(root, selected) : { events: [], hidden: 0 };
     chat = { agents: rows, selected, events: th.events, hidden: th.hidden, gates: pending.filter(g => g.agent === selected) };
@@ -111,6 +118,7 @@ export function consoleModel(root: string, state: { running: boolean; active?: A
     next: nw ? { agent: nw.agent, at: nw.at.toISOString() } : undefined,
     pending,
     tasks: listTasks(root).filter(t => t.state === 'open').slice(0, 30),
+    decisions: listGates(root).filter(g => g.status !== 'pending').map(g => ({ id: g.id, kind: g.kind, agent: g.agent, title: g.title, status: g.status, at: g.resolvedAt ?? g.createdAt })).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 6),
     agents,
     // A run whose last event says "running" but that no live worker owns (team stopped, or another agent is active)
     // was cut off, for example when VS Code closed. Say so instead of showing it as running forever.
@@ -177,7 +185,16 @@ const STATUS: Record<string, { label: string; tone: string; ic: string }> = {
   retry: { label: 'Will retry', tone: 'warn', ic: 'clock' }, blocked: { label: 'Blocked', tone: 'warn', ic: 'alert' },
   max_steps: { label: 'Step limit', tone: 'warn', ic: 'alert' }, stalled: { label: 'Stalled', tone: 'bad', ic: 'alert' },
   interrupted: { label: 'Interrupted', tone: 'warn', ic: 'alert' },
-  nothing_to_do: { label: 'Nothing to do', tone: 'mute', ic: 'check' }, open: { label: 'Not finished', tone: 'info', ic: 'clock' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
+  nothing_to_do: { label: 'Checked, nothing found', tone: 'mute', ic: 'check' }, open: { label: 'Not finished', tone: 'info', ic: 'clock' }, cancelled: { label: 'Cancelled', tone: 'mute', ic: 'stop' }
+};
+/** Why a run ended this way and what to do next, in words a first-time user can act on. */
+const STATUS_HINT: Record<string, string> = {
+  blocked: 'It could not go on. Open the steps to see what it was missing, then tell it in Chat.',
+  error: 'Something failed while it ran. Open the steps to see what; “Check mates” finds setup problems.',
+  stalled: 'It went in circles or ran out of time. Give it a narrower task, or tell it what to try.',
+  max_steps: 'It reached its step limit before finishing. Narrow the task, or raise its step limit.',
+  interrupted: 'VS Code closed, or the mates were stopped, while this ran. Start the mates and it is picked up again.',
+  retry: 'A temporary limit stopped it (rate or quota). It tries again by itself.'
 };
 /** Statuses the "Problems" filter shows. */
 const PROBLEMS = new Set(['error', 'stalled', 'blocked', 'max_steps', 'interrupted', 'retry']);
@@ -188,7 +205,7 @@ const copy = (text: string, label: string) => `<button class="btn ghost" data-co
 function gateCard(g: GateView): string {
   const isQ = g.kind === 'question';
   const head = `<div class="card-head">${icon(isQ ? 'help' : 'bell', 'lead warn')}<div class="grow"><div class="card-title">${esc(g.title)}</div>
-    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span></div></div></div>`;
+    <div class="meta"><span class="tag">${esc(g.agent)}</span><span title="Asked in run ${esc(String(g.chainId))}. Its steps are under Overview, Recent runs.">${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span></div></div></div>`;
   const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
   const previews = g.previews ?? [];
   const missing = previews.filter(p => p.sha256 === 'missing').map(p => p.path);
@@ -206,12 +223,29 @@ function gateCard(g: GateView): string {
   const notes = [
     missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '',
     previews.length && !missing.length ? `<div class="note">Your approval covers ${truncated ? 'the whole of each file (only the first part of a long one is shown above; open it to read the rest)' : 'the file contents shown above'}. If a file changes before it runs, nothing runs and you review again.</div>` : '',
-    '<div class="note">Runs in the workspace folder, not in a sandbox.</div>'
+    '<div class="note">Runs as your user account in the workspace folder, not in a sandbox. Only the secrets you gave this mate are available to it.</div>'
   ].join('');
   return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${body}
     <div class="label">This exact command runs when you approve</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${files}${notes}
     <div class="row"><textarea rows="1" placeholder="Reason, if you reject (optional)" aria-label="Feedback for the agent" data-input="${esc(g.id)}"></textarea>
-    ${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div></section>`;
+    ${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div></section>`;
+}
+
+/** For each command policy refused: say which rule did it, and offer the one-click allow only when no deny rule is involved. */
+function refusalsOf(r: { agent: string; steps: { refused?: { command: string; rule: string } }[] }, compact = false): string {
+  const seen = new Set<string>();
+  const rows: string[] = [];
+  for (const s of r.steps) {
+    if (!s.refused || seen.has(s.refused.command)) { continue; }
+    seen.add(s.refused.command);
+    if (rows.length >= 3) { break; }
+    const { command, rule } = s.refused;
+    const open = `<a class="link" href="#" data-open=".loop/policy.json">policy file</a>`;
+    rows.push(rule === 'no allow rule matched'
+      ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> is not on ${esc(r.agent)}'s allowed list.${compact ? '' : ` Allowing adds this exact command for ${esc(r.agent)} only; anything else is still checked.`} <a class="link" href="#" data-open=".loop/policy.json">Policy file</a></span>${btn('Allow it', `data-allow-agent="${esc(r.agent)}" data-allow-cmd="${esc(command)}" title="Adds this exact command for ${esc(r.agent)} only. Anything else it tries is still checked against the policy."`, 'secondary', 'check')}</div>`
+      : `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> matches the deny rule <code>${esc(clip(rule, 80))}</code>. A deny rule is a limit you set on purpose, so it is not lifted with one click. Open the ${open} to change it.</span></div>`);
+  }
+  return rows.join('');
 }
 
 function runCard(r: ConsoleRun): string {
@@ -224,8 +258,8 @@ function runCard(r: ConsoleRun): string {
   const dur = r.status === 'running' ? span(r.started, new Date().toISOString()) : span(r.started, r.updated);
   const live = r.status === 'running';
   return `<details class="run" ${live ? 'open' : ''} data-k="r-${esc(r.chainId)}" data-status="${esc(r.status)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
-    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span></summary>
-    <div class="run-body">${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
+    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && STATUS_HINT[r.status] ? `<span class="run-why">${esc(STATUS_HINT[r.status])}</span>` : ''}</summary>
+    <div class="run-body">${refusalsOf(r)}${STATUS_HINT[r.status] ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(STATUS_HINT[r.status])}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
     <div class="label">What happened</div><ol class="timeline">${shown || '<li class="muted">No steps recorded.</li>'}</ol>
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
@@ -234,23 +268,56 @@ function taskCard(t: Task): string {
   const nexts = t.holders.map(h => `<dt>${esc(h)}</dt><dd>${esc(t.next?.[h] ?? '(no next step recorded)')}</dd>`).join('');
   return `<div class="card" data-task="${esc(t.id)}"><div class="card-head">${icon('clock', 'lead')}<div class="grow"><div class="card-title">${esc(t.title)}</div>
     <div class="meta">${t.holders.map(h => `<span class="tag">${esc(h)}</span>`).join('')}<span class="mono">${esc(t.id)}</span><span>${stamp(t.updatedAt, ago(t.updatedAt))}</span></div></div>
-    ${btn('Close', `data-close-task="${esc(t.id)}" title="Drop this task: nobody holds it any more"`, 'secondary', 'x')}</div>
+    ${btn('Drop task', `data-close-task="${esc(t.id)}" title="Stop tracking this task. Agents holding it let go of it; nothing is deleted."`, 'secondary', 'x')}</div>
     ${nexts ? `<dl class="kv">${nexts}</dl>` : ''}</div>`;
 }
 
-function agentRow(a: AgentRow): string {
-  const label = a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
-  const tone = a.state === 'running' ? 'info' : a.state === 'waiting' ? 'warn' : 'mute';
+/** A cron expression in words, for the common shapes; anything else is shown as written. */
+export function plainCron(c: string): string {
+  const p = c.trim().split(/\s+/);
+  if (p.length !== 5) { return c; }
+  const [mi, h, dom, mon, dow] = p;
+  const hhmm = /^\d+$/.test(mi) && /^\d+$/.test(h) ? `${h.padStart(2, '0')}:${mi.padStart(2, '0')}` : undefined;
+  const every = /^\*\/(\d+)$/.exec(mi);
+  if (every && h === '*' && dom === '*' && mon === '*' && dow === '*') { return `every ${every[1]} minutes`; }
+  if (mi === '*' && h === '*' && dom === '*' && mon === '*' && dow === '*') { return 'every minute'; }
+  if (hhmm && dom === '*' && mon === '*') {
+    if (dow === '*') { return `every day at ${hhmm}`; }
+    if (dow === '1-5') { return `weekdays at ${hhmm}`; }
+  }
+  if (/^\d+$/.test(mi) && h === '*' && dom === '*' && mon === '*' && dow === '*') { return 'every hour'; }
+  return c;
+}
+
+function agentRow(a: AgentRow, copilotOff = false): string {
+  const label = a.paused ? 'Paused' : a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
+  const tone = a.paused ? 'mute' : a.state === 'running' ? 'info' : a.state === 'waiting' ? 'warn' : 'mute';
   const lw = a.lastWake;
   const last = !lw ? '<span class="muted">none yet</span>'
     : lw.capped !== undefined ? `daily cap reached (${lw.capped}) <span class="muted">${stamp(lw.at, ago(lw.at))}</span>`
     : `${lw.wake ? 'found work' : 'nothing to do'} <span class="muted">${stamp(lw.at, ago(lw.at))}</span>`;
-  return `<div class="agent"><div class="agent-top">${icon('bot', 'lead')}<a class="agent-name" href="#" data-open="${esc(a.file)}">${esc(a.name)}</a>
-    <span class="chip ${tone}">${icon(a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
-    <dl class="kv"><dt>Model</dt><dd class="mono">${esc(a.model ?? 'default')}</dd>
-    <dt>Next wake</dt><dd>${a.next ? stamp(a.next.toISOString(), when(a.next.toISOString())) : '<span class="muted">manual only</span>'}</dd>
-    <dt>Last check</dt><dd>${last}</dd></dl></div>`;
+  const trig = (a.triggers ?? []).map(t => t.kind === 'schedule' ? plainCron(t.text) : t.kind === 'webhook' ? `when webhook “${t.text}” is called` : `when a new file appears in ${t.text}`);
+  const icoFor = (k: string) => (k === 'schedule' ? 'clock' : k === 'webhook' ? 'send' : 'file');
+  const runs = (a.triggers ?? []).length ? `<dt>Runs</dt><dd class="trigs">${(a.triggers ?? []).map((t, i) => `<span class="trig">${icon(icoFor(t.kind))}${esc(trig[i])}</span>`).join('')}</dd>` : '';
+  const pauseBtn = a.paused ? btn('Resume', `data-cmd="resumeAgent" data-arg="${esc(a.name)}" title="Let ${esc(a.name)} wake on its schedule and triggers again"`, 'secondary', 'play') : (a.triggers ?? []).length ? btn('Pause', `data-cmd="pauseAgent" data-arg="${esc(a.name)}" title="Skip ${esc(a.name)}'s scheduled and event wakes until you resume it. A task you give it still runs."`, 'secondary', 'stop') : '';
+  return `<div class="agent ${a.paused ? 'paused' : ''}"><div class="agent-top">${avatar(a.name, a.paused ? 'idle' : a.state === 'running' ? 'working' : a.state === 'waiting' ? 'waiting' : 'idle', 26)}<a class="agent-name" href="#" data-open="${esc(a.file)}" title="Open ${esc(a.file)}">${esc(a.name)}</a>
+    <span class="chip ${tone}">${icon(a.paused ? 'stop' : a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
+    <dl class="kv">${runs}
+    <dt>Next</dt><dd>${a.paused ? '<span class="muted">paused</span>' : a.next ? stamp(a.next.toISOString(), when(a.next.toISOString())) : '<span class="muted">when you give it a task or a trigger fires</span>'}</dd>
+    ${lw ? `<dt>Last check</dt><dd>${last}</dd>` : ''}${a.model ? `<dt>Model</dt><dd class="mono">${esc(a.model)}</dd>` : ''}</dl>
+    <div class="agent-actions">${btn('Chat', `data-agent="${esc(a.name)}" title="Open the conversation with ${esc(a.name)}"`, 'secondary', 'send')}${btn('Run now', `data-cmd="runAgent" data-arg="${esc(a.name)}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot first"' : ` title="Give ${esc(a.name)} a task now"`}`, 'secondary', 'send')}${pauseBtn}${btn('Edit file', `data-open="${esc(a.file)}" title="Open ${esc(a.file)}: its instructions, schedule and skills"`, 'secondary', 'file')}</div></div>`;
 }
+
+
+/** What a brand-new user sees: a way forward, not a note about config files. */
+const getStartedCard = (off = false) => `<div class="start-wrap"><div class="start-head">${icon('bot', 'big')}<div class="empty-title">Set up your first mate</div>
+  <div class="muted">A mate does a job for you on its own and only stops to ask when it needs you.</div></div>
+  <ol class="steps"><li><b>Add</b> a starter below, or say what you want.</li><li><b>Check</b> it: we confirm it can run, before it ever does.</li><li><b>Start</b> the mates <button class="btn secondary" disabled title="Becomes available once you have a mate">Start mates</button> <span class="muted">(appears at the top once you have a mate)</span> You decide anything risky; they never do it alone.</li></ol>
+  <div class="starters">
+    <div class="starter"><div class="starter-title">Daily report</div><div class="muted">Every weekday at 09:00 it reads yesterday's commits and writes a one-page summary: what changed, and what is risky.</div><div class="muted tiny">Writes <code>.loop/outbox/daily-report/&lt;date&gt;.md</code>. Reads only; needs no setup.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="daily-report"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
+    <div class="starter"><div class="starter-title">Folder watch</div><div class="muted">Every 10 minutes it checks <code>drop/</code> for new files, at no model cost, and summarises each one when it finds some.</div><div class="muted tiny">Shows how a cheap pre-check works. Writes summaries to <code>.loop/outbox/folder-watch/</code>.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="folder-watch"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
+    <div class="starter"><div class="starter-title">Your own</div><div class="muted">Tell the <code>@mate</code> assistant in Chat what you want in plain words. It builds the agent and checks it can run.</div><div class="muted tiny">For example: watch my build every hour and ask me before it re-runs anything.</div>${btn('Describe what you want', 'data-cmd="describeAgent"', 'secondary', 'send')}</div>
+  </div>${off ? '<div class="alert warn" role="alert">' + icon('alert') + '<span>The Add buttons are off because GitHub Copilot is not signed in. Sign in to Copilot in VS Code (Accounts menu, bottom left), then they work.</span></div>' : ''}<div class="muted tiny center">When a mate needs you, it appears here with the exact command it wants to run, and VS Code shows a notification. Agents use your GitHub Copilot models, so Copilot must be signed in.</div></div>`;
 
 /** `hint` is trusted markup: callers pass only fixed strings. */
 const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
@@ -318,9 +385,11 @@ function threadEvent(e: ThreadEvent, agent: string): string {
     const inner = e.fold.map(f => threadEvent(f, agent)).join('');
     const label = e.stepCount ? `Show ${plural(e.stepCount, 'step', 'steps')}` : 'Show details';
     const fold = inner ? `<details class="rfold" data-k="rf-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${esc(label)}</span></summary><div class="rfold-body">${inner}</div></details>` : '';
+    const foldSteps = e.fold.flatMap(f => (f.kind === 'steps' ? f.steps : []));
+    const refusals = refusalsOf({ agent, steps: foldSteps }, true);
     const pr = e.problems, probs = [pr.refused ? `${pr.refused} refused` : '', pr.error ? `${pr.error} error${pr.error === 1 ? '' : 's'}` : '', pr.failed ? `${pr.failed} failed` : ''].filter(Boolean).join(' · ');
     if (e.status === 'nothing_to_do') {
-      return `<div class="rquiet" data-result="nothing_to_do"><div class="rtop"><span class="chip mute">${esc(e.label)}</span>${e.detail ? `<span class="rgoal ell" title="${esc(e.detail)}">${esc(e.detail)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${probs ? `<div class="rprob">${esc(probs)}</div>` : ''}${fold}</div>`;
+      return `<div class="rquiet" data-result="nothing_to_do"><div class="rtop"><span class="chip mute">${esc(e.label)}</span>${e.detail ? `<span class="rgoal ell" title="${esc(e.detail)}">${esc(e.detail)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${probs ? `<div class="rprob">${esc(probs)}</div>` : ''}${refusals}${fold}</div>`;
     }
     const row = (d: { path: string; preview?: string }) => { const i = d.path.lastIndexOf('/'); return `<a class="deliv" href="#" data-open="${esc(d.path)}" title="${esc(d.path)}">${icon('file')}<span class="dtext"><span class="dline"><span class="dname">${esc(d.path.slice(i + 1))}</span>${i > 0 ? `<span class="ddir ell">${esc(d.path.slice(0, i))}</span>` : ''}</span>${d.preview ? `<span class="dprev ell">${esc(d.preview)}</span>` : ''}</span></a>`; };
     const sup = e.supporting.length ? `<details class="rsup" data-k="rs-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${plural(e.supporting.length, 'supporting file', 'supporting files')}</span></summary><div class="rfiles">${e.supporting.map(o => `<a class="filechip" href="#" data-open="${esc(o)}" title="${esc(o)}">${icon('file')}<span class="ell">${esc(o)}</span></a>`).join('')}</div></details>` : '';
@@ -330,7 +399,7 @@ function threadEvent(e: ThreadEvent, agent: string): string {
       + (e.detail ? `<div class="rsum wrap-text">${esc(e.detail)}</div>` : '')
       + (e.next ? line('Next:', e.next) : '') + (e.handoff ? line(`Handed to ${e.handoff.to}:`, e.handoff.task) : '')
       + (e.approvals ?? []).map(a => line('Approved:', a)).join('')
-      + (files ? `<div class="rdelivs">${files}</div>` : '') + sup + (probs ? `<div class="rprob">${esc(probs)}</div>` : '') + fold + '</div>';
+      + (files ? `<div class="rdelivs">${files}</div>` : '') + sup + (probs ? `<div class="rprob">${esc(probs)}</div>` : '') + refusals + fold + '</div>';
   }
   const outs = (e.outputs ?? []).map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
   return `<div class="sline"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.detail ? `<span class="sdetail wrap-text">${esc(e.detail)}</span>` : ''}${outs}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`;
@@ -340,8 +409,8 @@ function composerHint(name: string, state: ChatState, running: boolean): string 
   switch (state) {
     case 'running': return `${name} is working. It reads this at its next step, and can change course.`;
     case 'waiting': return `${name} is waiting for your answer above. It reads this when it continues.`;
-    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The team is stopped.'}`;
-    default: return running ? `${name} is idle. This starts a new run.` : `The team is stopped. This is saved, and starts a run when you start the team.`;
+    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The mates are off.'}`;
+    default: return running ? `${name} is idle. This starts a new run.` : `The mates are off. This is saved, and starts a run when you start the mates.`;
   }
 }
 
@@ -364,32 +433,68 @@ function avatar(name: string, state: AvatarState, size = 38): string {
   return `<span class="av ${state}" style="--h:${hue};--sz:${size}px" aria-hidden="true"><svg viewBox="0 0 40 40" width="${size}" height="${size}"><g fill="hsl(${hue} 55% 42%)">${body}</g>${eye(14)}${eye(26)}</svg></span>`;
 }
 
+/** Today, Yesterday, or the weekday and date. */
+function dayLabel(d: Date, now = new Date()): string {
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(now) - day(d)) / 86_400_000);
+  return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+/** What wakes this mate, in words: it is the first thing a person wants to know about it. */
+function chatFacts(sel: ChatModel['agents'][number]): string {
+  const t = (sel.triggers ?? []).map(x => x.kind === 'schedule' ? plainCron(x.text) : x.kind === 'webhook' ? `webhook “${x.text}”` : `new files in ${x.text}`);
+  return `<div class="muted ch-facts">${sel.paused ? '<b>Paused</b> · ' : ''}${t.length ? `Runs ${esc(t.join(' · '))}` : 'Runs only when you give it a task'}</div>`;
+}
+
+/** The few things a person does to a mate, one click from its conversation. */
+function chatActions(sel: ChatModel['agents'][number], copilotOff: boolean): string {
+  const n = esc(sel.name);
+  const btns = [
+    btn('Run now', `data-cmd="runAgent" data-arg="${n}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot first"' : ` title="Give ${n} a task now"`}`, 'secondary', 'send'),
+    (sel.triggers ?? []).length || sel.paused ? (sel.paused ? btn('Resume', `data-cmd="resumeAgent" data-arg="${n}" title="Wake ${n} on its schedule and triggers again"`, 'secondary', 'play') : btn('Pause', `data-cmd="pauseAgent" data-arg="${n}" title="Skip ${n}'s scheduled and event wakes. A task you give it still runs."`, 'secondary', 'stop')) : '',
+    sel.file ? btn('Edit file', `data-open="${esc(sel.file)}" title="Open ${esc(sel.file)}: its instructions, schedule and skills"`, 'secondary', 'file') : ''
+  ].join('');
+  return `<div class="ch-actions" role="group" aria-label="Actions for ${n}">${btns}</div>`;
+}
+
 function renderChat(m: ConsoleModel): string {
   const c = m.chat!;
-  if (!c.agents.length) { return empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.'); }
+  if (!c.agents.length) { return getStartedCard(m.copilot === 0); }
   const sel = c.agents.find(a => a.name === c.selected)!;
   const list = c.agents.map(a => `<button class="roster-row ${a.name === sel.name ? 'on' : ''}" data-agent="${esc(a.name)}" aria-pressed="${a.name === sel.name}" title="${esc(a.name)} is ${AVATAR_TITLE[a.avatar]}: ${esc(a.line)}">${avatar(a.name, a.avatar)}`
     + `<span class="rr-main"><span class="rr-top"><span class="rr-name">${esc(a.name)}</span>${a.at ? `<span class="muted rr-time">${stamp(a.at, whenShort(a.at))}</span>` : ''}</span><span class="rr-line ${a.avatar === 'waiting' ? 'warn' : a.avatar === 'blocked' ? 'bad' : 'muted'}">${esc(a.line)}</span></span>`
     + `${a.needsYou ? `<span class="count warn" title="needs you">${a.needsYou}</span>` : a.pendingMessages ? '<span class="unread" title="your message has not been read yet"></span>' : ''}</button>`).join('');
-  const events = c.events.map(e => threadEvent(e, sel.name)).join('');
-  const gates = c.gates.length ? `<div class="thread-gates">${c.gates.map(gateCard).join('')}</div>` : '';
+  let lastDay = '';
+  const events = c.events.map(e => {
+    const ts = 'ts' in e ? String((e as { ts?: string }).ts ?? '') : '';
+    const d = ts ? new Date(ts) : undefined;
+    const key = d && !isNaN(d.getTime()) ? d.toDateString() : '';
+    const sep = key && key !== lastDay ? `<div class="daysep"><span>${esc(dayLabel(d!))}</span></div>` : '';
+    if (key) { lastDay = key; }
+    const tone = e.kind === 'result' ? e.tone : undefined;
+    const av: AvatarState = tone === 'ok' ? 'done' : tone === 'warn' || tone === 'bad' ? 'blocked' : 'idle';
+    return sep + (e.kind === 'result' ? `<div class="turn"><span class="turn-av">${avatar(sel.name, av, 26)}</span>${threadEvent(e, sel.name)}</div>` : threadEvent(e, sel.name));
+  }).join('');
+  const liveRun = m.runs.find(r => r.agent === sel.name && r.status === 'running');
+  const working = sel.state === 'running' ? `<div class="turn working" role="status"><span class="turn-av">${avatar(sel.name, 'working', 26)}</span><div class="working-text">${icon('spin', 'spin')}<span><b>${esc(sel.name)}</b> is working: ${esc(sel.line)}${liveRun ? ` <span class="muted">· ${esc(span(liveRun.started, new Date().toISOString()))} · step ${liveRun.step}</span>` : ''}</span></div></div>` : '';
+  const gates = c.gates.length ? `<div class="thread-gates"><div class="turn gates-head"><span class="turn-av">${avatar(sel.name, 'waiting', 26)}</span><div class="gh-text"><b>${esc(sel.name)}</b> ${c.gates.length === 1 ? (c.gates[0].kind === 'approval' ? 'asks for your approval' : 'has a question for you') : `needs ${c.gates.length} decisions from you`}</div></div>${c.gates.map(gateCard).join('')}</div>` : '';
   const empty0 = !c.events.length && !c.gates.length ? empty('send', `Nothing yet with ${sel.name}`, 'Say what you want below. If it is idle, this starts a run; if it is working, it will read it at its next step.') : '';
   const running = sel.state === 'running';
   return `<div class="chat">
     <nav class="roster" aria-label="Agents">${list}</nav>
     <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
-      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(STATE_LABEL[sel.state])} · ${esc(sel.line)}</div></div></header>
-      <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${gates}</div>
+      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(STATE_LABEL[sel.state])} · ${esc(sel.line)}</div>${chatFacts(sel)}</div>${chatActions(sel, m.copilot === 0)}</header>
+      <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${c.gates.length ? `<button class="pinned" data-jump=".thread-gates" title="Scroll to what ${esc(sel.name)} is asking">${icon('bell')}<span><b>${esc(sel.name)}</b> is waiting for you: ${esc(clip(c.gates[0].title, 60))}${c.gates.length > 1 ? ` and ${c.gates.length - 1} more` : ''}</span><span class="pin-go">Jump</span></button>` : ''}${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${working}${gates}</div>
       <div class="composer ${running ? 'running' : ''}"><div class="muted hint">${esc(composerHint(sel.name, sel.state, m.running))}</div>
-        <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}" aria-label="Message ${esc(sel.name)}" placeholder="Message ${esc(sel.name)}…"></textarea>`
+        <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}" aria-label="Message ${esc(sel.name)}" placeholder="${esc(c.gates.some(g => g.kind === 'approval') ? `Message ${sel.name}. To decide the approval, use the buttons above.` : c.gates.length ? `Answer the question above, or message ${sel.name}…` : `Message ${sel.name}…`)}"></textarea>`
     + `<button class="roundbtn stop" data-chat-cancel="${esc(sel.name)}" title="Stop this run" aria-label="Stop this run">${icon('stop')}<span class="stoplabel">Stop</span></button>`
     + `<button class="roundbtn send" data-chat-send="${esc(sel.name)}" title="Send" aria-label="Send">${icon('up')}</button></div>
-        <div class="muted tiny">Enter sends · Shift+Enter new line · @name writes to another agent · /stop ends the current run</div></div>
+        <div class="chips-row" role="group" aria-label="Shortcuts"><span class="muted tiny">Try</span>${!running && sel.state !== 'waiting' ? `<button class="chip-btn" data-insert="What did you do last, and what is next?" title="Ask for a quick status">ask for status</button>` : ''}${c.agents.filter(x => x.name !== sel.name).slice(0, 2).map(x => `<button class="chip-btn" data-insert="@${esc(x.name)} " title="Write to ${esc(x.name)} from here">@${esc(x.name)}</button>`).join('')}${running ? '<button class="chip-btn" data-insert="/stop" title="End the current run">/stop</button>' : ''}<span class="muted tiny">Enter sends · Shift+Enter new line</span></div></div>
     </section></div>`;
 }
 
 function renderTabs(m: ConsoleModel): string {
-  const tab = (id: string, label: string, extra = '') => `<button role="tab" class="tab ${m.tab === id ? 'on' : ''}" aria-selected="${m.tab === id}" data-tab="${id}">${label}${extra}</button>`;
+  const tab = (id: string, label: string, extra = '') => `<button role="tab" class="tab ${m.tab === id ? 'on' : ''}" aria-selected="${m.tab === id}" data-tab="${id}" title="${id === 'chat' ? 'Talk to a mate, answer it, see what it did' : 'Everything at a glance: what needs you, tasks, runs and all mates'}"><span class="tab-main">${label}${extra}</span><span class="tab-sub">${id === 'chat' ? 'talk to a mate' : 'all mates and runs'}</span></button>`;
   const needs = m.pending.length ? `<span class="count warn" title="needs you">${m.pending.length}</span>` : '';
   return `<nav class="tabs" role="tablist">${tab('chat', 'Chat', needs)}${tab('overview', 'Overview')}</nav>`;
 }
@@ -397,40 +502,52 @@ function renderTabs(m: ConsoleModel): string {
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
   const live = m.runs.find(r => r.status === 'running' && isActive(m.active, r.agent));
-  const state = !m.running ? `<span class="state off">${icon('stop')}Team stopped</span>`
+  const state = !m.running ? `<span class="state off">${icon('stop')}Mates off</span>`
     : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
-    : `<span class="state idle">${icon('clock')}Team on · idle${m.next ? ` · next wake ${esc(when(m.next.at))}` : ''}</span>`;
-  const actions = (m.running ? btn('Stop team', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
-    + btn('Give a task', 'data-cmd="runAgent"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult"', 'secondary', 'file');
+    : `<span class="state idle">${icon('clock')}Mates on · ${m.pending.length ? `${m.pending.length} waiting on you` : 'idle'}${m.next ? ` · next run ${esc(when(m.next.at))}` : ''}</span>`;
+  // A brand-new workspace gets only the way forward: no tabs, no team controls that would do nothing.
+  const hasAgents = m.agents.length > 0 || m.runs.length > 0 || m.pending.length > 0 || (m.tasks ?? []).length > 0;
+  const actions = !hasAgents ? '' : (m.running ? btn('Stop mates', 'data-cmd="stopTeam" title="Stop every mate. Work in progress is kept and picked up when you start again."', 'secondary', 'stop') : btn('Start mates', 'data-cmd="startTeam" title="Start every mate: schedules and triggers begin, queued work runs"', 'primary', 'play'))
+    + btn('Give a mate a task', 'data-cmd="runAgent" title="Pick a mate and give it a one-off task now"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult" title="Open the newest file any mate wrote"', 'secondary', 'file');
   const last = m.runs.find(r => r.status !== 'running');
   const tiles = [
-    { k: 'Needs you', v: String(m.pending.length), tone: m.pending.length ? 'warn' : '', sub: m.pending.length ? 'waiting for your decision' : 'all clear' },
-    { k: 'Agents', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
-    { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}` : 'no runs yet' },
-    { k: 'Next wake', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
+    { k: 'Mates', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
+    { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last && last.status !== 'interrupted' ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}${STATUS_HINT[last.status] && PROBLEMS.has(last.status) ? ' · open it below' : ''}` : 'no runs yet' },
+    { k: 'Next run', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
   ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
   const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
+  const DECIDED: Record<string, string> = { executed: 'Approved, ran', failed: 'Approved, failed', rejected: 'Rejected', answered: 'Answered' };
+  const decisions = (m.decisions ?? []).length ? `<details class="decisions"><summary>${icon('chevron', 'chev')}<span>Recent decisions</span><span class="count">${m.decisions!.length}</span><span class="muted ell grow">Last: ${esc(DECIDED[m.decisions![0].status] ?? m.decisions![0].status)} · ${esc(m.decisions![0].title)}</span></summary><ul>${m.decisions!.map(d => `<li><span class="chip ${d.status === 'failed' ? 'bad' : d.status === 'rejected' ? 'mute' : 'ok'}">${esc(DECIDED[d.status] ?? d.status)}</span><span class="grow ell" title="${esc(d.title)}">${esc(d.title)}</span><span class="tag">${esc(d.agent)}</span><span class="muted nowrap">${stamp(d.at, ago(d.at))}</span></li>`).join('')}</ul></details>` : '';
   const tasks = m.tasks ?? [];
-  const openTasks = tasks.length ? `<h2>Open tasks<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
+  const openTasks = tasks.length ? `<h2>Tasks in progress<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
   const filter = m.runs.length ? `<label class="filter"><span class="muted">Show</span><select data-filter aria-label="Filter runs"><option value="all">All runs (${m.runs.length})</option><option value="problems">Problems (${problems})</option><option value="done">Done</option></select></label>` : '';
   const runs = m.runs.length ? `<div class="runs">${m.runs.map(runCard).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
-    : empty('clock', 'No runs yet', 'Press Start team, or use “Give a task” to run an agent now.');
-  const agents = m.agents.length ? m.agents.map(agentRow).join('')
-    : empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.');
+    : empty('clock', 'No runs yet', 'Press Start mates, or use “Give a task” to run a mate now.');
+  const agents = m.agents.length ? m.agents.map(a => agentRow(a, m.copilot === 0)).join('')
+    : getStartedCard(m.copilot === 0);
+  const needBy = new Map<string, number>(); for (const g of m.pending) { if (g.agent !== m.chat?.selected) { needBy.set(g.agent, (needBy.get(g.agent) ?? 0) + 1); } }
+  const selectedWaits = !!m.chat && m.chat.gates.length > 0;
+  const needsBanner = m.tab === 'chat' && m.chat && needBy.size && !selectedWaits ? `<div class="alert warn needs-banner" role="status">${icon('bell')}<span><b>${[...needBy.values()].reduce((x, y) => x + y, 0)} ${[...needBy.values()].reduce((x, y) => x + y, 0) === 1 ? 'thing needs' : 'things need'} you</b></span><span class="muted">Jump to</span>${[...needBy].map(([a, n]) => btn(`${a}${n > 1 ? ` (${n})` : ''}`, `data-agent="${esc(a)}"`, 'secondary')).join('')}</div>` : '';
+  const stoppedWithWork = !m.running && m.pending.length > 0;
+  const stoppedNote = stoppedWithWork ? `<div class="alert warn" role="status">${icon('alert')}<span><b>Nothing will run until you press Start mates above.</b> Your answer or approval is saved, and the mate carries on once they are started.</span></div>` : '';
+  const item = (cmd: string, title: string, sub: string, kind = '') => `<button class="menuitem ${kind}" data-cmd="${cmd}"><span class="mi-title">${esc(title)}</span><span class="mi-sub">${esc(sub)}</span></button>`;
+  const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<details class="toolmenu"><summary class="btn secondary" aria-haspopup="menu"><span>Check &amp; tools</span><span class="caret" aria-hidden="true"></span></summary><div class="menu" role="menu">${item('runDoctor', 'Check mates', 'Confirm every mate can run, and run their pre-checks once')}${item('showHealth', 'Health report', 'How each mate has been doing, and what to improve')}${item('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${item('cleanUp', 'Clean up', 'Delete finished work you no longer need. Asks first')}<div class="mi-foot">Or ask <code>@mate</code> in Chat for anything here.</div></div></details></div>` : '';
+  const copilotChip = m.copilot === undefined ? '' : m.copilot > 0 ? `<span class="chip ok" title="${m.copilot} Copilot model${m.copilot > 1 ? 's' : ''} available">${icon('check')}<span>Copilot ready</span></span>` : `<span class="chip warn">${icon('alert')}<span>Copilot not signed in</span></span>`;
+  const copilotNote = m.copilot === 0 ? `<div class="alert warn" role="alert">${icon('alert')}<span><b>GitHub Copilot is not signed in.</b> Agents use your Copilot models, so none can run until you sign in to GitHub Copilot in VS Code (Accounts menu, bottom left).</span></div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
-  return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
-    ${note}${renderTabs(m)}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
+  return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}${copilotChip}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
+    ${note}${hasAgents ? copilotNote : ''}${stoppedNote}${needsBanner}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
-    ${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
+    ${decisions}${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Mates</h2>${agents}</aside></div>`}`;
 }
 
 const STYLE = `
-:root{--gap:12px;--r:6px;--ok:var(--vscode-testing-iconPassed,var(--vscode-charts-green));--bad:var(--vscode-errorForeground,var(--vscode-charts-red));--warn:var(--vscode-editorWarning-foreground,var(--vscode-charts-orange));--info:var(--vscode-charts-blue);--cb:var(--vscode-contrastBorder,transparent);--cab:var(--vscode-contrastActiveBorder,var(--vscode-focusBorder))}
+:root{--warn-text:color-mix(in srgb,var(--vscode-editorWarning-foreground,var(--vscode-charts-orange)) 62%,var(--vscode-foreground));--gap:12px;--r:6px;--ok:var(--vscode-testing-iconPassed,var(--vscode-charts-green));--bad:var(--vscode-errorForeground,var(--vscode-charts-red));--warn:var(--vscode-editorWarning-foreground,var(--vscode-charts-orange));--info:var(--vscode-charts-blue);--cb:var(--vscode-contrastBorder,transparent);--cab:var(--vscode-contrastActiveBorder,var(--vscode-focusBorder))}
 *{box-sizing:border-box}
 body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);line-height:1.45}
 .mono,code,pre{font-family:var(--vscode-editor-font-family,monospace);font-size:.92em}
-.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none}
+.start-wrap{margin-top:12px;padding:24px 20px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);display:flex;flex-direction:column;gap:16px}.start-head{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center}.start-head .empty-title{font-size:1.25em}.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 18px;margin:0;padding:0;list-style:none;counter-reset:s}.steps li{counter-increment:s;display:block;position:relative;padding:3px 0 3px 36px;min-height:30px;line-height:1.5;font-size:1.02em}.steps li:before{content:counter(s);position:absolute;left:0;top:3px;flex:none;width:24px;height:24px;border-radius:50%;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);display:inline-flex;align-items:center;justify-content:center;font-size:.85em}.starters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.starter{display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background)}.starter .btn{margin-top:auto;align-self:flex-start}.starter .tiny{margin:0}.starter-title{font-weight:600;font-size:1.05em}.hintbox{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;margin:0 0 8px;border-radius:var(--r);background:var(--vscode-textCodeBlock-background);border-left:3px solid var(--info)}.hintbox.warn{border-left-color:var(--warn)}.hintbox .ic{flex:none;margin-top:2px}.decisions{margin:10px 0 4px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:6px 10px}.decisions summary{cursor:pointer;display:flex;gap:8px;align-items:center;list-style:none}.decisions ul{list-style:none;margin:8px 0 2px;padding:0;display:flex;flex-direction:column;gap:6px}.decisions li{display:flex;gap:8px;align-items:center;min-width:0}.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.toolmenu{position:relative;margin-bottom:6px}.toolmenu[open]::before{content:'';position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:4}.toolmenu>summary{position:relative;z-index:6}.toolmenu>summary{list-style:none;cursor:pointer;display:inline-flex;gap:6px;align-items:center}.toolmenu>summary::-webkit-details-marker{display:none}.toolmenu>summary .caret{width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid currentColor;margin-top:1px}.toolmenu[open]>summary .caret{transform:rotate(180deg)}.menu{position:absolute;right:0;top:calc(100% + 4px);z-index:5;min-width:320px;padding:6px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-editor-background);box-shadow:0 6px 18px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:2px}.menuitem{all:unset;box-sizing:border-box;display:flex;flex-direction:column;gap:1px;padding:7px 10px;border-radius:4px;cursor:pointer}.menuitem:hover,.menuitem:focus-visible{background:var(--vscode-list-hoverBackground);outline:1px solid var(--vscode-focusBorder)}.mi-title{font-weight:600}.mi-sub{color:var(--vscode-descriptionForeground);font-size:.9em}.menuitem.danger .mi-title{color:var(--bad)}.mi-foot{padding:6px 10px 2px;color:var(--vscode-descriptionForeground);font-size:.9em;border-top:1px solid var(--vscode-panel-border);margin-top:4px}.tabrow{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}.tabrow .tabs{flex:1}.tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:0 0 6px}.tools .btn{padding:3px 9px;font-size:.92em}.tools-label{font-size:.8em;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}.agent-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.agent-actions .btn{padding:3px 9px;font-size:.92em}.agent.paused{opacity:.75}.trigs{display:flex;flex-direction:column;gap:2px}.trig{display:inline-flex;gap:5px;align-items:center}.trig .ic{width:12px;height:12px;flex:none}.btn[disabled]{opacity:.5;cursor:not-allowed}.run-sum{white-space:normal!important;display:-webkit-box!important;-webkit-line-clamp:2;-webkit-box-orient:vertical}.tools-help{font-size:.92em;margin:8px 2px 4px}.tools-help b{font-weight:600}.alert .btn{margin-left:auto}.pinned{all:unset;box-sizing:border-box;position:sticky;top:-16px;z-index:2;margin:-16px -16px 4px;padding:8px 16px;display:flex;gap:8px;align-items:center;cursor:pointer;background:color-mix(in srgb,var(--warn) 16%,var(--vscode-editor-background));border-bottom:1px solid color-mix(in srgb,var(--warn) 50%,transparent)}.pinned .pin-go{margin-left:auto;font-weight:600;color:var(--vscode-textLink-foreground)}.pinned:focus-visible{outline:1px solid var(--vscode-focusBorder)}.ch-facts{font-size:.88em;margin-top:2px}.ch-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.ch-actions .btn{padding:3px 9px;font-size:.92em}.chips-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 6px 0}.chip-btn{all:unset;box-sizing:border-box;cursor:pointer;padding:2px 9px;border-radius:999px;border:1px solid var(--vscode-panel-border);color:var(--vscode-textLink-foreground);font-size:.88em}.chip-btn:hover,.chip-btn:focus-visible{background:var(--vscode-list-hoverBackground);outline:1px solid var(--vscode-focusBorder)}.tab-main{display:inline-flex;gap:6px;align-items:center}.tab-sub{display:block;font-size:.78em;color:var(--vscode-descriptionForeground);font-weight:400}.tabs .tab{line-height:1.25}.turn{position:relative}.turn.working{padding:0 2px 0 38px;min-height:30px;display:flex;align-items:center}.turn.working .turn-av{top:2px}.working-text{display:flex;gap:8px;align-items:center}.gates-head{padding:4px 0 6px 38px;min-height:32px;display:flex;align-items:center}.gates-head .turn-av{top:2px}.gh-text{font-size:.98em}.rquiet{border-left:3px solid var(--vscode-panel-border)}.turn-av{position:absolute;left:3px;top:3px;display:inline-flex}.rfold>summary,.rsup>summary{color:var(--vscode-foreground);opacity:.82}.rfold>summary:hover,.rsup>summary:hover{opacity:1}.mi-sub,.mi-foot{opacity:.95}.daysep{display:flex;align-items:center;gap:10px;color:var(--vscode-descriptionForeground);font-size:.85em;margin:4px 0}.daysep:before,.daysep:after{content:'';flex:1;border-top:1px solid var(--vscode-panel-border)}.working{display:flex;gap:8px;align-items:center;color:var(--vscode-descriptionForeground);padding:6px 2px}.needs-banner .btn{margin-left:0}.btn.danger{border:1px solid color-mix(in srgb,var(--bad) 60%,transparent)}.btn.danger .ic{color:var(--bad)}.needs-banner span:first-of-type{margin-right:6px}textarea{border:1px solid var(--vscode-input-border,var(--vscode-panel-border))}.muted{color:var(--vscode-descriptionForeground)}.grow{flex:1;min-width:0}.nowrap{white-space:nowrap}.wrap-text{overflow-wrap:anywhere}.hidden{display:none!important}
 .ic{flex:none}.big{width:28px;height:28px}.lead{width:18px;height:18px;margin-top:2px}.spin{animation:sp 1.2s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:var(--gap);flex-wrap:wrap;padding:12px 0;margin-bottom:4px;background:var(--vscode-editor-background);border-bottom:1px solid var(--vscode-panel-border)}
@@ -449,19 +566,19 @@ textarea,select{background:var(--vscode-input-background);color:var(--vscode-inp
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--gap);margin:16px 0 8px}
 .tile{padding:10px 12px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background,transparent)}
 .tile-k{font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground)}.tile-v{font-size:1.5em;font-weight:600;margin:2px 0}
-.tile.warn{border-color:var(--warn)}.tile.warn .tile-v{color:var(--warn)}.tile.ok .tile-v{color:var(--ok)}.tile.bad .tile-v{color:var(--bad)}.tile.info .tile-v{color:var(--info)}
+.tile.warn{border-color:var(--warn-text)}.tile.warn .tile-v{color:var(--warn-text)}.tile.ok .tile-v{color:var(--ok)}.tile.bad .tile-v{color:var(--bad)}.tile.info .tile-v{color:var(--info)}
 .cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}
 @media (max-width:820px){.cols{grid-template-columns:1fr}}
 h2{display:flex;align-items:center;gap:8px;margin:22px 0 10px;font-size:.82em;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--vscode-descriptionForeground)}
 .count{padding:0 7px;border-radius:999px;font-size:.95em;color:var(--vscode-badge-foreground);background:var(--vscode-badge-background)}.count.warn{background:var(--warn);color:var(--vscode-editor-background)}
 .card{border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:14px;margin-bottom:var(--gap);background:var(--vscode-sideBar-background,transparent)}
 .card.attention{border-left:3px solid var(--warn)}
-.card-head{display:flex;gap:10px}.card-title{font-weight:600;font-size:1.05em;overflow-wrap:anywhere}.lead.warn{color:var(--warn)}
+.card-head{display:flex;gap:10px}.card-title{font-weight:600;font-size:1.05em;overflow-wrap:anywhere}.lead.warn{color:var(--warn-text)}
 .meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:.88em;color:var(--vscode-descriptionForeground)}.meta>*+*::before{content:"·";margin-right:8px}
 .tag{padding:0 6px;border-radius:3px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}.meta .tag::before{content:none;margin:0}
 .body{margin:10px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:9em;overflow:auto}.label{margin:12px 0 4px;font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground)}
 .note{margin:8px 0;font-size:.9em;color:var(--vscode-descriptionForeground)}
-.alert{display:flex;gap:8px;align-items:flex-start;margin:8px 0;padding:8px 10px;border-radius:4px;border:1px solid currentColor}.alert.bad{color:var(--bad)}.alert.info,.alert.warn{color:var(--warn)}.alert>span{color:var(--vscode-foreground)}
+.alert{display:flex;gap:8px;align-items:flex-start;margin:8px 0;padding:8px 10px;border-radius:4px;border:1px solid currentColor}.alert.bad{color:var(--bad)}.alert.info,.alert.warn{color:var(--warn-text)}.alert>span{color:var(--vscode-foreground)}
 .code{margin:0 0 6px;padding:10px;border-radius:4px;background:var(--vscode-textCodeBlock-background);white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}.code.cmd{border-left:3px solid var(--info);flex:1}
 .cmdrow{display:flex;gap:6px;align-items:flex-start}
 details>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;border-radius:4px}details>summary::-webkit-details-marker{display:none}
@@ -470,9 +587,9 @@ details>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-styl
 .filechip{display:inline-flex;align-items:center;gap:6px;margin:2px 6px 2px 0;padding:2px 8px;border:1px solid var(--vscode-panel-border);border-radius:999px;color:var(--vscode-textLink-foreground);text-decoration:none;overflow-wrap:anywhere}.filechip:hover{background:var(--vscode-list-hoverBackground)}
 a{color:var(--vscode-textLink-foreground)}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;font-size:.88em;font-weight:600;white-space:nowrap;border:1px solid currentColor}
-.chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}.chip.warn{color:var(--warn)}.chip.info{color:var(--info)}.chip.mute{color:var(--vscode-descriptionForeground)}
+.chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}.chip.warn{color:var(--warn-text)}.chip.info{color:var(--info)}.chip.mute{color:var(--vscode-descriptionForeground)}
 .run{border:1px solid var(--vscode-panel-border);border-radius:var(--r);margin-bottom:8px;background:var(--vscode-sideBar-background,transparent)}
-.run>summary{padding:10px 12px}.run>summary:hover{background:var(--vscode-list-hoverBackground)}.run-agent{font-weight:600}.run-sum{color:var(--vscode-descriptionForeground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run>summary{padding:10px 12px;flex-wrap:wrap}.run>summary .run-sum{flex:1 1 100px;min-width:100px}.run-why{flex-basis:100%;padding-left:26px;font-size:.88em;color:var(--warn-text)}.run>summary:hover{background:var(--vscode-list-hoverBackground)}.run-agent{font-weight:600}.run-sum{color:var(--vscode-descriptionForeground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .run-body{padding:0 14px 12px 36px}
 .timeline{list-style:none;margin:6px 0 10px;padding:0}
 .step{display:flex;gap:10px;padding:5px 0;position:relative}.step:not(:last-child)::before{content:"";position:absolute;left:7px;top:22px;bottom:-4px;width:1px;background:var(--vscode-panel-border)}
@@ -481,7 +598,8 @@ a{color:var(--vscode-textLink-foreground)}
 .agent{border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:12px;margin-bottom:8px;background:var(--vscode-sideBar-background,transparent)}
 .agent-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.agent-name{font-weight:600;flex:1;text-decoration:none}.agent-name:hover{text-decoration:underline}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0 0;font-size:.92em}.kv dt{color:var(--vscode-descriptionForeground)}.kv dd{margin:0;overflow-wrap:anywhere}
-.empty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 12px;text-align:center;border:1px dashed var(--vscode-panel-border);border-radius:var(--r);color:var(--vscode-descriptionForeground)}.empty-title{color:var(--vscode-foreground);font-weight:600}
+
+.empty{display:flex;flex-direction:column;align-items:center;gap:4px;padding:22px 12px;text-align:center;border:1px dashed color-mix(in srgb,var(--vscode-foreground) 30%,transparent);border-radius:var(--r);color:var(--vscode-descriptionForeground)}.empty-title{color:var(--vscode-foreground);font-weight:600}
 .stale{margin:8px 0}.link{font-size:.9em}
 .tabs{display:flex;gap:4px;margin:12px 0 0;border-bottom:1px solid var(--vscode-panel-border)}
 .tab{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;background:transparent;color:var(--vscode-descriptionForeground);border:0;border-bottom:2px solid transparent;font:inherit;cursor:pointer}
@@ -490,15 +608,15 @@ a{color:var(--vscode-textLink-foreground)}
 @media (max-width:760px){.chat{grid-template-columns:1fr;height:auto}.roster{max-height:220px;border-right:0;border-bottom:1px solid var(--vscode-panel-border)}}
 .roster{display:flex;flex-direction:column;overflow:auto;background:var(--vscode-sideBar-background,transparent);border-right:1px solid var(--vscode-panel-border)}
 .roster-row{display:flex;align-items:center;gap:12px;padding:10px 14px;text-align:left;background:transparent;color:var(--vscode-foreground);border:0;border-bottom:1px solid var(--vscode-panel-border);font:inherit;cursor:pointer;width:100%}
-.roster-row:hover{background:var(--vscode-list-hoverBackground)}.roster-row.on{background:var(--vscode-list-activeSelectionBackground,var(--vscode-list-hoverBackground))}
+.roster-row:hover{background:var(--vscode-list-hoverBackground)}.roster-row.on{background:color-mix(in srgb,var(--vscode-list-activeSelectionBackground,var(--vscode-list-hoverBackground)) 45%,transparent);box-shadow:inset 3px 0 0 var(--vscode-focusBorder)}
 .roster-row:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
 .rr-main{display:flex;flex-direction:column;min-width:0;flex:1;gap:2px}.rr-top{display:flex;align-items:baseline;gap:8px}.rr-name{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rr-time{font-size:.8em;white-space:nowrap}
-.rr-line{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rr-line.warn{color:var(--warn)}.rr-line.bad{color:var(--bad)}
+.rr-line{font-size:.88em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}.rr-line.warn{color:var(--warn-text)}.rr-line.bad{color:var(--bad)}
 .unread{width:9px;height:9px;border-radius:50%;background:var(--vscode-focusBorder);flex:none}
 .av{position:relative;display:inline-flex;flex:none;width:var(--sz);height:var(--sz);border-radius:50%}
 .av::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:2px solid transparent;pointer-events:none}
 .av.working::after{border-color:var(--info) transparent var(--info) transparent;animation:sp 1.4s linear infinite}
-.av.waiting::after{border-color:var(--warn);animation:pulse 1.4s ease-in-out infinite}
+.av.waiting::after{border-color:var(--warn-text);animation:pulse 1.4s ease-in-out infinite}
 .av.blocked::after{border-color:var(--bad)}
 .av.done::after{border-color:var(--ok)}.av.done::before{content:"✓";position:absolute;right:-4px;bottom:-4px;width:15px;height:15px;border-radius:50%;background:var(--ok);color:var(--vscode-editor-background);font-size:10px;font-weight:700;line-height:15px;text-align:center;z-index:1}
 .av.working .pupil{animation:look 1.6s ease-in-out infinite}
@@ -506,7 +624,7 @@ a{color:var(--vscode-textLink-foreground)}
 @media (prefers-reduced-motion:reduce){.av.working::after,.av.waiting::after,.av.working .pupil{animation:none}}
 .chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--vscode-editor-background)}
 .chat-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--vscode-panel-border)}.ch-name{font-weight:600;font-size:1.05em}.ch-sub{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.thread{flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}.center{text-align:center}
+.thread{flex:1;min-height:0;overflow-y:auto;padding:16px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 16px);mask-image:linear-gradient(to bottom,transparent 0,#000 16px);display:flex;flex-direction:column;gap:12px}.center{text-align:center}
 .msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.bot{justify-content:flex-start;align-items:flex-start}
 .bubble{max-width:78%;padding:8px 14px;border-radius:18px;overflow-wrap:anywhere}
 .human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-bottom-right-radius:5px}
@@ -515,15 +633,15 @@ a{color:var(--vscode-textLink-foreground)}
 .mtext{white-space:pre-wrap}.mkind{font-size:.85em;opacity:.8;margin-bottom:2px}.mmeta{font-size:.78em;color:var(--vscode-descriptionForeground);margin-top:3px}
 .small{font-size:.86em}
 .steps{display:block;width:calc(100% - 38px);margin-left:38px;padding:0;color:var(--vscode-descriptionForeground);font-size:.88em;min-width:0}.steps>summary{padding:1px 0;min-width:0}.steps .timeline{margin:4px 0 4px 6px}
-.steps-sum{min-width:0;overflow-wrap:anywhere}.steps-sum.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bad-count{color:var(--warn);white-space:nowrap;flex:none}
+.steps-sum{min-width:0;overflow-wrap:anywhere}.steps-sum.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bad-count{color:var(--warn-text);white-space:nowrap;flex:none}
 .steps.flat{display:flex;align-items:center;gap:8px}.chev-pad{width:16px;flex:none}
 .steps.badcall{display:flex;gap:8px;align-items:flex-start;color:var(--vscode-foreground)}.steps.badcall .node{color:var(--bad);flex:none}.ell-inline{display:inline-block;max-width:100%;vertical-align:bottom;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 time{font-weight:400}
 .rcard{margin-left:38px;padding:2px 0 2px 12px;border-left:3px solid var(--vscode-panel-border);font-size:.92em;min-width:0}
-.rcard.done{border-color:color-mix(in srgb,var(--ok) 60%,transparent)}.rcard.open{border-color:var(--info)}.rcard.warn{border-color:var(--warn)}.rcard.bad{border-color:var(--bad)}
+.rcard.done{border-color:color-mix(in srgb,var(--ok) 60%,transparent)}.rcard.open{border-color:var(--info)}.rcard.warn{border-color:var(--warn-text)}.rcard.bad{border-color:var(--bad)}
 .rtop{display:flex;align-items:center;gap:8px;min-width:0}.rtop .chip{font-size:.82em;padding:0 7px;font-weight:500;flex:none}.rtop .chip.info,.rtop .chip.ok{color:var(--vscode-descriptionForeground)}
 .rgoal{flex:1;min-width:0;color:var(--vscode-descriptionForeground)}.rgoal.ell,.rcard .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rtop .stime{margin-left:auto;font-size:.88em;color:var(--vscode-descriptionForeground)}
-.rquiet{margin-left:38px;padding-left:15px;font-size:.88em;min-width:0}.rprob{margin-top:3px;color:var(--warn);font-size:.9em}
+.rquiet{margin-left:38px;padding-left:12px;font-size:.88em;min-width:0}.rprob{margin-top:3px;color:var(--warn-text);font-size:.9em}
 .rfold{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}.rfold>summary{padding:1px 0;width:fit-content}.rfold-body{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px -50px;padding-left:0;color:var(--vscode-foreground);font-size:1.08em}
 .rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
 .rdelivs{display:flex;flex-direction:column;gap:4px;margin-top:6px}.deliv{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:5px 8px;border-radius:6px;background:var(--vscode-input-background);color:var(--vscode-foreground);text-decoration:none}.deliv:hover{background:var(--vscode-list-hoverBackground)}.deliv svg{margin-top:2px;color:var(--vscode-textLink-foreground);flex:none}
@@ -533,7 +651,7 @@ time{font-weight:400}
 .sline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-left:38px;font-size:.88em;color:var(--vscode-descriptionForeground)}
 .sline .chip.info{color:var(--vscode-descriptionForeground)}.sline .chip{font-size:.82em;padding:0 7px;font-weight:500}.sline .sdetail{color:var(--vscode-foreground);min-width:0;flex:1 1 200px}.sline .stime{margin-left:auto;font-size:.9em}
 .thread-gates{width:100%;margin-top:6px}.thread-gates .card{margin-bottom:8px}
-.composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.75em;margin:6px 6px 0}
+.composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.9em;margin:6px 6px 0}.row.wrap{margin-bottom:8px}
 .inputbar{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:24px;background:var(--vscode-input-background);padding:6px 8px 6px 16px}
 .inputbar:focus-within{border-color:var(--vscode-focusBorder)}
 .inputbar textarea{flex:1;border:0;background:transparent;color:var(--vscode-input-foreground);resize:none;padding:6px 0;max-height:160px;outline:none;font:inherit}
@@ -577,7 +695,16 @@ function scan() {
   const empty = document.querySelector('[data-filter-empty]');
   if (empty) empty.classList.toggle('hidden', !document.querySelectorAll('details.run').length || [...document.querySelectorAll('details.run')].some(d => !d.classList.contains('hidden')));
   const sel = document.querySelector('[data-filter]'); if (sel) sel.value = filter;
+  updatePinned();
 }
+/** The pinned "waiting for you" bar is only for when the card it points to is out of view. */
+function updatePinned() {
+  const th = document.querySelector('.thread'); if (!th) return;
+  const p = th.querySelector('.pinned'), g = th.querySelector('.thread-gates'); if (!p || !g) return;
+  const top = g.offsetTop - th.scrollTop, inView = th.clientHeight > 0 && top >= 0 && top < th.clientHeight - 80;
+  p.classList.toggle('hidden', inView);
+}
+document.addEventListener('scroll', e => { if (e.target && e.target.classList && e.target.classList.contains('thread')) updatePinned(); }, true);
 function autosize(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; }
 document.addEventListener('input', e => { if (e.target.matches && e.target.matches('textarea[data-chat-input]')) autosize(e.target); });
 function sendChat(agent) {
@@ -609,11 +736,15 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('change', e => { if (e.target.matches('[data-filter]')) { filter = e.target.value; scan(); } });
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel],[data-close-task]'); if (!t) return;
+  if (!e.target.closest('.toolmenu') || e.target.closest('.menuitem')) document.querySelectorAll('details.toolmenu[open]').forEach(d => { d.open = false; });
+  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel],[data-close-task],[data-allow-agent],[data-jump],[data-insert]'); if (!t) return;
   e.preventDefault(); const d = t.dataset;
-  if (d.open) vs.postMessage({ type:'open', path:d.open });
+  if (d.insert) { const ta = document.querySelector('textarea[data-chat-input]'); if (ta) { ta.value = (ta.value ? ta.value + ' ' : '') + d.insert; ta.focus(); autosize(ta); } }
+  else if (d.jump) { const el = document.querySelector(d.jump); if (el) el.scrollIntoView({ block:'start', behavior:'smooth' }); }
+  else if (d.allowAgent) vs.postMessage({ type:'allowCommand', agent:d.allowAgent, command:d.allowCmd });
+  else if (d.open) vs.postMessage({ type:'open', path:d.open });
   else if (d.openAbs) vs.postMessage({ type:'openAbs', path:d.openAbs });
-  else if (d.cmd) vs.postMessage({ type:'cmd', name:d.cmd });
+  else if (d.cmd) vs.postMessage({ type:'cmd', name:d.cmd, arg:d.arg });
   else if (d.pick) { const ta = document.querySelector('[data-input="' + CSS.escape(d.pick) + '"]'); if (ta) { ta.value = d.text; ta.focus(); } document.querySelectorAll(q(d.pick) + ' [data-pick]').forEach(b => b.classList.toggle('picked', b === t)); }
   else if (d.send) { const text = val(d.send).trim(); if (text) vs.postMessage({ type:'answer', id:d.send, text }); }
   else if (d.approve) { if (busy.has(d.approve) || t.disabled) return; busy.add(d.approve); scan(); vs.postMessage({ type:'approve', id:d.approve, seen:hashes(d.approve) }); }

@@ -3,7 +3,7 @@ import { TEMPLATES, installTemplate } from './templates';
 import { setExtraPath } from './exec';
 import { doctorMarkdown, runDoctor } from './doctor';
 import { healthMarkdown, healthReport } from './health';
-import { DEFAULT_RETENTION, Retention, autoCleanup, describeResult, pausedAgents, planCleanup, runCleanup } from './maintenance';
+import { DEFAULT_RETENTION, Retention, autoCleanup, setPaused, describeResult, pausedAgents, planCleanup, runCleanup } from './maintenance';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -615,6 +615,16 @@ export function activate(ctx: vscode.ExtensionContext) {
     out.appendLine(`✔ ${g.title}: ${r.ok ? 'executed' : 'FAILED'}\n${r.text}`);
     after(r.woke);
   };
+  // Whether Copilot is signed in decides whether any agent can run; the console shows it, so it is checked now and every minute.
+  let copilotCount: number | undefined;
+  const probeCopilot = async () => {
+    let n = 0;
+    try { n = (await vscode.lm.selectChatModels({})).length; } catch { n = 0; }
+    if (n !== copilotCount) { copilotCount = n; consolePanel?.refresh(); }
+  };
+  void probeCopilot();
+  const copilotTimer = setInterval(() => void probeCopilot(), 60_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(copilotTimer) }, vscode.lm.onDidChangeChatModels(() => void probeCopilot()));
   consolePanel = new ConsolePanel({
     root: () => svc.root(),
     state: () => ({ running: svc.running, active: svc.activeAgents }),
@@ -622,7 +632,9 @@ export function activate(ctx: vscode.ExtensionContext) {
     approve: approveGate,
     reject: (id, fb) => after(rejectApproval(root(), id, fb).woke),
     chatSend: (agent, text) => { svc.chatSend(agent, text); },
-    chatCancel: agent => svc.cancelRun(agent)
+    chatCancel: agent => svc.cancelRun(agent),
+    copilotModels: () => copilotCount,
+    defaultPolicy: () => svc.cfg().get<string>('policyFile', '.loop/policy.json')
   });
   registerLoopChat(ctx, () => {
     const r = svc.root();
@@ -667,17 +679,17 @@ export function activate(ctx: vscode.ExtensionContext) {
       const run = (command: string) => () => vscode.commands.executeCommand(command);
       const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
         svc.running
-          ? { label: '$(debug-stop) Stop Team', run: run('harborMate.stopTeam') }
-          : { label: '$(play) Start Team', run: run('harborMate.startTeam') },
+          ? { label: '$(debug-stop) Stop Mates', run: run('harborMate.stopTeam') }
+          : { label: '$(play) Start Mates', run: run('harborMate.startTeam') },
         { label: '$(dashboard) Open Console', run: run('harborMate.openConsole') },
         { label: '$(inbox) Open Inbox', description: inbox.pendingCount() ? `${inbox.pendingCount()} need you` : undefined, run: run('harborMate.focusInbox') },
         { label: '$(file-text) Open Latest Result', run: run('harborMate.openLatestResult') },
         { label: '$(sync) Reload & Validate Team', run: run('harborMate.reloadTeam') },
-        { label: '$(send) Give an Agent a Task', run: run('harborMate.runAgent') },
+        { label: '$(send) Give a Mate a Task', run: run('harborMate.runAgent') },
         { label: '$(info) Show Team Status', run: run('harborMate.status') },
         { label: '$(rocket) Get Started', run: run('harborMate.getStarted') },
-        { label: '$(pulse) Check Agents (Doctor)', run: run('harborMate.runDoctor') },
-        { label: '$(graph) Agent Health Report', run: run('harborMate.showHealth') },
+        { label: '$(pulse) Check Mates (Doctor)', run: run('harborMate.runDoctor') },
+        { label: '$(graph) Mate Health Report', run: run('harborMate.showHealth') },
         { label: '$(trash) Clean Up Finished Work', run: run('harborMate.cleanUp') },
         { label: '$(key) Set Secret', run: run('harborMate.setSecret') },
         { label: '$(list-unordered) List Available Models', run: run('harborMate.listModels') },
@@ -686,23 +698,27 @@ export function activate(ctx: vscode.ExtensionContext) {
       const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Harbor Mate' });
       await pick?.run();
     }),
-    vscode.commands.registerCommand('harborMate.runAgent', async () => {
-      if (!svc.running) { vscode.window.showWarningMessage('Start the team first (Harbor Mate: Start Team).'); return; }
-      const pick = await vscode.window.showQuickPick(
+    vscode.commands.registerCommand('harborMate.runAgent', async (agent?: string) => {
+      if (!svc.running) { vscode.window.showWarningMessage('Start the mates first (Harbor Mate: Start Mates).'); return; }
+      const named = typeof agent === 'string' ? svc.team.get(agent) : undefined;
+      const pick = named ? { label: named.name } : await vscode.window.showQuickPick(
         [...svc.team.values()].map(a => ({ label: a.name, description: a.description })), { placeHolder: 'Which agent?' });
       if (!pick) { return; }
       const task = await vscode.window.showInputBox({ prompt: `Task for ${pick.label}`, ignoreFocusOut: true });
       if (task) { svc.submit(pick.label, task); }
     }),
-    vscode.commands.registerCommand('harborMate.getStarted', async () => {
+    vscode.commands.registerCommand('harborMate.pauseAgent', (agent?: string) => { if (typeof agent === 'string' && svc.team.has(agent)) { setPaused(root(), agent, true); refresh(); } }),
+    vscode.commands.registerCommand('harborMate.resumeAgent', (agent?: string) => { if (typeof agent === 'string' && svc.team.has(agent)) { setPaused(root(), agent, false); refresh(); } }),
+    vscode.commands.registerCommand('harborMate.describeAgent', () => vscode.commands.executeCommand('workbench.action.chat.open', { query: '@mate I want an agent that ', isPartialQuery: true })),
+    vscode.commands.registerCommand('harborMate.getStarted', async (preset?: string) => {
       const r = root();
       const items = [
         ...TEMPLATES.map(t => ({ label: t.label, description: t.id, detail: t.detail, id: t.id })),
         { label: 'Describe what you want', description: 'ask @mate', detail: 'Open Chat and tell @mate in your own words; it builds the agent and checks it can run.', id: '' }
       ];
-      const pick = await vscode.window.showQuickPick(items, { title: 'Harbor Mate: Get Started', placeHolder: 'Pick a starting point. Nothing runs on a schedule until you start the team.' });
+      const pick = preset && TEMPLATES.some(t => t.id === preset) ? items.find(i => (i as { id?: string }).id === preset) : await vscode.window.showQuickPick(items, { title: 'Harbor Mate: Get Started', placeHolder: 'Pick a starting point. Nothing runs on a schedule until you start the team.' });
       if (!pick) { return; }
-      if (!pick.id) { await vscode.commands.executeCommand('workbench.action.chat.open', { query: '@mate I want an agent that ', isPartialQuery: true }); return; }
+      if (!pick.id) { await vscode.commands.executeCommand('harborMate.describeAgent'); return; }
       const res = installTemplate(r, pick.id);
       if (!res.ok) { vscode.window.showWarningMessage(`Harbor Mate: ${res.error}`); return; }
       const errs = await svc.reloadAll();
@@ -711,8 +727,8 @@ export function activate(ctx: vscode.ExtensionContext) {
       const ready = report.ready.includes(res.agent);
       const next = await vscode.window.showInformationMessage(
         ready && !errs.length ? `Harbor Mate: ${pick.label} is ready. Start the team to let it run on its schedule, or give it a task now.` : `Harbor Mate: ${pick.label} was created but is not ready: ${[...errs, ...report.checks.filter(c => c.level === 'fail').map(c => c.what)].join(' ')}`,
-        ...(ready && !svc.running ? ['Start Team'] : []), 'Open File');
-      if (next === 'Start Team') { await svc.start(true); }
+        ...(ready && !svc.running ? ['Start Mates'] : []), 'Open File');
+      if (next === 'Start Mates') { await svc.start(true); }
       if (next === 'Open File') { await vscode.window.showTextDocument(vscode.Uri.file(path.join(r, res.files[0]))); }
     }),
     vscode.commands.registerCommand('harborMate.copyTriggerInfo', async () => {
@@ -725,7 +741,10 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand('harborMate.runDoctor', async () => {
       svc.applyExtraPath();
       const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking agents…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json'), triggerPort: Number(svc.cfg().get<number>('triggerPort', 0)) })));
-      await showMarkdown('Harbor Mate · Doctor', md);
+      let models = 0;
+      try { models = (await vscode.lm.selectChatModels({})).length; } catch { /* not signed in */ }
+      const copilot = models ? `✅ **Copilot** is ready: ${models} model${models > 1 ? 's' : ''} available.` : '❌ **Copilot** has no models available. Sign in to GitHub Copilot in VS Code: agents cannot run without it.';
+      await showMarkdown('Harbor Mate · Doctor', `${copilot}\n\n${md}`);
     }),
     vscode.commands.registerCommand('harborMate.showHealth', async () => { await showMarkdown('Harbor Mate · Agent Health', healthMarkdown(healthReport(root()))); }),
     vscode.commands.registerCommand('harborMate.cleanUp', async () => {

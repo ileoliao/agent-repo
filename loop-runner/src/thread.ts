@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getGate, listGates, newId, pending as queuedItems, waiting } from './queue';
-import { Active, brief, clip, firstLine, humanize, isActive } from './textutil';
+import { Active, brief, clip, firstLine, humanize, isActive, refusalOf } from './textutil';
 
 /**
  * Chat with an agent: the human's messages, and the conversation shown as a thread.
@@ -73,7 +73,7 @@ export function formatForModel(msgs: HumanMessage[], when: 'start' | 'while-work
 // ---- the thread ----
 
 /** `title` is the full call (audit detail); `phrase` is the plain-words version; `fam`/`famKind` say what routine calls fold under. */
-export interface ThreadStep { step: number; kind: 'tool' | 'gate'; title: string; phrase: string; routine: boolean; fam?: string; famKind?: 'skill' | 'read' | 'list'; detail?: string; ok: boolean; ts?: string; path?: string }
+export interface ThreadStep { step: number; kind: 'tool' | 'gate'; title: string; phrase: string; routine: boolean; fam?: string; famKind?: 'skill' | 'read' | 'list'; detail?: string; ok: boolean; ts?: string; path?: string; refused?: { command: string; rule: string } }
 export type Tone = 'info' | 'ok' | 'bad' | 'warn' | 'mute';
 export type ThreadEvent =
   | { kind: 'human'; ts: string; id: string; text: string; status: 'pending' | 'delivered'; deliveredAt?: string; via?: HumanMessage['via'] }
@@ -87,7 +87,7 @@ export type ThreadEvent =
   | { kind: 'answer'; ts: string; title: string; text: string; tone: Tone };
 
 const END_LABEL: Record<string, [string, Tone]> = {
-  done: ['Finished', 'ok'], open: ['Not finished: continues later', 'info'], blocked: ['Blocked', 'warn'], nothing_to_do: ['Nothing to do', 'mute'], max_steps: ['Reached its step limit', 'warn'],
+  done: ['Finished', 'ok'], open: ['Not finished: continues later', 'info'], blocked: ['Blocked', 'warn'], nothing_to_do: ['Checked, nothing found', 'mute'], max_steps: ['Reached its step limit', 'warn'],
   stalled: ['Stopped: going in circles or out of time', 'bad'], cancelled: ['Cancelled', 'mute'], error: ['Failed', 'bad']
 };
 
@@ -168,6 +168,8 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
         const gate = !!e.gateId;
         const step: ThreadStep = { step: Number(e.step) || 0, kind: gate ? 'gate' : 'tool', phrase: gate ? `${e.name === 'ask_human' ? 'asked' : 'asked approval'}: ${clip(brief(e.input), 80)}` : h.phrase, routine: !gate && h.routine, fam: h.fam, famKind: h.famKind, ts: e.ts, title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`,
           detail: clip(firstLine(result), 160) || undefined, ok: !/^(REFUSED|ERROR|Not sent)/.test(result) };
+        const refusal = refusalOf(e.name, e.input, result);
+        if (refusal) { step.refused = refusal; }
         if (step.ok && e.name === 'handoff' && typeof e.input?.to === 'string') { handoff = { to: e.input.to, task: String(e.input.task ?? '') }; }
         if (e.name === 'write_file' || e.name === 'edit_file') { step.path = String(e.input?.path ?? ''); }
         if (!block) { block = { kind: 'steps', ts: e.ts, steps: [] }; }
