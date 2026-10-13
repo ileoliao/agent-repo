@@ -21,17 +21,17 @@
     "commands": [
       {
         "command": "harborMate.startTeam",
-        "title": "Start Team",
+        "title": "Start Agents",
         "category": "Harbor Mate"
       },
       {
         "command": "harborMate.stopTeam",
-        "title": "Stop Team",
+        "title": "Stop Agents",
         "category": "Harbor Mate"
       },
       {
         "command": "harborMate.reloadTeam",
-        "title": "Reload & Validate Team",
+        "title": "Reload & Validate Agents",
         "category": "Harbor Mate"
       },
       {

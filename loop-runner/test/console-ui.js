@@ -30,7 +30,7 @@ const fresh = renderBody({ ...base, running: false, agents: [], tab: 'chat', cha
 ok(/Set up your first agent/.test(fresh) && /data-arg="daily-report"/.test(fresh) && /data-cmd="describeAgent"/.test(fresh) && /Copilot/.test(fresh), 'a new workspace offers starters, describing one, and mentions Copilot');
 ok(!/data-cmd="startTeam"/.test(fresh) && !/data-tab=/.test(fresh), 'and no team controls or tabs that would do nothing');
 const stopped = renderBody({ ...base, running: false, pending: [{ id: 'g', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now, previews: [] }] });
-ok(/team is stopped/i.test(stopped) && (stopped.match(/data-cmd="startTeam"/g) || []).length === 1, 'stopped with work waiting says so, with a single Start control');
+ok(/agents are off/i.test(stopped) && (stopped.match(/data-cmd="startTeam"/g) || []).length === 1, 'stopped with work waiting says so, with a single Start control');
 ok(/data-cmd="runDoctor"/.test(renderBody(base)) && /data-cmd="showHealth"/.test(renderBody(base)) && /data-cmd="cleanUp"/.test(renderBody(base)), 'tools are reachable from the console');
 
 console.log('copilot, why-in-the-row, the thread');
@@ -59,6 +59,15 @@ ok(/disabled title="Sign in to GitHub Copilot first"/.test(renderBody({ ...base,
 ok(/disabled/.test(renderBody({ ...base, running: false, agents: [], runs: [], copilot: 0, tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'so are the starters');
 const hostile = renderBody({ ...base, agents: [{ ...agent, name: 'a"><img src=x>', triggers: [{ kind: 'schedule', text: '0 9 * * *' }] }] });
 ok(!/<img src=x>/.test(hostile), 'an agent name cannot break out of the card');
+
+console.log('wording and refusals');
+ok(/Agents on · 1 waiting on you/.test(renderBody({ ...base, pending: [{ id: 'g', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now, previews: [] }] })) && /Agents on · idle/.test(renderBody(base)), 'the status pill says why it is not simply idle');
+ok(/data-cmd="stopTeam"[^>]*><[^]*Stop agents/.test(renderBody(base)) && !/Start team|Stop team/.test(renderBody({ ...base, running: false })), 'one vocabulary: agents');
+const refused = renderBody({ ...base, runs: [{ ...run('blocked', 'Could not reach the API: curl is refused by policy.'), steps: [{ step: 1, kind: 'tool', title: 'run_command', detail: 'REFUSED by policy (denyCommands).', ok: false }] }] });
+ok(/open the policy file/.test(refused) && /data-open="\.loop\/policy\.json"/.test(refused) && /cannot edit policy/.test(refused), 'a run refused by policy points at the policy file and says who can change it');
+ok(!/open the policy file/.test(renderBody({ ...base, runs: [run('blocked')] })), 'other blocked runs do not');
+ok(!/see run log/.test(renderBody({ ...base, pending: [{ id: 'g', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'x', files: [], resume: true, status: 'pending', createdAt: now, previews: [] }] })), 'no text that looks like a link but is not one');
+ok(/The Add buttons are off because GitHub Copilot is not signed in/.test(renderBody({ ...base, running: false, agents: [], copilot: 0, tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'disabled starters say why');
 
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');

@@ -678,8 +678,8 @@ export function activate(ctx: vscode.ExtensionContext) {
       const run = (command: string) => () => vscode.commands.executeCommand(command);
       const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
         svc.running
-          ? { label: '$(debug-stop) Stop Team', run: run('harborMate.stopTeam') }
-          : { label: '$(play) Start Team', run: run('harborMate.startTeam') },
+          ? { label: '$(debug-stop) Stop Agents', run: run('harborMate.stopTeam') }
+          : { label: '$(play) Start Agents', run: run('harborMate.startTeam') },
         { label: '$(dashboard) Open Console', run: run('harborMate.openConsole') },
         { label: '$(inbox) Open Inbox', description: inbox.pendingCount() ? `${inbox.pendingCount()} need you` : undefined, run: run('harborMate.focusInbox') },
         { label: '$(file-text) Open Latest Result', run: run('harborMate.openLatestResult') },
@@ -698,7 +698,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       await pick?.run();
     }),
     vscode.commands.registerCommand('harborMate.runAgent', async (agent?: string) => {
-      if (!svc.running) { vscode.window.showWarningMessage('Start the team first (Harbor Mate: Start Team).'); return; }
+      if (!svc.running) { vscode.window.showWarningMessage('Start the agents first (Harbor Mate: Start Agents).'); return; }
       const named = typeof agent === 'string' ? svc.team.get(agent) : undefined;
       const pick = named ? { label: named.name } : await vscode.window.showQuickPick(
         [...svc.team.values()].map(a => ({ label: a.name, description: a.description })), { placeHolder: 'Which agent?' });
@@ -726,8 +726,8 @@ export function activate(ctx: vscode.ExtensionContext) {
       const ready = report.ready.includes(res.agent);
       const next = await vscode.window.showInformationMessage(
         ready && !errs.length ? `Harbor Mate: ${pick.label} is ready. Start the team to let it run on its schedule, or give it a task now.` : `Harbor Mate: ${pick.label} was created but is not ready: ${[...errs, ...report.checks.filter(c => c.level === 'fail').map(c => c.what)].join(' ')}`,
-        ...(ready && !svc.running ? ['Start Team'] : []), 'Open File');
-      if (next === 'Start Team') { await svc.start(true); }
+        ...(ready && !svc.running ? ['Start Agents'] : []), 'Open File');
+      if (next === 'Start Agents') { await svc.start(true); }
       if (next === 'Open File') { await vscode.window.showTextDocument(vscode.Uri.file(path.join(r, res.files[0]))); }
     }),
     vscode.commands.registerCommand('harborMate.copyTriggerInfo', async () => {

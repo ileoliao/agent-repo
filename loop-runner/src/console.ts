@@ -202,7 +202,7 @@ const copy = (text: string, label: string) => `<button class="btn ghost" data-co
 function gateCard(g: GateView): string {
   const isQ = g.kind === 'question';
   const head = `<div class="card-head">${icon(isQ ? 'help' : 'bell', 'lead warn')}<div class="grow"><div class="card-title">${esc(g.title)}</div>
-    <div class="meta"><span class="tag">${esc(g.agent)}</span><span>${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span><span class="muted" title="Asked in run ${esc(String(g.chainId))}. Its steps are under Overview, Recent runs.">see run log</span></div></div></div>`;
+    <div class="meta"><span class="tag">${esc(g.agent)}</span><span title="Asked in run ${esc(String(g.chainId))}. Its steps are under Overview, Recent runs.">${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span></div></div></div>`;
   const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
   const previews = g.previews ?? [];
   const missing = previews.filter(p => p.sha256 === 'missing').map(p => p.path);
@@ -239,7 +239,7 @@ function runCard(r: ConsoleRun): string {
   const live = r.status === 'running';
   return `<details class="run" ${live ? 'open' : ''} data-k="r-${esc(r.chainId)}" data-status="${esc(r.status)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
     <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && STATUS_HINT[r.status] ? `<span class="run-why">${esc(STATUS_HINT[r.status])}</span>` : ''}</summary>
-    <div class="run-body">${STATUS_HINT[r.status] ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(STATUS_HINT[r.status])}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
+    <div class="run-body">${r.steps.some(x => /REFUSED by policy/.test(x.detail ?? '') || /REFUSED by policy/.test(x.title)) || /refused by policy/i.test(r.summary) ? `<div class="hintbox warn">${icon('alert')}<span>Policy refused a command. Policy is yours to change, not the agent's: <a class="link" href="#" data-open=".loop/policy.json">open the policy file</a> to allow it, or change what the agent is asked to do. <code>@mate</code> can reword the agent, but cannot edit policy.</span></div>` : ''}${STATUS_HINT[r.status] ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(STATUS_HINT[r.status])}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
     <div class="label">What happened</div><ol class="timeline">${shown || '<li class="muted">No steps recorded.</li>'}</ol>
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
@@ -292,12 +292,12 @@ function agentRow(a: AgentRow, copilotOff = false): string {
 /** What a brand-new user sees: a way forward, not a note about config files. */
 const getStartedCard = (off = false) => `<div class="start-wrap"><div class="start-head">${icon('bot', 'big')}<div class="empty-title">Set up your first agent</div>
   <div class="muted">An agent does a job for you on its own and only stops to ask when it needs you.</div></div>
-  <ol class="steps"><li><b>Add</b> a starter below, or say what you want.</li><li><b>Check</b> it: we confirm it can run, before it ever does.</li><li><b>Start</b> the agents. You decide anything risky; they never do it alone.</li></ol>
+  <ol class="steps"><li><b>Add</b> a starter below, or say what you want.</li><li><b>Check</b> it: we confirm it can run, before it ever does.</li><li><b>Start</b> the agents (the button appears at the top once you have one). You decide anything risky; they never do it alone.</li></ol>
   <div class="starters">
     <div class="starter"><div class="starter-title">Daily report</div><div class="muted">Every weekday at 09:00 it reads yesterday's commits and writes a one-page summary: what changed, and what is risky.</div><div class="muted tiny">Writes <code>.loop/outbox/daily-report/&lt;date&gt;.md</code>. Reads only; needs no setup.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="daily-report"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
     <div class="starter"><div class="starter-title">Folder watch</div><div class="muted">Every 10 minutes it checks <code>drop/</code> for new files, at no model cost, and summarises each one when it finds some.</div><div class="muted tiny">Shows how a cheap pre-check works. Writes summaries to <code>.loop/outbox/folder-watch/</code>.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="folder-watch"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
     <div class="starter"><div class="starter-title">Your own</div><div class="muted">Tell the <code>@mate</code> assistant in Chat what you want in plain words. It builds the agent and checks it can run.</div><div class="muted tiny">For example: watch my build every hour and ask me before it re-runs anything.</div>${btn('Describe what you want', 'data-cmd="describeAgent"', 'secondary', 'send')}</div>
-  </div><div class="muted tiny center">When an agent needs you, it appears here and in the Harbor Mate Inbox, with the exact command it wants to run. Agents use your GitHub Copilot models, so Copilot must be signed in.</div></div>`;
+  </div>${off ? '<div class="alert warn" role="alert">' + icon('alert') + '<span>The Add buttons are off because GitHub Copilot is not signed in. Sign in to Copilot in VS Code (Accounts menu, bottom left), then they work.</span></div>' : ''}<div class="muted tiny center">When an agent needs you, it appears here and in the Harbor Mate Inbox, with the exact command it wants to run. Agents use your GitHub Copilot models, so Copilot must be signed in.</div></div>`;
 
 /** `hint` is trusted markup: callers pass only fixed strings. */
 const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
@@ -387,8 +387,8 @@ function composerHint(name: string, state: ChatState, running: boolean): string 
   switch (state) {
     case 'running': return `${name} is working. It reads this at its next step, and can change course.`;
     case 'waiting': return `${name} is waiting for your answer above. It reads this when it continues.`;
-    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The team is stopped.'}`;
-    default: return running ? `${name} is idle. This starts a new run.` : `The team is stopped. This is saved, and starts a run when you start the team.`;
+    case 'queued': return `${name} has work queued. It reads this when it starts.${running ? '' : ' The agents are off.'}`;
+    default: return running ? `${name} is idle. This starts a new run.` : `The agents are off. This is saved, and starts a run when you start the agents.`;
   }
 }
 
@@ -447,10 +447,10 @@ export function renderBody(m: ConsoleModel): string {
   const live = m.runs.find(r => r.status === 'running' && isActive(m.active, r.agent));
   const state = !m.running ? `<span class="state off">${icon('stop')}Agents off</span>`
     : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
-    : `<span class="state idle">${icon('clock')}Agents on · idle${m.next ? ` · next run ${esc(when(m.next.at))}` : ''}</span>`;
+    : `<span class="state idle">${icon('clock')}Agents on · ${m.pending.length ? `${m.pending.length} waiting on you` : 'idle'}${m.next ? ` · next run ${esc(when(m.next.at))}` : ''}</span>`;
   // A brand-new workspace gets only the way forward: no tabs, no team controls that would do nothing.
   const hasAgents = m.agents.length > 0 || m.runs.length > 0 || m.pending.length > 0 || (m.tasks ?? []).length > 0;
-  const actions = !hasAgents ? '' : (m.running ? btn('Stop team', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start team', 'data-cmd="startTeam"', 'primary', 'play'))
+  const actions = !hasAgents ? '' : (m.running ? btn('Stop agents', 'data-cmd="stopTeam"', 'secondary', 'stop') : btn('Start agents', 'data-cmd="startTeam"', 'primary', 'play'))
     + btn('Give a task', 'data-cmd="runAgent"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult"', 'secondary', 'file');
   const last = m.runs.find(r => r.status !== 'running');
   const tiles = [
@@ -466,14 +466,14 @@ export function renderBody(m: ConsoleModel): string {
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
   const filter = m.runs.length ? `<label class="filter"><span class="muted">Show</span><select data-filter aria-label="Filter runs"><option value="all">All runs (${m.runs.length})</option><option value="problems">Problems (${problems})</option><option value="done">Done</option></select></label>` : '';
   const runs = m.runs.length ? `<div class="runs">${m.runs.map(runCard).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
-    : empty('clock', 'No runs yet', 'Press Start team, or use “Give a task” to run an agent now.');
+    : empty('clock', 'No runs yet', 'Press Start agents, or use “Give a task” to run an agent now.');
   const agents = m.agents.length ? m.agents.map(a => agentRow(a, m.copilot === 0)).join('')
     : getStartedCard(m.copilot === 0);
   const needBy = new Map<string, number>(); for (const g of m.pending) { if (g.agent !== m.chat?.selected) { needBy.set(g.agent, (needBy.get(g.agent) ?? 0) + 1); } }
   const needsBanner = m.tab === 'chat' && m.chat && needBy.size ? `<div class="alert warn needs-banner" role="status">${icon('bell')}<span><b>${[...needBy.values()].reduce((x, y) => x + y, 0)} more ${[...needBy.values()].reduce((x, y) => x + y, 0) === 1 ? 'thing needs' : 'things need'} you</b></span>${[...needBy].map(([a, n]) => btn(`${a}${n > 1 ? ` (${n})` : ''}`, `data-agent="${esc(a)}"`, 'secondary')).join('')}</div>` : '';
   const stoppedWithWork = !m.running && m.pending.length > 0;
-  const stoppedNote = stoppedWithWork ? `<div class="alert info" role="status">${icon('alert')}<span>The team is stopped. Your answer or approval is saved, but the agent only carries on once you press Start team above.</span></div>` : '';
-  const toolBtns = `${btn('Check agents', 'data-cmd="runDoctor" title="Check that every agent can run, and run their pre-checks once"', 'secondary', 'check')}${btn('Health report', 'data-cmd="showHealth" title="How each agent has been doing, and what to improve"', 'secondary', 'file')}${btn('Add an agent', 'data-cmd="getStarted" title="Add a starter agent"', 'secondary', 'play')}${btn('Clean up', 'data-cmd="cleanUp" title="Delete finished work you no longer need (asks first)"', 'secondary', 'file')}`;
+  const stoppedNote = stoppedWithWork ? `<div class="alert info" role="status">${icon('alert')}<span>The agents are off. Your answer or approval is saved, but the agent only carries on once you press Start agents above.</span></div>` : '';
+  const toolBtns = `${btn('Check agents', 'data-cmd="runDoctor" title="Check that every agent can run, and run their pre-checks once"', 'secondary', 'check')}${btn('Health report', 'data-cmd="showHealth" title="How each agent has been doing, and what to improve"', 'secondary', 'file')}${btn('Add an agent', 'data-cmd="getStarted" title="Add a starter agent"', 'secondary', 'play')}${btn('Clean up', 'data-cmd="cleanUp" title="Delete finished work you no longer need (asks first)"', 'secondary danger', 'file')}`;
   const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<div class="tools" role="group" aria-label="Tools">${toolBtns}</div></div>${true ? '<div class=\"muted tools-help\">Hover a button to see what it does. Or ask <code>@mate</code> in Chat for anything here.</div>' : ''}` : '';
   const copilotChip = m.copilot === undefined ? '' : m.copilot > 0 ? `<span class="chip ok" title="${m.copilot} Copilot model${m.copilot > 1 ? 's' : ''} available">${icon('check')}<span>Copilot ready</span></span>` : `<span class="chip warn">${icon('alert')}<span>Copilot not signed in</span></span>`;
   const copilotNote = m.copilot === 0 ? `<div class="alert warn" role="alert">${icon('alert')}<span><b>GitHub Copilot is not signed in.</b> Agents use your Copilot models, so none can run until you sign in to GitHub Copilot in VS Code (Accounts menu, bottom left).</span></div>` : '';

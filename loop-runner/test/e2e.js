@@ -1718,7 +1718,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('Open full file'), 'a long draft offers the full file and says approval covers all of it');
     const banner = renderBody({ ...m, note: { tone: 'bad', text: '<b>boom</b>' } });
     ok(banner.includes('role="alert"') && banner.includes('&lt;b&gt;boom') && !banner.includes('<b>boom'), 'a page-level error is shown, escaped');
-    ok(renderBody({ ...m, running: true, active: undefined }).includes('Agents on · idle'), 'a running team with no active agent is labelled idle, not stopped');
+    ok(renderBody({ ...m, running: true, active: undefined, pending: [] }).includes('Agents on · idle'), 'a running team with no active agent is labelled idle, not stopped');
     fs.rmSync(R, { recursive: true, force: true });
   }
 
@@ -1840,7 +1840,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(!renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('chat-agents') && renderBody(consoleModel(R, { running: true, tab: 'overview' })).includes('Recent runs'), 'the overview is still there, with the runs, the agents and what needs you');
     let h = page({}, 'alpha');
     ok(h.includes('data-agent="alpha"') && h.includes('data-agent="beta"') && /alpha is idle\. This starts a new run\./.test(h) && !/class="composer running"/.test(h), 'an idle agent: it says a message starts a run, and the composer is not in its running form (no stop button)');
-    ok(/The team is stopped\. This is saved/.test(renderBody(consoleModel(R, { running: false, tab: 'chat', agent: 'alpha' }))), 'with the team stopped it says the message is kept until you start it');
+    ok(/The agents are off\. This is saved/.test(renderBody(consoleModel(R, { running: false, tab: 'chat', agent: 'alpha' }))), 'with the team stopped it says the message is kept until you start it');
     Q.enqueue(R, { id: 'qa', agent: 'alpha', task: 't', from: 'user', chainId: 'qac', hop: 0, createdAt: new Date().toISOString() });
     ok(/alpha has work queued\. It reads this when it starts\./.test(page({}, 'alpha')), 'a queued agent: it will read the message when it starts');
     h = page({ active: 'alpha' }, 'alpha');
