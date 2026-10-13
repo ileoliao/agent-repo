@@ -4,14 +4,14 @@
  * Source: packages/coding-agent/src/utils/shell.ts
  * Commit: ea448f454af474f3e2fe9733b331e17b0662f5d6
  *
- * Adaptations for Loop Runner:
- * - Dropped the import of pi's config.getBinDir. An empty bin dir keeps PATH unchanged; Loop Runner does not install pi's fd/rg binaries.
+ * Adaptations for Harbor Mate:
+ * - Dropped the import of pi's config.getBinDir. An empty bin dir keeps PATH unchanged; Harbor Mate does not install pi's fd/rg binaries.
  */
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { spawn, spawnSync } from "child_process";
 
-/** pi prepends its downloaded-tool directory. Loop Runner does not ship that directory. */
+/** pi prepends its downloaded-tool directory. Harbor Mate does not ship that directory. */
 function getBinDir(): string {
 	return "";
 }

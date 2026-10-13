@@ -2,7 +2,7 @@
  * Vendored from pi (https://github.com/earendil-works/pi), packages/agent/src/types.ts, version 1.1.0.
  * Copyright (c) 2025 Mario Zechner. MIT License. See loop-runner/THIRD_PARTY_NOTICES.md.
  *
- * Adaptations for Loop Runner: removed the API-key option; TypeBox schema types are replaced by the loose ones in ai/schema.ts.
+ * Adaptations for Harbor Mate: removed the API-key option; TypeBox schema types are replaced by the loose ones in ai/schema.ts.
  */
 
 import type {

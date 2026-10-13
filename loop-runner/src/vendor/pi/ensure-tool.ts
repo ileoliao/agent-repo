@@ -1,7 +1,7 @@
 import { spawnSync } from "child_process";
 
 /**
- * Loop Runner stand-in for pi's `tools-manager`.
+ * Harbor Mate stand-in for pi's `tools-manager`.
  *
  * Upstream downloads fd and ripgrep into pi's config directory. This extension
  * only uses a binary that is already on PATH, and never reaches the network.

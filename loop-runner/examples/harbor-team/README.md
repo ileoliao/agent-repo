@@ -1,6 +1,6 @@
 # harbor-team:Jira 日报 + HarborSense 流量巡检 + 方案分析
 
-这是一个 Loop Runner 工作区模板,**只包含 agent、策略和对接约定**。Jira、HarborSense、GitHub 的实际能力用你已有的 skill 和命令行,这里不重复实现。**请把 `examples/harbor-team` 本身作为文件夹用 VS Code 打开**(不是整个仓库)。
+这是一个 Harbor Mate 工作区模板,**只包含 agent、策略和对接约定**。Jira、HarborSense、GitHub 的实际能力用你已有的 skill 和命令行,这里不重复实现。**请把 `examples/harbor-team` 本身作为文件夹用 VS Code 打开**(不是整个仓库)。
 
 | 工作流 | agent | 什么时候跑 | 做什么 |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | 生产流量巡检 | `sentinel` | 每天 09:00、13:00、18:00 | 先跑**零 token** 的检查;只有异常才唤醒,写事故文件,交给 techlead |
 | 方案分析 | `techlead` | sentinel 交接时 | 查 HarborSense 数据、GitHub 代码和文档,写分析和方案,**问你**选哪个;不改代码、不开 PR |
 
-时间是本机本地时间。想改直接对 `@loop` 说,例如「把 sentinel 改成每 2 小时检查一次」。
+时间是本机本地时间。想改直接对 `@mate` 说,例如「把 sentinel 改成每 2 小时检查一次」。
 
 ```
 sentinel ──(异常?)──▶ 事故文件 .loop/outbox/incidents/<日期>-<信号>.md ──▶ techlead
@@ -22,7 +22,7 @@ sentinel ──(异常?)──▶ 事故文件 .loop/outbox/incidents/<日期>-<
 
 ## 我假设你已经有的东西
 
-把这些 skill 放进本工作区的 `.github/skills/`(复制或软链接都行)。`loop-memory` 已经自带。**名字不同就改 agent 文件 `loop.skills` 里的名字**(`briefer` 一处、`sentinel` 两处:`skills` 和 `wakeIf` 路径、`techlead` 一处;每处都别删掉 `loop-memory`)。没放齐时,`Loop Runner: Reload & Validate Team` 会准确报出缺哪一个。
+把这些 skill 放进本工作区的 `.github/skills/`(复制或软链接都行)。`loop-memory` 已经自带。**名字不同就改 agent 文件 `loop.skills` 里的名字**(`briefer` 一处、`sentinel` 两处:`skills` 和 `wakeIf` 路径、`techlead` 一处;每处都别删掉 `loop-memory`)。没放齐时,`Harbor Mate: Reload & Validate Team` 会准确报出缺哪一个。
 
 | 需要的 skill | 谁用 | 它必须做到 |
 |---|---|---|
@@ -36,7 +36,7 @@ GitHub 不需要 skill,techlead 直接用本机的 `gh` 和 git:
 - 没克隆的,用只读的 `gh`:`gh search code`、`gh repo view`、`gh pr view/list`、`gh api repos/…`(只能 GET)。
 - 你本机的 `gh` 需要已登录;建议用只读权限的账号或令牌。
 
-凭证用 `Loop Runner: Set Secret` 设成环境变量(不会进提示词,输出里会被脱敏),具体名字以你那几个 skill 的要求为准。
+凭证用 `Harbor Mate: Set Secret` 设成环境变量(不会进提示词,输出里会被脱敏),具体名字以你那几个 skill 的要求为准。
 
 ## 对 agent 的约束(都在 `.loop/policies/`)
 
@@ -46,7 +46,7 @@ GitHub 不需要 skill,techlead 直接用本机的 `gh` 和 git:
 
 ## 上线前先手动验证
 
-1. 命令面板:`Loop Runner: Reload & Validate Team`,不应有任何报错。
+1. 命令面板:`Harbor Mate: Reload & Validate Team`,不应有任何报错。
 2. 在本文件夹的终端里手动跑一次 `python3 .github/skills/harbor-anomaly-detect/scripts/detect.py --window 4h --exit-code`,看退出码是不是 0/1/其他三种之一,输出是不是你期望的。
 3. 控制台 `Give a task…` 选 `briefer` 跑一次,看 `.loop/outbox/briefs/` 里的简报,核对数字。
 4. 想看 sentinel → techlead 的整条链而当前没有异常:临时把你那个检测 skill 的阈值调到容易触发,验证完改回。

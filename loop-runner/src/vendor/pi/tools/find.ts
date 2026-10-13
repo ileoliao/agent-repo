@@ -4,7 +4,7 @@
  * Source: packages/coding-agent/src/core/tools/find.ts
  * Commit: ea448f454af474f3e2fe9733b331e17b0662f5d6
  *
- * Adaptations for Loop Runner:
+ * Adaptations for Harbor Mate:
  * - Removed TUI renderer spread.
  * - ensureTool comes from the local system-binary lookup instead of pi's GitHub downloader (tools-manager).
  */

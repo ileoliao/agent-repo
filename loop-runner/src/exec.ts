@@ -67,7 +67,7 @@ const ENV_ALLOW = new Set([
 ]);
 
 /**
- * Environment passed to a child. pi's getShellEnv copies process.env; Loop Runner does not,
+ * Environment passed to a child. pi's getShellEnv copies process.env; Harbor Mate does not,
  * so a secret sitting in the extension host environment cannot reach a command or the model.
  */
 export function buildShellEnv(secrets: Record<string, string>, extra?: Record<string, string>): NodeJS.ProcessEnv {

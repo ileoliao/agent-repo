@@ -99,7 +99,7 @@ printf '%s\\n' "$LOOP_EVENT_KIND|$LOOP_EVENT_TITLE" >> .loop/notified.log
 
 function seedUserSettings() {
   write(path.join(USER_DATA, 'User', 'settings.json'), JSON.stringify({
-    'loopRunner.notifyCommand': 'bash .github/skills/notify-test/scripts/send.sh',
+    'harborMate.notifyCommand': 'bash .github/skills/notify-test/scripts/send.sh',
     'security.workspace.trust.enabled': false
   }, null, 2));
 }

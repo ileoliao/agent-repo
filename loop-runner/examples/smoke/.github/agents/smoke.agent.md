@@ -1,6 +1,6 @@
 ---
 name: smoke
-description: Smoke test for Loop Runner. Exercises schedule, wakeIf, ask_human, request_approval and resume without touching any real system.
+description: Smoke test for Harbor Mate. Exercises schedule, wakeIf, ask_human, request_approval and resume without touching any real system.
 loop:
   skills: [smoke-probe]
   schedule: "* * * * *"

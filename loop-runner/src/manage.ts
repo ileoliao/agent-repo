@@ -462,7 +462,7 @@ export function proposeSkills(root: string, name: string, p: { add?: string[]; r
   return checked(root, r.file, r.text, after, `${name}: skills ${shown}`, a => (a.skills.join('|') === next.join('|') ? undefined : 'Could not write the skills safely.'));
 }
 
-const RESERVED_NAMES = ['loop', 'chief-of-staff'];
+const RESERVED_NAMES = ['loop', 'mate', 'chief-of-staff'];
 
 export interface NewAgent {
   name: string; description: string; instructions: string;

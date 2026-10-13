@@ -1,11 +1,11 @@
 ---
 name: loop-skill-authoring
-description: Write, review or change a skill (SKILL.md plus scripts) that agents use unattended under Loop Runner, including a wakeIf probe, a wrapper around a local command, or a script that cuts token use by filtering and aggregating data. Use whenever the user asks for a new skill or a helper script for an agent, says an agent should not read all that data itself, or asks you to check a skill's scripts, even if they do not say "skill".
+description: Write, review or change a skill (SKILL.md plus scripts) that agents use unattended under Harbor Mate, including a wakeIf probe, a wrapper around a local command, or a script that cuts token use by filtering and aggregating data. Use whenever the user asks for a new skill or a helper script for an agent, says an agent should not read all that data itself, or asks you to check a skill's scripts, even if they do not say "skill".
 ---
 
-# Writing a skill for Loop Runner agents
+# Writing a skill for Harbor Mate agents
 
-A skill is a folder an agent can use: instructions in `SKILL.md`, and optionally scripts and reference files. Under Loop Runner agents run **unattended**, and the scripts of every skill an agent lists are **pre-approved**: the runtime runs them without checking what they do inside. So the code of a skill is the trust boundary. Keep scripts small, plain and readable, because a human reads them once, when the skill is created, and then they run on their own.
+A skill is a folder an agent can use: instructions in `SKILL.md`, and optionally scripts and reference files. Under Harbor Mate agents run **unattended**, and the scripts of every skill an agent lists are **pre-approved**: the runtime runs them without checking what they do inside. So the code of a skill is the trust boundary. Keep scripts small, plain and readable, because a human reads them once, when the skill is created, and then they run on their own.
 
 ## 1. Does this need a script?
 
@@ -42,7 +42,7 @@ A skill is a folder an agent can use: instructions in `SKILL.md`, and optionally
 Commands run with stdin closed and a hard timeout (default 180 s), so:
 
 - **Non-interactive.** Never prompt, open a pager or wait for input. Take values from arguments or environment variables.
-- **Credentials come from environment variables** (for example `HARBOR_PAT`). The human stores them with "Loop Runner: Set Secret". Never write a token into a script, never print one; the runtime redacts known secrets from output, but do not rely on that.
+- **Credentials come from environment variables** (for example `HARBOR_PAT`). The human stores them with "Harbor Mate: Set Secret". Never write a token into a script, never print one; the runtime redacts known secrets from output, but do not rely on that.
 - **Print small, machine-readable output** (JSON preferred). Output beyond about 16 KB is cut to its head and tail. Whatever a script prints goes to the model, so mask or aggregate sensitive business data inside the script.
 - **Meaningful exit codes.** 0 is success; non-zero is failure with the reason on stderr. A `wakeIf` probe follows its own contract: 0 means there is work, 1 means nothing to do, 2 or anything else means the probe is broken (use 2 when data could not be fetched, never 1).
 - **Write only under `.loop/outbox/`.** A script must not touch `.github/` (agent and skill definitions) or other `.loop/` state (policies, queue, gates, tasks, memory). Those files define what the team may do, and only a human changes them. The automatic checks reject a script that mentions them.

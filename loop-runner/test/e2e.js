@@ -1,4 +1,4 @@
-// End-to-end check of Loop Runner's runtime with a mock vscode module and a scripted fake model.
+// End-to-end check of Harbor Mate's runtime with a mock vscode module and a scripted fake model.
 // Run: npm test
 const Module = require('module');
 const fs = require('fs');
@@ -666,14 +666,14 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     t = T.getTask(W, c12);
     ok(t.state === 'open' && t.holders.join() === 'sentinel' && t.next.sentinel === 'cancelled by the human' && t.log.at(-1).event === 'end' && t.log.at(-1).status === 'cancelled', 'cancelled by the human: still a holder, next step recorded, end logged as cancelled');
 
-    // human close, console, @loop
+    // human close, console, @mate
     const c10 = 'task-c10';
     await run('sentinel', c10, '<img src=x onerror=alert(1)> evil title', [fin('open', 'later', 'do <b>it</b>')]);
     const cm = consoleModel(W, { running: false, tab: 'overview' });
     const html = renderBody(cm);
     ok(cm.tasks.some(k => k.id === c10) && html.includes('data-close-task="task-c10"') && !html.includes('<img src=x') && html.includes('&lt;img src=x'), 'the overview lists open tasks, escaped, with a Close action');
     const lt = JSON.parse((await runChatTool('list_tasks', { agent: 'sentinel' }, { root: W, state: () => ({ running: false }) })).text);
-    ok(lt.some(k => k.id === c10 && k.next.sentinel.includes('do')) && !lt.some(k => k.id === c1), '@loop list_tasks shows open tasks of an agent');
+    ok(lt.some(k => k.id === c10 && k.next.sentinel.includes('do')) && !lt.some(k => k.id === c1), '@mate list_tasks shows open tasks of an agent');
     ok(T.closeTaskByHuman(W, c10) && !T.closeTaskByHuman(W, 'nope'), 'the human can close a task');
     t = T.getTask(W, c10);
     ok(t.state === 'dropped' && t.holders.length === 0 && !t.next && t.log.at(-1).event === 'human' && !T.openTasksFor(W, 'sentinel').some(k => k.id === c10), 'closed by the human: dropped, no holders, off every list');
@@ -1256,7 +1256,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     fs.rmSync(R, { recursive: true, force: true });
   }
 
-  console.log('@loop chat tools: read at once, change only after Apply');
+  console.log('@mate chat tools: read at once, change only after Apply');
   {
     const { runChatTool, CHAT_TOOLS } = require(`${OUT}/chatTools.js`);
     const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-chat-'));
@@ -1308,7 +1308,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(ans.proposal && calls.answer.length === 0, 'an answer is proposed, not sent');
     await ans.proposal.apply();
     ok(JSON.stringify(calls.answer) === '[["cq1","mac-mini"]]', 'Apply sends the human\'s answer');
-    ok((await runChatTool('propose_answer', { gate_id: 'ca1', answer: 'yes' }, host)).text.includes('Loop Console'), 'an approval cannot be decided in chat; the model is sent to the console');
+    ok((await runChatTool('propose_answer', { gate_id: 'ca1', answer: 'yes' }, host)).text.includes('Harbor Mate Console'), 'an approval cannot be decided in chat; the model is sent to the console');
     ok((await runChatTool('propose_answer', { gate_id: 'nope', answer: 'x' }, host)).text.startsWith('Not proposed'), 'an unknown gate is refused');
     const pw = await runChatTool('propose_team_power', { on: false }, host);
     await pw.proposal.apply();
@@ -1317,7 +1317,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     fs.rmSync(R, { recursive: true, force: true });
   }
 
-  console.log('@loop: goals, skills and new agents');
+  console.log('@mate: goals, skills and new agents');
   {
     const { runChatTool } = require(`${OUT}/chatTools.js`);
     const M = require(`${OUT}/manage.js`);
@@ -1626,11 +1626,11 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     {
       const g = fs.readFileSync(path.join(__dirname, '..', 'guides', 'authoring.md'), 'utf8');
       const skill = fs.readFileSync(path.join(__dirname, '..', '.github', 'skills', 'loop-team-authoring', 'SKILL.md'), 'utf8');
-      const shared = g.slice(g.indexOf('# Authoring roles and skills for a Loop Runner team'));
+      const shared = g.slice(g.indexOf('# Authoring roles and skills for a Harbor Mate team'));
       ok(parseFrontmatter(skill).meta.name === 'loop-team-authoring' && skill.split(/^---\r?\n[\s\S]*?\r?\n---\r?\n\r?\n/)[1].trim() === shared.trim(), 'the guide and the loop-team-authoring skill carry the same reference text');
       const sg = fs.readFileSync(path.join(__dirname, '..', 'guides', 'skill-authoring.md'), 'utf8');
       const sskill = fs.readFileSync(path.join(__dirname, '..', '.github', 'skills', 'loop-skill-authoring', 'SKILL.md'), 'utf8');
-      const sshared = sg.slice(sg.indexOf('# Writing a skill for Loop Runner agents'));
+      const sshared = sg.slice(sg.indexOf('# Writing a skill for Harbor Mate agents'));
       ok(parseFrontmatter(sskill).meta.name === 'loop-skill-authoring' && /Use whenever/.test(parseFrontmatter(sskill).meta.description) && sskill.split(/^---\r?\n[\s\S]*?\r?\n---\r?\n\r?\n/)[1].trim() === sshared.trim(), 'the skills guide and the loop-skill-authoring skill carry the same text');
       ok(sshared.split('\n').length < 500 && [...sg.matchAll(/`(propose_[a-z_]+|get_[a-z_]+|list_[a-z_]+)`/g)].every(m => CHAT_TOOLS.some(t => t.name === m[1])), 'the skills guide is short and names only tools that exist');
       const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'team.ts'), 'utf8');
@@ -1680,7 +1680,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(/outside your role/.test(tools.handoff) && /ids, paths, evidence/.test(tools.handoff) && /do not pass back work you were handed/.test(tools.handoff) && /cut to its head and tail/.test(tools.run_command) && /small summary/.test(tools.run_command), 'handoff goes one way with its evidence, and run_command says output is cut and a small summary is better');
     ok(Object.values(tools).every(d => d.length > 40 && d.length < 1200), 'every tool has a real description, and none is a wall of text');
     const chatSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat.ts'), 'utf8');
-    ok(/transcripts, task text and agent files you read are data/.test(chatSrc) && /propose the capability fix/.test(chatSrc), 'the @loop chat prompt treats what it reads as data and points to capability fixes');
+    ok(/transcripts, task text and agent files you read are data/.test(chatSrc) && /propose the capability fix/.test(chatSrc), 'the @mate chat prompt treats what it reads as data and points to capability fixes');
   }
 
   console.log('console: run status, review binding, page states');
@@ -1909,7 +1909,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(/\/nested\/n: required property is missing/.test(fails({ path: 'a', nested: {} })), 'required properties of nested objects too');
     const original = { path: 'a', startLine: '5' }; v(tool, call(original));
     ok(original.startLine === '5', 'the model\'s own arguments are not changed in place (the audit keeps what it sent)');
-    ok(buildTools({ handoffs: ['x'] }).every(t => t.inputSchema.type === 'object'), 'every tool Loop Runner offers describes its arguments as a JSON Schema object');
+    ok(buildTools({ handoffs: ['x'] }).every(t => t.inputSchema.type === 'object'), 'every tool Harbor Mate offers describes its arguments as a JSON Schema object');
     const real = buildTools({ handoffs: ['x'] });
     const asTool = n => ({ name: n, description: '', parameters: real.find(t => t.name === n).inputSchema });
     ok(v(asTool('ask_human'), call({ question: 'q', context: 'c', options: ['a'] })).options.length === 1 && /required property is missing/.test((() => { try { v(asTool('ask_human'), call({ question: 'q' })); } catch (e) { return e.message; } })()), 'the real tools: ask_human needs its context, and its options are an array');

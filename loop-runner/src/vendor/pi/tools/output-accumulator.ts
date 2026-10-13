@@ -4,7 +4,7 @@
  * Source: packages/coding-agent/src/core/tools/output-accumulator.ts
  * Commit: ea448f454af474f3e2fe9733b331e17b0662f5d6
  *
- * Adaptations for Loop Runner:
+ * Adaptations for Harbor Mate:
  * - Imports rewired onto this vendor tree.
  */
 import type { WriteStream } from "node:fs";

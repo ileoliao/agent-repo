@@ -10,7 +10,7 @@ import { listTasks } from './tasks';
 import { Active } from './textutil';
 
 /**
- * The tools behind `@loop` in the Chat window. Reading tools answer at once. Everything that changes something
+ * The tools behind `@mate` in the Chat window. Reading tools answer at once. Everything that changes something
  * returns a Proposal: the human sees what would happen (a diff, a task, an answer) and presses Apply.
  * The chat model never changes a file, runs an agent or answers a gate by itself.
  * Pure over a small host interface, so the whole thing is tested without VS Code.
@@ -96,7 +96,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       edits: { type: 'array', items: { type: 'object', properties: { file: str('SKILL.md, scripts/<name> or references/<name>'), old_text: str('Exact text to replace (one occurrence)'), new_text: str('Replacement'), content: str('Whole new file content'), delete: { type: 'boolean' } }, required: ['file'] } } }, ['skill'])
   },
   { name: 'get_skill', description: "Read one skill's files: SKILL.md, scripts and reference files, and which agents use it. Use before changing a skill.", inputSchema: obj({ skill: str('Skill name') }, ['skill']) },
-  { name: 'get_authoring_guide', description: "The reference for writing agents and goals for Loop Runner (topic 'agents', the default) or skills (topic 'skills'): file format, every field, conventions. Read it before proposing a new agent, goal or skill.", inputSchema: obj({ topic: { type: 'string', enum: ['agents', 'skills'] } }, []) },
+  { name: 'get_authoring_guide', description: "The reference for writing agents and goals for Harbor Mate (topic 'agents', the default) or skills (topic 'skills'): file format, every field, conventions. Read it before proposing a new agent, goal or skill.", inputSchema: obj({ topic: { type: 'string', enum: ['agents', 'skills'] } }, []) },
   { name: 'propose_remember', description: "Propose a standing note that every new run of an agent (or 'all' agents) is told. Use for lasting preferences and rules, not one-off tasks.", inputSchema: obj({ agent: str("Agent name or 'all'"), note: str('One short sentence') }, ['agent', 'note']) },
   { name: 'propose_forget', description: 'Propose removing the one standing note that contains the given text.', inputSchema: obj({ agent: str("Agent name or 'all'"), match: str('Text that identifies the note') }, ['agent', 'match']) },
   { name: 'propose_run', description: 'Propose giving a team agent a one-off task to run now.', inputSchema: obj({ agent: str('Agent name'), task: str('The task') }, ['agent', 'task']) },
@@ -221,7 +221,7 @@ async function runTool(name: string, input: any, host: ChatHost): Promise<ToolRe
     case 'propose_answer': {
       const g = listGates(root).find(x => x.id === String(input.gate_id));
       if (!g || g.status !== 'pending') { return { text: `Not proposed: no pending gate ${input.gate_id}. Use list_pending.` }; }
-      if (g.kind !== 'question') { return { text: 'Not proposed: that is an approval. Approvals are decided in the Loop Console, where the exact command and files are shown.' }; }
+      if (g.kind !== 'question') { return { text: 'Not proposed: that is an approval. Approvals are decided in the Harbor Mate Console, where the exact command and files are shown.' }; }
       const answer = String(input.answer ?? '').trim();
       if (!answer) { return { text: 'Not proposed: the answer is empty.' }; }
       return { text: 'Proposal ready; shown to the human with an Apply button. Nothing has been sent yet.', proposal: {

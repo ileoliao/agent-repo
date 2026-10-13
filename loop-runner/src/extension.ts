@@ -20,8 +20,11 @@ const hhmm = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2
 import { createSimModel, simEnabled, simNow, simPauseMs, simTrace } from './sim-model';
 import { runSim } from './sim-drive';
 
-const SECRET_INDEX = 'loopRunner.secretNames';
-const STARTED_KEY = 'loopRunner.teamStarted';
+const SECRET_INDEX = 'harborMate.secretNames';
+const STARTED_KEY = 'harborMate.teamStarted';
+/** Keys written before the product was renamed; still read so nothing is lost on upgrade. */
+const LEGACY_SECRET_INDEX = 'loopRunner.secretNames';
+const LEGACY_STARTED_KEY = 'loopRunner.teamStarted';
 const NEEDS_YOU = new Set(['blocked', 'error', 'max_steps', 'stalled']);
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -102,7 +105,12 @@ export class TeamService {
   ) {}
 
   root(): string | undefined { return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath; }
-  cfg() { return vscode.workspace.getConfiguration('loopRunner'); }
+  /** Settings live under `harborMate`; a value still set under the old `loopRunner` prefix keeps working. */
+  cfg() {
+    const now = vscode.workspace.getConfiguration('harborMate');
+    const old = vscode.workspace.getConfiguration('loopRunner');
+    return { get: <T>(key: string, dflt?: T): T => (now.inspect<T>(key)?.globalValue ?? now.inspect<T>(key)?.workspaceValue ?? now.inspect<T>(key)?.workspaceFolderValue) !== undefined ? now.get<T>(key, dflt as T) : old.get<T>(key) ?? now.get<T>(key, dflt as T) };
+  }
 
   reload(): string[] {
     const root = this.root();
@@ -157,7 +165,7 @@ export class TeamService {
     if (simEnabled()) return [];
     return ensureConsent([...this.models.values()], m => this.ctx.languageModelAccessInformation.canSendRequest(m), async m => {
       const r = await m.sendRequest([vscode.LanguageModelChatMessage.User('Reply with OK.')],
-        { justification: 'Loop Runner runs your custom agents unattended with this model.' });
+        { justification: 'Harbor Mate runs your custom agents unattended with this model.' });
       for await (const _ of r.stream) { /* drain */ }
     });
   }
@@ -180,7 +188,7 @@ export class TeamService {
     this.out.show(true);
     if (errors.length) {
       this.out.appendLine('Team config problems:\n  ' + errors.join('\n  '));
-      vscode.window.showErrorMessage(`Loop Runner: ${errors.length} config problem(s). See output.`);
+      vscode.window.showErrorMessage(`Harbor Mate: ${errors.length} config problem(s). See output.`);
       this.changed();
       return;
     }
@@ -442,7 +450,7 @@ export class TeamService {
     const label = ev.kind === 'question' ? `${ev.agent} asks: ${ev.title}`
       : ev.kind === 'approval' ? `${ev.agent} needs approval: ${ev.title}`
         : `${ev.title}${ev.detail ? ` — ${ev.detail}` : ''}`;
-    void vscode.window.showInformationMessage(`Loop Runner · ${label}`, ...(gate ? ['Open'] : [])).then(pick => {
+    void vscode.window.showInformationMessage(`Harbor Mate · ${label}`, ...(gate ? ['Open'] : [])).then(pick => {
       if (pick === 'Open' && gate) { this.openGate(gate); }
     });
     try {
@@ -455,16 +463,16 @@ export class TeamService {
 
   async secrets(): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
-    for (const n of this.ctx.globalState.get<string[]>(SECRET_INDEX, [])) {
-      const v = await this.ctx.secrets.get(`loopRunner.secret.${n}`);
+    for (const n of [...this.ctx.globalState.get<string[]>(SECRET_INDEX, []), ...this.ctx.globalState.get<string[]>(LEGACY_SECRET_INDEX, [])]) {
+      const v = (await this.ctx.secrets.get(`harborMate.secret.${n}`)) ?? (await this.ctx.secrets.get(`loopRunner.secret.${n}`));
       if (v) { out[n] = v; }
     }
     return out;
   }
 
   async setSecret(name: string, value: string): Promise<void> {
-    await this.ctx.secrets.store(`loopRunner.secret.${name}`, value);
-    const names = new Set(this.ctx.globalState.get<string[]>(SECRET_INDEX, []));
+    await this.ctx.secrets.store(`harborMate.secret.${name}`, value);
+    const names = new Set([...this.ctx.globalState.get<string[]>(SECRET_INDEX, []), ...this.ctx.globalState.get<string[]>(LEGACY_SECRET_INDEX, [])]);
     names.add(name);
     await this.ctx.globalState.update(SECRET_INDEX, [...names]);
   }
@@ -481,20 +489,20 @@ export class TeamService {
 }
 
 export function activate(ctx: vscode.ExtensionContext) {
-  const out = vscode.window.createOutputChannel('Loop Runner');
+  const out = vscode.window.createOutputChannel('Harbor Mate');
   // Status bar: one click per common action. A status bar item cannot host a dropdown, and a QuickPick always opens at the top of the window.
   const bar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  bar.command = 'loopRunner.openConsole';
+  bar.command = 'harborMate.openConsole';
   const toggle = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
   const result = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 48);
   result.text = '$(file-text) Result';
   result.tooltip = 'Open the latest agent output';
-  result.command = 'loopRunner.openLatestResult';
+  result.command = 'harborMate.openLatestResult';
   result.show();
   const menu = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 47);
   menu.text = '$(menu)';
-  menu.tooltip = 'Loop Runner: all commands';
-  menu.command = 'loopRunner.menu';
+  menu.tooltip = 'Harbor Mate: all commands';
+  menu.command = 'harborMate.menu';
   menu.show();
   const inbox = new InboxView(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath, () => svc.activeAgents);
   let consolePanel: ConsolePanel | undefined;
@@ -507,15 +515,15 @@ export function activate(ctx: vscode.ExtensionContext) {
     const nw = r ? nextWake(agentRows(r, svc.activeAgents)) : undefined;
     const current = r && svc.activeAgent ? recentRuns(r, 5).find(x => x.status === 'running' && x.agent === svc.activeAgent) : undefined;
     const many = svc.activeAgents.length > 1 ? svc.activeAgents.join(', ') : undefined;
-    const state = !svc.running ? '$(debug-stop) Loop · stopped'
-      : svc.activeAgent ? `$(sync~spin) Loop: ${many ?? svc.activeAgent}${current && !many ? ` · step ${current.step}` : ''}`
-      : `$(debug-pause) Loop · idle${nw ? ` · next ${hhmm(nw.at)}` : ''}`;
+    const state = !svc.running ? '$(debug-stop) Harbor Mate · stopped'
+      : svc.activeAgent ? `$(sync~spin) Mate: ${many ?? svc.activeAgent}${current && !many ? ` · step ${current.step}` : ''}`
+      : `$(debug-pause) Mate · idle${nw ? ` · next ${hhmm(nw.at)}` : ''}`;
     bar.text = `${state}${n ? ` · $(bell-dot) ${n}` : ''}`;
-    bar.tooltip = n ? `${n} item(s) need you: click to open the inbox` : 'Loop Runner: click to open the inbox';
+    bar.tooltip = n ? `${n} item(s) need you: click to open the inbox` : 'Harbor Mate: click to open the inbox';
     bar.show();
     toggle.text = svc.running ? '$(debug-stop) Stop' : '$(play) Start';
-    toggle.tooltip = svc.running ? 'Stop the Loop Runner team' : 'Start the Loop Runner team';
-    toggle.command = svc.running ? 'loopRunner.stopTeam' : 'loopRunner.startTeam';
+    toggle.tooltip = svc.running ? 'Stop the Harbor Mate team' : 'Start the Harbor Mate team';
+    toggle.command = svc.running ? 'harborMate.stopTeam' : 'harborMate.startTeam';
     toggle.show();
     if (simEnabled()) {
       const folder = svc.root();
@@ -569,74 +577,74 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   ctx.subscriptions.push(
     out, bar, toggle, result, menu, { dispose: () => clearInterval(panelTimer) },
-    vscode.commands.registerCommand('loopRunner.openConsole', () => consolePanel?.show()),
-    vscode.window.registerTreeDataProvider('loopRunner.inbox', inbox),
-    vscode.commands.registerCommand('loopRunner.startTeam', () => svc.start(true)),
-    vscode.commands.registerCommand('loopRunner.stopTeam', () => svc.stop(true)),
-    vscode.commands.registerCommand('loopRunner.reloadTeam', async () => {
+    vscode.commands.registerCommand('harborMate.openConsole', () => consolePanel?.show()),
+    vscode.window.registerTreeDataProvider('harborMate.inbox', inbox),
+    vscode.commands.registerCommand('harborMate.startTeam', () => svc.start(true)),
+    vscode.commands.registerCommand('harborMate.stopTeam', () => svc.stop(true)),
+    vscode.commands.registerCommand('harborMate.reloadTeam', async () => {
       const errs = await svc.reloadAll();
       out.show(true);
       out.appendLine(errs.length ? 'Team config problems:\n  ' + errs.join('\n  ') : 'Team reloaded OK.\n' + svc.status());
     }),
-    vscode.commands.registerCommand('loopRunner.status', () => { out.show(true); out.appendLine(svc.status()); }),
-    vscode.commands.registerCommand('loopRunner.focusInbox', () => vscode.commands.executeCommand('loopRunner.inbox.focus')),
-    vscode.commands.registerCommand('loopRunner.openLatestResult', async () => {
+    vscode.commands.registerCommand('harborMate.status', () => { out.show(true); out.appendLine(svc.status()); }),
+    vscode.commands.registerCommand('harborMate.focusInbox', () => vscode.commands.executeCommand('harborMate.inbox.focus')),
+    vscode.commands.registerCommand('harborMate.openLatestResult', async () => {
       // The newest run that recorded its outputs is authoritative; file modification time is only the fallback.
       const r = root();
       const run = recentRuns(r).find(x => x.outputs.length > 0);
       const file = run ? path.join(r, run.outputs[run.outputs.length - 1]) : latestOutput(r);
-      if (!file) { vscode.window.showInformationMessage('Loop Runner: no agent output yet.'); return; }
-      if (run) { vscode.window.setStatusBarMessage(`Loop Runner: ${run.agent} wrote this (run ${run.chainId})`, 6000); }
+      if (!file) { vscode.window.showInformationMessage('Harbor Mate: no agent output yet.'); return; }
+      if (run) { vscode.window.setStatusBarMessage(`Harbor Mate: ${run.agent} wrote this (run ${run.chainId})`, 6000); }
       await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file), { preview: false });
     }),
     // One entry point for the status bar: the commands people reach for, without hunting in the palette.
-    vscode.commands.registerCommand('loopRunner.menu', async () => {
+    vscode.commands.registerCommand('harborMate.menu', async () => {
       const run = (command: string) => () => vscode.commands.executeCommand(command);
       const items: (vscode.QuickPickItem & { run: () => unknown })[] = [
         svc.running
-          ? { label: '$(debug-stop) Stop Team', run: run('loopRunner.stopTeam') }
-          : { label: '$(play) Start Team', run: run('loopRunner.startTeam') },
-        { label: '$(dashboard) Open Console', run: run('loopRunner.openConsole') },
-        { label: '$(inbox) Open Inbox', description: inbox.pendingCount() ? `${inbox.pendingCount()} need you` : undefined, run: run('loopRunner.focusInbox') },
-        { label: '$(file-text) Open Latest Result', run: run('loopRunner.openLatestResult') },
-        { label: '$(sync) Reload & Validate Team', run: run('loopRunner.reloadTeam') },
-        { label: '$(send) Give an Agent a Task', run: run('loopRunner.runAgent') },
-        { label: '$(info) Show Team Status', run: run('loopRunner.status') },
-        { label: '$(key) Set Secret', run: run('loopRunner.setSecret') },
-        { label: '$(list-unordered) List Available Models', run: run('loopRunner.listModels') },
-        { label: '$(bell) Send a Test Notification', run: run('loopRunner.testNotify') }
+          ? { label: '$(debug-stop) Stop Team', run: run('harborMate.stopTeam') }
+          : { label: '$(play) Start Team', run: run('harborMate.startTeam') },
+        { label: '$(dashboard) Open Console', run: run('harborMate.openConsole') },
+        { label: '$(inbox) Open Inbox', description: inbox.pendingCount() ? `${inbox.pendingCount()} need you` : undefined, run: run('harborMate.focusInbox') },
+        { label: '$(file-text) Open Latest Result', run: run('harborMate.openLatestResult') },
+        { label: '$(sync) Reload & Validate Team', run: run('harborMate.reloadTeam') },
+        { label: '$(send) Give an Agent a Task', run: run('harborMate.runAgent') },
+        { label: '$(info) Show Team Status', run: run('harborMate.status') },
+        { label: '$(key) Set Secret', run: run('harborMate.setSecret') },
+        { label: '$(list-unordered) List Available Models', run: run('harborMate.listModels') },
+        { label: '$(bell) Send a Test Notification', run: run('harborMate.testNotify') }
       ];
-      const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Loop Runner' });
+      const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Harbor Mate' });
       await pick?.run();
     }),
-    vscode.commands.registerCommand('loopRunner.runAgent', async () => {
-      if (!svc.running) { vscode.window.showWarningMessage('Start the team first (Loop Runner: Start Team).'); return; }
+    vscode.commands.registerCommand('harborMate.runAgent', async () => {
+      if (!svc.running) { vscode.window.showWarningMessage('Start the team first (Harbor Mate: Start Team).'); return; }
       const pick = await vscode.window.showQuickPick(
         [...svc.team.values()].map(a => ({ label: a.name, description: a.description })), { placeHolder: 'Which agent?' });
       if (!pick) { return; }
       const task = await vscode.window.showInputBox({ prompt: `Task for ${pick.label}`, ignoreFocusOut: true });
       if (task) { svc.submit(pick.label, task); }
     }),
-    vscode.commands.registerCommand('loopRunner.setSecret', async () => {
+    vscode.commands.registerCommand('harborMate.setSecret', async () => {
       const name = await vscode.window.showInputBox({ prompt: 'Env var name (e.g. HARBOR_PAT, JIRA_TOKEN)', ignoreFocusOut: true });
       if (!name || !/^[A-Z_][A-Z0-9_]*$/.test(name)) { return; }
       const value = await vscode.window.showInputBox({ prompt: `Value for ${name}`, password: true, ignoreFocusOut: true });
       if (value) { await svc.setSecret(name, value); vscode.window.showInformationMessage(`Stored ${name}.`); }
     }),
-    vscode.commands.registerCommand('loopRunner.testNotify', async () => {
+    vscode.commands.registerCommand('harborMate.testNotify', async () => {
       const cmd = svc.cfg().get<string>('notifyCommand');
-      if (!cmd) { vscode.window.showWarningMessage('Set loopRunner.notifyCommand in your user settings first.'); return; }
-      const r = await notify(root(), cmd, { kind: 'question', agent: 'loop-runner', title: 'Test notification' }, await svc.secrets());
+      if (!cmd) { vscode.window.showWarningMessage('Set harborMate.notifyCommand in your user settings first.'); return; }
+      const r = await notify(root(), cmd, { kind: 'question', agent: 'harbor-mate', title: 'Test notification' }, await svc.secrets());
       out.show(true);
       out.appendLine(`notify test: ${r?.text}`);
     }),
-    vscode.commands.registerCommand('loopRunner.listModels', async () => {
+    vscode.commands.registerCommand('harborMate.listModels', async () => {
       const ms = await vscode.lm.selectChatModels({ vendor: 'copilot' });
       out.show(true);
       out.appendLine('Copilot models:\n' + ms.map(m => `  family=${m.family}  id=${m.id}  maxInputTokens=${m.maxInputTokens}`).join('\n'));
     }),
-    vscode.commands.registerCommand('loopRunner.openGate', (g: Gate) => showGate(root(), g)),
-    vscode.commands.registerCommand('loopRunner.answer', async (g: Gate) => {
+    vscode.commands.registerCommand('harborMate.openGate', (g: Gate) => showGate(root(), g)),
+    vscode.commands.registerCommand('harborMate.answer', async (g: Gate) => {
       await showGate(root(), g);
       const TYPE = '$(edit) Type an answer…';
       let answer: string | undefined;
@@ -649,34 +657,34 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!answer) { return; }
       try { after(answerQuestion(root(), g.id, answer).woke); } catch (e: any) { vscode.window.showWarningMessage(e.message); }
     }),
-    vscode.commands.registerCommand('loopRunner.approve', async (g: Gate) => {
+    vscode.commands.registerCommand('harborMate.approve', async (g: Gate) => {
       const ok = await vscode.window.showWarningMessage(`Run for "${g.title}"?`, { modal: true, detail: g.command }, 'Run');
       if (ok !== 'Run') { return; }
       try {
         const r = await approveAndRun(root(), g.id, policyFor(g), await svc.secrets());
         out.appendLine(`✔ ${g.title}: ${r.ok ? 'executed' : 'FAILED'}\n${r.text}`);
-        vscode.window.showInformationMessage(`Loop Runner: "${g.title}" ${r.ok ? 'executed' : 'failed'}.`);
+        vscode.window.showInformationMessage(`Harbor Mate: "${g.title}" ${r.ok ? 'executed' : 'failed'}.`);
         after(r.woke);
       } catch (e: any) { vscode.window.showErrorMessage(e.message); }
     }),
-    vscode.commands.registerCommand('loopRunner.reject', async (g: Gate) => {
+    vscode.commands.registerCommand('harborMate.reject', async (g: Gate) => {
       const fb = await vscode.window.showInputBox({ prompt: 'Feedback for the agent (optional)', ignoreFocusOut: true });
       if (fb === undefined) { return; }
       try { after(rejectApproval(root(), g.id, fb).woke); } catch (e: any) { vscode.window.showWarningMessage(e.message); }
     }),
-    vscode.commands.registerCommand('loopRunner.refreshInbox', () => inbox.refresh()),
+    vscode.commands.registerCommand('harborMate.refreshInbox', () => inbox.refresh()),
     { dispose: () => svc.stop() }
   );
   if (simEnabled()) {
     ctx.subscriptions.push(
-      vscode.commands.registerCommand('loopRunner._sim.submit', (agent: string, task: string) => { svc.submit(agent, task); }),
-      vscode.commands.registerCommand('loopRunner._sim.answer', (gateId: string, answer: string) => {
+      vscode.commands.registerCommand('harborMate._sim.submit', (agent: string, task: string) => { svc.submit(agent, task); }),
+      vscode.commands.registerCommand('harborMate._sim.answer', (gateId: string, answer: string) => {
         after(answerQuestion(root(), gateId, answer).woke);
       }),
-      vscode.commands.registerCommand('loopRunner._sim.chatSend', (agent: string, text: string) => { svc.chatSend(agent, text); }),
-      vscode.commands.registerCommand('loopRunner._sim.cancelRun', (agent: string) => svc.cancelRun(agent)),
-      vscode.commands.registerCommand('loopRunner._sim.tick', () => svc.tick()),
-      vscode.commands.registerCommand('loopRunner._sim.snapshot', () => ({
+      vscode.commands.registerCommand('harborMate._sim.chatSend', (agent: string, text: string) => { svc.chatSend(agent, text); }),
+      vscode.commands.registerCommand('harborMate._sim.cancelRun', (agent: string) => svc.cancelRun(agent)),
+      vscode.commands.registerCommand('harborMate._sim.tick', () => svc.tick()),
+      vscode.commands.registerCommand('harborMate._sim.snapshot', () => ({
         running: svc.running, active: svc.activeAgent ?? null, status: svc.status(), bar: bar.text
       }))
     );
@@ -689,7 +697,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     w.onDidCreate(() => inbox.refresh());
     ctx.subscriptions.push(w);
   }
-  const willAutoStart = ctx.workspaceState.get<boolean>(STARTED_KEY) === true;
+  const willAutoStart = (ctx.workspaceState.get<boolean>(STARTED_KEY) ?? ctx.workspaceState.get<boolean>(LEGACY_STARTED_KEY)) === true;
   if (willAutoStart) {
     void svc.start().catch((e: any) => out.appendLine(`Auto-start failed: ${e?.message ?? e}`));
   }

@@ -1,11 +1,11 @@
 ---
 name: loop-team-authoring
-description: Create or modify roles (.github/agents/*.agent.md) and skills that run unattended under Loop Runner, the VS Code extension that schedules Copilot agents. Use when asked to add a team member, give an agent a schedule, write a wakeIf probe, or write a skill script an agent will run.
+description: Create or modify roles (.github/agents/*.agent.md) and skills that run unattended under Harbor Mate, the VS Code extension that schedules Copilot agents. Use when asked to add a team member, give an agent a schedule, write a wakeIf probe, or write a skill script an agent will run.
 ---
 
-# Authoring roles and skills for a Loop Runner team
+# Authoring roles and skills for a Harbor Mate team
 
-Loop Runner runs VS Code custom agents unattended on Copilot models. It knows nothing about the business: every capability must live in a skill, and every role is a normal VS Code agent file with an extra `loop:` block. Follow these conventions exactly; the runtime depends on them.
+Harbor Mate runs VS Code custom agents unattended on Copilot models. It knows nothing about the business: every capability must live in a skill, and every role is a normal VS Code agent file with an extra `loop:` block. Follow these conventions exactly; the runtime depends on them.
 
 ## 1. Role file: `.github/agents/<name>.agent.md`
 
@@ -103,7 +103,7 @@ A skill is a folder with `SKILL.md` (frontmatter `name`, `description`; body: ho
 
 ## 6. Giving a role a memory
 
-Every run starts from nothing. If a role should build on what it did before (not reopen something a human chose to watch, say what changed since last time), add the shared skill `loop-memory` (source: `skills/loop-memory/` in the Loop Runner repository; copy it into the workspace's `.github/skills/`) to its `loop.skills`, and give it two lines in the body: start with `now` and `recall --agent <name>`, finish with `note --agent <name>`. Use `check --key <subject> --value <number>` before acting on something that may already be known, and `track` when a subject should be followed or a human has decided about it. The skill's own SKILL.md carries the protocol, so the role file does not repeat it. Do not give a role its own note-taking instructions or file layout.
+Every run starts from nothing. If a role should build on what it did before (not reopen something a human chose to watch, say what changed since last time), add the shared skill `loop-memory` (source: `skills/loop-memory/` in the Harbor Mate repository; copy it into the workspace's `.github/skills/`) to its `loop.skills`, and give it two lines in the body: start with `now` and `recall --agent <name>`, finish with `note --agent <name>`. Use `check --key <subject> --value <number>` before acting on something that may already be known, and `track` when a subject should be followed or a human has decided about it. The skill's own SKILL.md carries the protocol, so the role file does not repeat it. Do not give a role its own note-taking instructions or file layout.
 
 ## 7. Designing an effective agent
 
@@ -117,7 +117,7 @@ An unattended agent starts every run knowing nothing, cannot ask a colleague, an
 4. **Decide in the instructions, don't hope.** Write the decision rules ("if X, do Y, otherwise Z"), the inputs it will have and the output it must produce. Say what it must never do and why.
 5. **Judgement goes to a human.** Unattended, a guess is worse than a pause. Where the right answer depends on preference or risk, instruct the agent to `ask_human` with the options. Anything with outside effects (sending, publishing, deploying, deleting) goes through `request_approval` with a draft file the human can read and edit.
 6. **A defined end.** Every run finishes with one of: `done`, `nothing_to_do`, `blocked` (say what is missing), or `open` with a `next` step when it is waiting for something. Name the file it should leave as a deliverable.
-7. **Small, explicit handoffs.** Hand off only to a teammate whose `description` says it handles this; put ids, paths and evidence in the handoff context, because the receiver sees nothing else. Expect a bounded number of hops (`loopRunner.maxHops`) and never design two agents to hand work back and forth.
+7. **Small, explicit handoffs.** Hand off only to a teammate whose `description` says it handles this; put ids, paths and evidence in the handoff context, because the receiver sees nothing else. Expect a bounded number of hops (`harborMate.maxHops`) and never design two agents to hand work back and forth.
 8. **Memory through the shared skill.** If it must build on earlier runs, use `loop-memory`; do not invent note files in the instructions.
 9. **Prove it manually, then schedule it.** Create it with no schedule, give it a one-off task, read what it did, fix the instructions, and only then add a schedule with a conservative cadence and a daily cap.
 10. **Facts live where they can be updated.** Put stable procedure in the instructions and changing facts (thresholds, owners, lists) in a skill reference file or in memory, so that updating them does not mean rewriting the role.
@@ -144,7 +144,7 @@ An unattended agent starts every run knowing nothing, cannot ask a colleague, an
 
 ## 8. Checklist before finishing
 
-- [ ] Role file parses: run "Loop Runner: Reload & Validate Team" and fix every reported problem.
+- [ ] Role file parses: run "Harbor Mate: Reload & Validate Team" and fix every reported problem.
 - [ ] Every `loop.skills` entry exists, and the body names the skills for Chat mode.
 - [ ] Scheduled roles have a `task`; a probe, if there is one, follows the exit-code contract and was run once by hand.
 - [ ] The instructions say what to do, what never to do, when to ask the human, and how to finish.

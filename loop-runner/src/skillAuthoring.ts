@@ -176,7 +176,7 @@ export function proposeSkillEdit(root: string, input: SkillChange): SkillPropose
   const name = i.skill.trim();
   const found = loadSkills(root).get(name);
   if (!found) { return { error: `No skill named "${name}". Skills: ${[...loadSkills(root).keys()].join(', ') || 'none'}.` }; }
-  if (RESERVED.includes(name)) { return { error: `"${name}" ships with Loop Runner and is not edited here.` }; }
+  if (RESERVED.includes(name)) { return { error: `"${name}" ships with Harbor Mate and is not edited here.` }; }
   if (!found.relDir.startsWith('.github/skills/')) { return { error: `${name} lives in ${found.relDir}, outside .github/skills. Edit it by hand.` }; }
   const dir = found.relDir;
   const abs = (rel: string) => path.join(root, dir, rel);

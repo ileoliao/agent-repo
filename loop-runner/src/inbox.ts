@@ -104,7 +104,7 @@ export class InboxView implements vscode.TreeDataProvider<Node> {
     it.iconPath = new vscode.ThemeIcon(
       g.status === 'pending' ? (g.kind === 'question' ? 'question' : 'bell-dot')
         : g.status === 'failed' ? 'error' : g.status === 'rejected' ? 'circle-slash' : 'pass');
-    it.command = { command: 'loopRunner.openGate', title: 'Open', arguments: [g] };
+    it.command = { command: 'harborMate.openGate', title: 'Open', arguments: [g] };
     return it;
   }
 }

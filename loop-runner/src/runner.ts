@@ -40,7 +40,7 @@ export interface RunResult {
   gateId?: string;
 }
 
-const RUNTIME_RULES = `# Runtime rules (Loop Runner)
+const RUNTIME_RULES = `# Runtime rules (Harbor Mate)
 You run unattended. Nobody watches this conversation; the human sees only what you send through ask_human, request_approval and finish, often hours later.
 - You can reach exactly: your skills' scripts, the file tools, and the commands your policy allows. Before you decide something is out of reach, check your skills and try the obvious route: an assumption about access is not evidence.
 - A tool result starting with REFUSED means policy said no, so the same call will fail the same way. Do not retry it. Try a genuinely different route, use request_approval if the message offers it, or report the gap.
@@ -269,7 +269,7 @@ async function runItemInner(item: WorkItem, deps: RunDeps): Promise<RunResult> {
       try {
         const msgs = piToPlain((context.messages as Message[]).filter(m => (m as any).role !== 'system')).map(toVscode);
         const response = await deps.model.sendRequest(msgs, {
-          tools, toolMode: vscode.LanguageModelChatToolMode.Auto, justification: `Loop Runner: ${agent.name} work item ${item.id}`
+          tools, toolMode: vscode.LanguageModelChatToolMode.Auto, justification: `Harbor Mate: ${agent.name} work item ${item.id}`
         }, deps.token);
         const content: any[] = [];
         let text = '';

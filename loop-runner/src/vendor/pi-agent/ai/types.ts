@@ -2,9 +2,9 @@
  * Vendored from pi (https://github.com/earendil-works/pi), packages/ai/src/types.ts, version 1.1.0.
  * Copyright (c) 2025 Mario Zechner. MIT License. See loop-runner/THIRD_PARTY_NOTICES.md.
  *
- * Adaptations for Loop Runner: only the message, content, tool and event types the agent loop uses are kept.
+ * Adaptations for Harbor Mate: only the message, content, tool and event types the agent loop uses are kept.
  * Everything that describes model providers (APIs, per-provider options and compatibility settings, cost tables,
- * image and classifier models) is removed: Loop Runner reaches the model only through VS Code's Language Model API.
+ * image and classifier models) is removed: Harbor Mate reaches the model only through VS Code's Language Model API.
  */
 
 export interface TextContent {
@@ -326,7 +326,7 @@ export type Transport = "sse" | "websocket" | "websocket-cached" | "auto";
 
 // ---- Provider-neutral stand-ins for what pi describes per provider ----
 
-/** Loop Runner has one "API": VS Code's Language Model API. Kept as a string so pi's loop type-checks unchanged. */
+/** Harbor Mate has one "API": VS Code's Language Model API. Kept as a string so pi's loop type-checks unchanged. */
 export type Api = string;
 export type ProviderId = string;
 

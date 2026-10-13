@@ -419,7 +419,7 @@ export function renderBody(m: ConsoleModel): string {
   const agents = m.agents.length ? m.agents.map(agentRow).join('')
     : empty('bot', 'No agents on the team', 'Add a <code>loop:</code> block to a <code>.github/agents/*.agent.md</code> file, then reload.');
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
-  return `<header class="bar"><div class="brand">Loop Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
+  return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
     ${note}${renderTabs(m)}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
     <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
     ${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Agents</h2>${agents}</aside></div>`}`;
@@ -661,5 +661,5 @@ vs.postMessage({ type:'ready' });`;
 export function renderPage(m: ConsoleModel, nonce: string, cspSource: string): string {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<title>Loop Console</title><style>${STYLE}</style></head><body><div id="app">${renderBody(m)}</div><script nonce="${nonce}">${SCRIPT}</script></body></html>`;
+<title>Harbor Mate Console</title><style>${STYLE}</style></head><body><div id="app">${renderBody(m)}</div><script nonce="${nonce}">${SCRIPT}</script></body></html>`;
 }

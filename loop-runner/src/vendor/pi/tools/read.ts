@@ -4,9 +4,9 @@
  * Source: packages/coding-agent/src/core/tools/read.ts
  * Commit: ea448f454af474f3e2fe9733b331e17b0662f5d6
  *
- * Adaptations for Loop Runner:
+ * Adaptations for Harbor Mate:
  * - Removed TUI renderer spread.
- * - Removed image attachment handling (pi-ai model types, mime detection, photon image processing). Loop Runner tools return text only.
+ * - Removed image attachment handling (pi-ai model types, mime detection, photon image processing). Harbor Mate tools return text only.
  * - Imports rewired onto this vendor tree.
  */
 import type { AgentTool } from "../types";
@@ -67,7 +67,7 @@ const defaultReadOperations: ReadOperations = {
 };
 
 export interface ReadToolOptions {
-	/** Kept for source compatibility. Image attachments are not produced in Loop Runner. */
+	/** Kept for source compatibility. Image attachments are not produced in Harbor Mate. */
 	autoResizeImages?: boolean;
 	/** Custom operations for file reading. Default: local filesystem */
 	operations?: ReadOperations;
@@ -124,7 +124,7 @@ export function createReadToolDefinition(
 							let content: TextContent[];
 							let details: ReadToolDetails | undefined;
 							{
-								// Read text content. Image attachments (pi-ai / photon) are not wired in Loop Runner.
+								// Read text content. Image attachments (pi-ai / photon) are not wired in Harbor Mate.
 								const buffer = await ops.readFile(absolutePath);
 								const textContent = buffer.toString("utf-8");
 								const allLines = textContent.split("\n");
