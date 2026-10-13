@@ -73,6 +73,33 @@ Commands run with stdin closed and a hard timeout (default 180 s), so:
 - Prefer the standard library. Do not install packages from inside a script.
 - Plain file names in `scripts/` ending in `.py`, `.js`, `.mjs`, `.cjs`, `.sh` or `.ps1`; no sub-folders.
 
+### A `wakeIf` probe in practice
+
+A probe answers "is there anything to do?" without a model call. It prints what it found (briefly) and exits 0, exits 1 when there is nothing, and exits 2 when it could not check. A skeleton (replace the command with the real one):
+
+```python
+#!/usr/bin/env python3
+"""Exit 0: something to handle (print what). 1: nothing to do. 2: could not check."""
+import json, subprocess, sys
+
+try:
+    out = subprocess.run(["<your-cli>", "list", "--status", "failed"], capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        print(out.stderr.strip()[:500], file=sys.stderr)
+        sys.exit(2)
+    items = json.loads(out.stdout)
+except Exception as e:
+    print(f"could not check: {e}", file=sys.stderr)
+    sys.exit(2)
+
+if not items:
+    sys.exit(1)
+print(json.dumps({"count": len(items), "items": items[:20]}))
+sys.exit(0)
+```
+
+The agent must list the skill the probe lives in, and `wakeIf: python3 .github/skills/<skill>/scripts/check.py` is the command.
+
 ## 5. How an agent calls it
 
 ```

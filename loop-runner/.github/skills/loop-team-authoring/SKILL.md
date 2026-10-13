@@ -67,9 +67,9 @@ loop:
 - Schedule state, the daily cap and wake history are kept per goal.
 - A goal without a schedule never runs on its own; it only records a responsibility.
 
-## 3. The wakeIf probe (zero-token schedule gate)
+## 3. The wakeIf probe (optional zero-token gate)
 
-A scheduled goal with `wakeIf` costs nothing until there is work. The probe is usually the skill's detection script with an exit-code mode:
+Optional. Worth it when a goal runs more than once an hour and most runs would find nothing; a daily report does not need one. A scheduled goal with `wakeIf` costs nothing until there is work. The probe is a script in a skill the agent lists (the command passes the agent's policy like any other), usually the skill's detection script with an exit-code mode:
 
 | Exit code | Meaning | What happens |
 |---|---|---|
@@ -113,7 +113,7 @@ An unattended agent starts every run knowing nothing, cannot ask a colleague, an
 
 1. **One role, one owner.** An agent is a role with a clear area of responsibility. Several standing responsibilities of the *same* role are goals of one agent. Split into separate agents when the **permissions or the trust level of the data** differ (one reads untrusted input and has narrow rights; another writes), because the policy is per agent.
 2. **Least privilege.** Give each agent its own policy with only the commands and paths it needs; read-only roles get `"writablePaths": []`. Give it only the skills it uses, and credentials only to the skills that need them. Loosen a policy only for an agent that reads nothing written by outsiders.
-3. **Cheap first.** Let a zero-token `wakeIf` probe decide whether the model runs at all; let scripts filter, count and aggregate so the model sees a short result; cap cost with `maxRunsPerDay` and `maxSteps`.
+3. **Cheap first.** Let scripts filter, count and aggregate so the model sees a short result, and cap cost with `maxRunsPerDay` and `maxSteps`. A `wakeIf` probe is optional: it pays only when a goal runs more than once an hour and most runs would find nothing, because it decides in zero tokens whether the model runs at all.
 4. **Decide in the instructions, don't hope.** Write the decision rules ("if X, do Y, otherwise Z"), the inputs it will have and the output it must produce. Say what it must never do and why.
 5. **Judgement goes to a human.** Unattended, a guess is worse than a pause. Where the right answer depends on preference or risk, instruct the agent to `ask_human` with the options. Anything with outside effects (sending, publishing, deploying, deleting) goes through `request_approval` with a draft file the human can read and edit.
 6. **A defined end.** Every run finishes with one of: `done`, `nothing_to_do`, `blocked` (say what is missing), or `open` with a `next` step when it is waiting for something. Name the file it should leave as a deliverable.
@@ -129,7 +129,7 @@ An unattended agent starts every run knowing nothing, cannot ask a colleague, an
 | **The do-everything agent** (many skills, many goals, a long prompt) | Instructions blur, mistakes are hard to trace, and one policy must cover every job | Split by role and by permission |
 | **One agent per tiny task** | Overhead, handoff chatter, nobody owns the outcome | Make it a goal of the role that owns the area |
 | **Vague mandate** ("monitor X and handle issues") | The model invents its own definition of "handle" | State the trigger, the decision rules, the output and the stopping point |
-| **Scheduling without a probe** | The model is called every interval to find nothing | Add a `wakeIf` probe, or lower the frequency |
+| **A frequent schedule with no probe** (more than once an hour, mostly nothing to do) | The model is called every interval to find nothing | Add a `wakeIf` probe, or lower the frequency. A daily or weekly schedule does not need one |
 | **Using the model for arithmetic and filtering** | Slow, costly, and sometimes wrong | A skill script computes; the model interprets the result |
 | **"Use your best judgement" unattended** | A confident guess on a risky call | Tell it when to `ask_human` |
 | **Outside effects without approval**, or text embedded in the approval command | The human cannot review or edit what will happen | Draft in `.loop/outbox/`, approve a command that reads the draft |
@@ -146,7 +146,7 @@ An unattended agent starts every run knowing nothing, cannot ask a colleague, an
 
 - [ ] Role file parses: run "Loop Runner: Reload & Validate Team" and fix every reported problem.
 - [ ] Every `loop.skills` entry exists, and the body names the skills for Chat mode.
-- [ ] Scheduled roles have a `task`; probes follow the exit-code contract and were run once by hand.
+- [ ] Scheduled roles have a `task`; a probe, if there is one, follows the exit-code contract and was run once by hand.
 - [ ] The instructions say what to do, what never to do, when to ask the human, and how to finish.
 - [ ] External effects go through approval with a draft in `.loop/outbox/`.
 - [ ] Scripts are non-interactive, read secrets from the environment, and print small JSON.

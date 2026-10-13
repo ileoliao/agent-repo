@@ -56,7 +56,7 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'propose_schedule',
     description: "Propose a new schedule and/or task text for an agent. schedule is a 5-field cron in LOCAL time (minute hour day-of-month month day-of-week), e.g. '*/30 9-18 * * 1-5' = every 30 minutes, 09:00-18:30, weekdays. Set off=true to stop scheduled runs. The human must apply it.",
-    inputSchema: obj({ agent: str('Agent name'), schedule: str('Cron expression'), task: str('What the agent does on each scheduled run'), off: { type: 'boolean', description: 'Turn scheduling off' } }, ['agent'])
+    inputSchema: obj({ agent: str('Agent name'), schedule: str('Cron expression'), task: str('What the agent does on each scheduled run'), wakeIf: str('Optional zero-token pre-check: a command from a skill the agent lists, for example python3 .github/skills/<skill>/scripts/check.py. Exit 0 wakes the agent, 1 means nothing to do, 2 means the check is broken. An empty string removes it.'), off: { type: 'boolean', description: 'Turn scheduling off' } }, ['agent'])
   },
   {
     name: 'propose_role_edit',
@@ -177,7 +177,7 @@ async function runTool(name: string, input: any, host: ChatHost): Promise<ToolRe
     case 'get_memory':
       return { text: memoryFor(root, String(input.agent)) || '(nothing remembered)' };
     case 'propose_schedule':
-      return fromChange(proposeSchedule(root, String(input.agent), { schedule: input.off ? null : input.schedule, task: input.task }), host);
+      return fromChange(proposeSchedule(root, String(input.agent), { schedule: input.off ? null : input.schedule, task: input.task, wakeIf: input.wakeIf }), host);
     case 'propose_role_edit':
       return fromChange(proposeRoleEdit(root, String(input.agent), String(input.old_text ?? ''), String(input.new_text ?? '')), host);
     case 'propose_goals':

@@ -1280,6 +1280,14 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok((await runChatTool('propose_schedule', { agent: 'sentinel', schedule: 'every day' }, host)).text.startsWith('Not proposed'), 'a bad cron is explained to the model, not proposed');
     ok((await runChatTool('propose_schedule', { agent: 'planner', schedule: '0 9 * * *', task: 'x' }, host)).text.includes('no loop: block'), 'a chat-only agent cannot be scheduled from here');
 
+    const probe = await runChatTool('propose_schedule', { agent: 'sentinel', wakeIf: 'python3 .github/skills/x/scripts/check.py' }, host);
+    ok(probe.proposal && probe.proposal.detail.includes('+  wakeIf:') && probe.proposal.detail.includes('check.py'), 'a wakeIf probe can be proposed on its own for a scheduled agent');
+    await probe.proposal.apply();
+    ok(loadAgents(R).get('sentinel').wakeIf === 'python3 .github/skills/x/scripts/check.py', 'Apply writes the probe');
+    const unprobe = await runChatTool('propose_schedule', { agent: 'sentinel', wakeIf: '' }, host);
+    await unprobe.proposal.apply();
+    ok(!loadAgents(R).get('sentinel').wakeIf, 'an empty wakeIf removes the probe');
+
     const mem = await runChatTool('propose_remember', { agent: 'sentinel', note: 'Reports go to ops' }, host);
     ok(mem.proposal && !fs.existsSync(path.join(R, '.loop', 'memory', 'sentinel.md')), 'a note is proposed, not written');
     const reloadsBefore = calls.reload;
@@ -1597,7 +1605,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     const risky = await designOf({ name: 'd2', description: 'Posts updates.', instructions: 'Use probe to check the status and then post a summary to the channel for the team every time something changes. '.repeat(3) });
     ok(/outside effects/.test(risky) && !/very short/.test(risky), 'an agent that posts without any mention of approval is flagged');
     const good = await designOf({ name: 'd3', description: 'Checks releases.', instructions: 'You check release health with the probe skill. '.repeat(6) + 'When a call depends on risk, ask the human with ask_human. Finish with done, or blocked and say what is missing.', skills: ['probe'], schedule: '0 9 * * *', task: 'Check.', maxRunsPerDay: 2 });
-    ok(good.includes('Will run on its own') && /no wakeIf probe/.test(good) && !/very short|never name|No maxRunsPerDay|leave judgement|outside effects/.test(good), 'a careful agent is only told about what is left (here, the missing wakeIf probe)');
+    ok(good.includes('Will run on its own') && !/wakeIf|very short|never name|No maxRunsPerDay|leave judgement|outside effects/.test(good), 'a careful daily agent is not nagged about a probe, or anything else');
     const many = await designOf({ name: 'd4', description: 'Does a lot.', instructions: 'Use the probe skill. '.repeat(20), skills: ['probe', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6'].filter((x, i) => i === 0) });
     ok(!/skills\. An agent that needs this many/.test(many), 'a normal number of skills is not flagged');
     const goalAdd = await cardOf('propose_goals', { agent: 'sentinel', op: 'add', id: 'quick', text: 'Check often', schedule: '* * * * *' });
