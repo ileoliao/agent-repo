@@ -79,15 +79,16 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
       name: 'run_command',
       description:
         "Run a non-interactive shell command at the workspace root. Your skills' scripts are pre-approved. " +
-        'A REFUSED result is final: do not retry it; use another route or request_approval.',
+        'A REFUSED result will repeat if you retry it: use a different route, use request_approval only if the message offers it, otherwise report the gap.',
       inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] }
     },
     {
       name: 'ask_human',
       description:
-        'Ask the human a question when you cannot decide responsibly on your own: ambiguous evidence, a judgement call, ' +
-        'missing access or information. You pause here and continue this same conversation when they answer ' +
-        '(it may take hours). Ask one specific question, give your recommendation, and offer options when you can.',
+        'Ask the human for something only they can give: a decision between reasonable options, a preference, or access or data your skills cannot reach. ' +
+        'You pause here and continue this same conversation when they answer (often hours). First do every part of the work you can. ' +
+        'In context, say what you tried and quote the exact error. If a capability is missing, name the lasting fix (a skill, an allowed command, a secret) as well as any one-off workaround. ' +
+        'Ask one specific question, with the recommended option first.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -105,7 +106,8 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
         'Ask the human to approve an action (e.g. sending a reply to a user). Write any draft to .loop/outbox/ first and ' +
         'list it in files; the human may edit it before approving. The command runs only after approval, so make it read ' +
         'the draft file rather than embedding text. With wait=true you pause and continue this conversation with the ' +
-        'result or the rejection feedback; with wait=false it returns immediately and you should carry on or finish.',
+        'result or the rejection feedback; with wait=false it returns immediately and you should carry on or finish. ' +
+        'Not for questions or for getting access: use ask_human.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -121,7 +123,7 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
     {
       name: 'finish',
       description:
-        'End this work item with a short summary. done = resolved; nothing_to_do = nothing needed doing; blocked = you cannot proceed. ' +
+        'End this work item with a short summary. done = resolved; nothing_to_do = nothing needed doing; blocked = you cannot proceed and no answer from the human would unblock this run (the summary must name what is missing and what you tried). ' +
         'open = this task is NOT finished and you will continue it later (for example you are waiting for a teammate); ' +
         'it stays on your list of open tasks and you must say in next what the next step is and what you are waiting for.',
       inputSchema: {
@@ -223,7 +225,7 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
       const gate = decideCommand(ctx.policy, input.command, ctx.extraAllow);
       if (gate.decision !== 'allow') {
         return {
-          text: `REFUSED by policy (${gate.rule}). If this action truly needs doing, use request_approval.`,
+          text: `REFUSED by policy (${gate.rule}). Retrying will fail the same way. If this exact action truly needs doing, request_approval can ask the human to sign it off; otherwise use a different route or report the gap.`,
           decision: 'deny'
         };
       }
