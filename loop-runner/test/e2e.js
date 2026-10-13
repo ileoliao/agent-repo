@@ -1482,6 +1482,19 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     const { CHAT_TOOLS } = require(`${OUT}/chatTools.js`);
     const named = [...new Set([...guide.matchAll(/`(propose_[a-z_]+|get_[a-z_]+|list_[a-z_]+)`/g)].map(m => m[1]))];
     ok(named.length > 5 && named.every(n => CHAT_TOOLS.some(t => t.name === n)), 'every tool the guide names exists');
+    // the two copies of the reference cannot drift, and every field it names is one the loader reads
+    {
+      const g = fs.readFileSync(path.join(__dirname, '..', 'guides', 'authoring.md'), 'utf8');
+      const skill = fs.readFileSync(path.join(__dirname, '..', '.github', 'skills', 'loop-team-authoring', 'SKILL.md'), 'utf8');
+      const shared = g.slice(g.indexOf('# Authoring roles and skills for a Loop Runner team'));
+      ok(parseFrontmatter(skill).meta.name === 'loop-team-authoring' && skill.split(/^---\r?\n[\s\S]*?\r?\n---\r?\n\r?\n/)[1].trim() === shared.trim(), 'the guide and the loop-team-authoring skill carry the same reference text');
+      const code = fs.readFileSync(path.join(__dirname, '..', 'src', 'team.ts'), 'utf8');
+      const fences = [...g.matchAll(/```(?:markdown|yaml)\n([\s\S]*?)```/g)].map(m => m[1]);
+      const keys = new Set(fences.flatMap(f => f.split('\n').flatMap(l => { const m = /^\s*(?:- )?([A-Za-z]+):/.exec(l); return m ? [m[1]] : []; })));
+      const known = new Set(['name', 'description', 'model', 'handoffs', 'loop', 'label', 'agent', 'prompt', 'goals', 'id', 'text']);
+      const unread = [...keys].filter(k => !known.has(k) && !new RegExp(`(loop\\?\\.|\\bo\\.)${k}\\b`).test(code));
+      ok(keys.has('maxSilence') && keys.has('wakeIf') && unread.length === 0, `every field the guide shows is read by the loader${unread.length ? ' (not read: ' + unread.join(', ') + ')' : ''}`);
+    }
     fs.rmSync(R, { recursive: true, force: true });
   }
 
