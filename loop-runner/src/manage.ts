@@ -3,7 +3,7 @@ import * as path from 'path';
 import { createTwoFilesPatch } from 'diff';
 import { parseFrontmatter } from './frontmatter';
 import { validateCron } from './cron';
-import { loadAllAgents } from './team';
+import { AgentDef, agentFromText, loadAllAgents, problemsIfWritten } from './team';
 
 /**
  * Changes the human asks for in conversation (schedule, task text, role instructions, standing memory).
@@ -17,6 +17,8 @@ export interface Change {
   before: string | null;
   after: string;
   summary: string;
+  /** What the human most needs to know before applying (for example whether it will run on its own), shown above the diff. */
+  notes?: string;
 }
 
 export type Proposed = { change: Change } | { error: string };
@@ -153,6 +155,218 @@ export function proposeRoleEdit(root: string, name: string, oldText: string, new
   if (n !== 1) { return { error: n === 0 ? 'That text was not found in the role instructions.' : `That text appears ${n} times; quote more of it so it is unique.` }; }
   const after = head + body.replace(oldText, () => newText);
   return { change: { file: r.file, before: r.text, after, summary: `${name}: role instructions edited` } };
+}
+
+// ---- goals, skills and new agents: lists and nested blocks in the loop: block ----
+
+/**
+ * Replace (or, with undefined, remove) one key of the `loop:` block with the given lines. The first line is the key
+ * itself; later lines are indented relative to it. Everything else stays byte-identical. Returns undefined when there
+ * is no loop block.
+ */
+export function setLoopBlock(text: string, key: string, block: string[] | undefined): string | undefined {
+  const nl = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const fm = frontmatterRange(lines);
+  if (!fm) { return undefined; }
+  const loopAt = lines.findIndex((l, i) => i > fm[0] && i < fm[1] && /^loop:\s*$/.test(l));
+  if (loopAt < 0) { return undefined; }
+  let blockEnd = loopAt + 1;
+  while (blockEnd < fm[1] && (/^\s+\S/.test(lines[blockEnd]) || lines[blockEnd].trim() === '')) { blockEnd++; }
+  const keyAt = lines.findIndex((l, i) => i > loopAt && i < blockEnd && new RegExp(`^  ${key}:`).test(l));
+  let oldEnd = keyAt + 1;
+  // A block list may sit at the key's own indent (`  - item`), so those lines belong to the key too.
+  if (keyAt >= 0) { while (oldEnd < blockEnd && (/^\s{3,}\S/.test(lines[oldEnd]) || /^  -(\s|$)/.test(lines[oldEnd]))) { oldEnd++; } }
+  const fresh = block ? block.map((l, i) => (i === 0 ? `  ${l}` : `    ${l}`)) : [];
+  if (keyAt >= 0) { lines.splice(keyAt, oldEnd - keyAt, ...fresh); }
+  else if (fresh.length) {
+    // A new key goes at the end of the block, before any trailing blank lines.
+    let at = blockEnd;
+    while (at > loopAt + 1 && lines[at - 1].trim() === '') { at--; }
+    lines.splice(at, 0, ...fresh);
+  }
+  return lines.join(nl);
+}
+
+/** A string as a one-line quoted YAML scalar; undefined when it cannot be written without escapes. */
+function quoted(v: string): string | undefined {
+  if (/[\r\n]/.test(v)) { return undefined; }
+  if (!v.includes('"')) { return `"${v}"`; }
+  if (!v.includes("'")) { return `'${v}'`; }
+  return undefined;
+}
+
+/** A scalar or a list of scalars as the right side of `key: `. */
+function scalarYaml(v: unknown): string | undefined {
+  if (typeof v === 'number' || typeof v === 'boolean') { return String(v); }
+  if (typeof v === 'string') { return quoted(v); }
+  if (Array.isArray(v) && v.every(x => typeof x === 'string')) {
+    const q = v.map(x => (/^[A-Za-z0-9_.\-\/]+$/.test(x) ? x : quoted(x)));
+    return q.every(x => x !== undefined) ? `[${q.join(', ')}]` : undefined;
+  }
+  return undefined;
+}
+
+const GOAL_KEYS = ['id', 'text', 'schedule', 'wakeIf', 'task', 'skills', 'policy', 'urgent', 'maxSilence', 'maxRunsPerDay'];
+
+/** `loop.goals` as block lines (key line first), or an error if a goal has structure that cannot be rewritten safely. */
+function goalsYaml(goals: Record<string, unknown>[]): { lines: string[] } | { error: string } {
+  const lines = ['goals:'];
+  for (const g of goals) {
+    const keys = [...GOAL_KEYS.filter(k => g[k] !== undefined), ...Object.keys(g).filter(k => !GOAL_KEYS.includes(k) && g[k] !== undefined)];
+    for (const [i, k] of keys.entries()) {
+      const v = scalarYaml(g[k]);
+      if (v === undefined) { return { error: `Goal "${String(g.id)}": the value of ${k} cannot be written safely (a line break, or both kinds of quote). Reword it.` }; }
+      lines.push(`${i === 0 ? '- ' : '  '}${k}: ${v}`);
+    }
+  }
+  return { lines };
+}
+
+/** A policy given by the human or the chat must be a file that already exists under .loop/policies. */
+function policyError(root: string, policy: string): string | undefined {
+  if (!/^\.loop\/policies\/[A-Za-z0-9_.\-\/]+$/.test(policy) || policy.split('/').includes('..')) { return `policy must be a path under .loop/policies/, not "${policy}".`; }
+  return fs.existsSync(path.join(root, policy)) ? undefined : `The policy file ${policy} does not exist. Policies are written by hand; chat does not create them.`;
+}
+
+/** When and how the agent will run, in the words the human needs before pressing Apply. */
+function runNotes(a: AgentDef): string {
+  const sched = a.goals.filter(g => g.schedule);
+  const when = sched.length
+    ? `**Will run on its own:** ${sched.map(g => `\`${g.schedule}\` (${g.id === 'default' ? 'task' : `goal ${g.id}`}: ${g.task.length > 80 ? g.task.slice(0, 79) + '…' : g.task})`).join('; ')}.`
+    : '**Will not run on its own.** It runs only when you give it a task.';
+  return `${when}\nPolicy: ${a.policy ?? 'default'}.${a.goals.some(g => g.policy) ? ' Some goals use their own policy.' : ''}`;
+}
+
+/** The checks every proposed agent file passes before a diff is shown. */
+function checked(root: string, file: string, before: string | null, after: string, summary: string, expect?: (a: ReturnType<typeof agentFromText>) => string | undefined): Proposed {
+  const read = agentFromText(path.posix.basename(file), after);
+  if (!read.inLoop) { return { error: 'The file would have no loop: block, so the agent would not join the team.' }; }
+  const bad = expect?.(read);
+  if (bad) { return { error: bad } };
+  const problems = problemsIfWritten(root, path.posix.basename(file), after);
+  if (problems.length) { return { error: `This would leave the team with problems, so nothing is proposed:\n${problems.join('\n')}` }; }
+  return { change: { file, before, after, summary, notes: runNotes(read) } };
+}
+
+export interface GoalInput {
+  id: string;
+  text?: string; schedule?: string; wakeIf?: string; task?: string; skills?: string[]; policy?: string;
+  urgent?: boolean; maxSilence?: string; maxRunsPerDay?: number;
+}
+
+/** Add, change or remove one goal in `loop.goals`. The legacy single schedule (the goal "default") is changed with proposeSchedule. */
+export function proposeGoals(root: string, name: string, op: 'add' | 'update' | 'remove', g: GoalInput): Proposed {
+  const r = readAgent(root, name);
+  if (!r.ok) { return { error: r.error }; }
+  if (!r.agent.inLoop) { return { error: `${name} has no loop: block, so it does not run unattended. Add one first.` }; }
+  const id = String(g?.id ?? '').trim();
+  if (!id) { return { error: 'A goal needs an id.' }; }
+  if (id === 'default') { return { error: 'The goal "default" is the single schedule in the loop block; change it with propose_schedule.' }; }
+  const raw = parseFrontmatter(r.text).meta.loop?.goals;
+  const goals: Record<string, unknown>[] = Array.isArray(raw) ? raw.map((x: any) => ({ ...x })) : [];
+  const at = goals.findIndex(x => String(x.id) === id);
+  const patch: Record<string, unknown> = {};
+  for (const k of GOAL_KEYS) { if ((g as any)[k] !== undefined && k !== 'id') { patch[k] = (g as any)[k]; } }
+  if (typeof patch.policy === 'string') { const e = policyError(root, patch.policy); if (e) { return { error: e }; } }
+  if (op === 'add') {
+    if (at >= 0) { return { error: `${name} already has a goal "${id}". Use update.` }; }
+    if (typeof patch.text !== 'string' || !patch.text.trim()) { return { error: 'A new goal needs text: what the agent is responsible for.' }; }
+    goals.push({ id, ...patch });
+  } else if (op === 'update') {
+    if (at < 0) { return { error: `${name} has no goal "${id}". Goals: ${goals.map(x => String(x.id)).join(', ') || 'none'}.` }; }
+    if (!Object.keys(patch).length) { return { error: 'Nothing to change: give at least one field.' }; }
+    Object.assign(goals[at], patch);
+  } else {
+    if (at < 0) { return { error: `${name} has no goal "${id}". Goals: ${goals.map(x => String(x.id)).join(', ') || 'none'}.` }; }
+    goals.splice(at, 1);
+  }
+  const y = goals.length ? goalsYaml(goals) : { lines: undefined as string[] | undefined };
+  if ('error' in y) { return { error: y.error }; }
+  const after = setLoopBlock(r.text, 'goals', y.lines);
+  if (after === undefined) { return { error: 'Could not find the loop: block to edit.' }; }
+  const want = goals.map(x => String(x.id));
+  return checked(root, r.file, r.text, after, `${name}: goal "${id}" ${op === 'add' ? 'added' : op === 'update' ? 'changed' : 'removed'}`, a => {
+    const got = a.goals.filter(x => x.id !== 'default').map(x => x.id);
+    if (got.join('|') !== want.join('|')) { return 'Could not write the goals safely.'; }
+    const mine = a.goals.find(x => x.id === id);
+    if (op !== 'remove' && (!mine || (typeof patch.text === 'string' && mine.text !== patch.text) || (typeof patch.schedule === 'string' && mine.schedule !== patch.schedule))) { return 'The goal did not read back as asked; try simpler wording.'; }
+    return undefined;
+  });
+}
+
+/** Add or remove skills in `loop.skills`. A skill must already exist; chat does not write skills. */
+export function proposeSkills(root: string, name: string, p: { add?: string[]; remove?: string[] }): Proposed {
+  const r = readAgent(root, name);
+  if (!r.ok) { return { error: r.error }; }
+  if (!r.agent.inLoop) { return { error: `${name} has no loop: block, so it does not run unattended. Add one first.` }; }
+  const add = (p.add ?? []).map(s => String(s).trim()).filter(Boolean);
+  const remove = (p.remove ?? []).map(s => String(s).trim()).filter(Boolean);
+  const missing = remove.filter(s => !r.agent.skills.includes(s));
+  if (missing.length) { return { error: `${name} does not have the skill ${missing.join(', ')}. It has: ${r.agent.skills.join(', ') || 'none'}.` }; }
+  const next = [...r.agent.skills.filter(s => !remove.includes(s)), ...add.filter(s => !r.agent.skills.includes(s))];
+  if (next.join('|') === r.agent.skills.join('|')) { return { error: 'Nothing to change.' }; }
+  const y = next.length ? scalarYaml(next) : undefined;
+  if (next.length && y === undefined) { return { error: 'Those skill names cannot be written safely.' }; }
+  const after = setLoopBlock(r.text, 'skills', next.length ? [`skills: ${y}`] : undefined);
+  if (after === undefined) { return { error: 'Could not find the loop: block to edit.' }; }
+  return checked(root, r.file, r.text, after, `${name}: skills ${[...add.map(s => `+${s}`), ...remove.map(s => `-${s}`)].join(' ')}`, a => (a.skills.join('|') === next.join('|') ? undefined : 'Could not write the skills safely.'));
+}
+
+const RESERVED_NAMES = ['loop', 'chief-of-staff'];
+
+export interface NewAgent {
+  name: string; description: string; instructions: string;
+  skills?: string[]; handoffs?: string[]; model?: string; maxSteps?: number; maxRunsPerDay?: number; policy?: string;
+  schedule?: string; task?: string; goals?: GoalInput[];
+}
+
+/**
+ * Create `.github/agents/<name>.agent.md`. With no schedule and no goals the agent is manual: it runs only when given a task,
+ * so writing the file never starts anything unattended by surprise.
+ */
+export function proposeAgent(root: string, a: NewAgent): Proposed {
+  const name = String(a?.name ?? '').trim();
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) { return { error: 'The name must be lowercase letters, digits and hyphens, for example "release-watch".' }; }
+  if (RESERVED_NAMES.includes(name)) { return { error: `"${name}" is a reserved name.` }; }
+  const file = `.github/agents/${name}.agent.md`;
+  if (loadAllAgents(root).has(name) || fs.existsSync(path.join(root, file))) { return { error: `An agent named "${name}" already exists. Use the edit tools to change it.` }; }
+  const description = String(a.description ?? '').replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!description) { return { error: 'A description is needed: one sentence on what the agent does. Teammates read it when deciding to hand off.' }; }
+  const instructions = String(a.instructions ?? '').replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim();
+  if (!instructions) { return { error: 'Role instructions are needed: how the agent should work.' }; }
+  if (a.policy) { const e = policyError(root, a.policy); if (e) { return { error: e }; } }
+  if (a.schedule && !a.task?.trim()) { return { error: 'A schedule needs a task: what the agent does on each run.' }; }
+  const goals: Record<string, unknown>[] = (a.goals ?? []).map(g => ({ id: String(g.id ?? '').trim(), ...Object.fromEntries(GOAL_KEYS.filter(k => k !== 'id' && (g as any)[k] !== undefined).map(k => [k, (g as any)[k]])) }));
+  for (const g of goals) { if (typeof g.policy === 'string') { const e = policyError(root, g.policy); if (e) { return { error: e }; } } }
+  const q = (v: string, what: string): { error: string } | { v: string } => { const o = quoted(v); return o === undefined ? { error: `${what} cannot be written safely (a line break, or both kinds of quote). Reword it.` } : { v: o }; };
+  const out = ['---', `name: ${name}`];
+  const d = q(description, 'The description'); if ('error' in d) { return { error: d.error }; } out.push(`description: ${d.v}`);
+  if (a.model) { const m = q(a.model, 'The model'); if ('error' in m) { return { error: m.error }; } out.push(`model: [${m.v}]`); }
+  const hand = (a.handoffs ?? []).map(String).filter(Boolean);
+  if (hand.length) { out.push('handoffs:', ...hand.flatMap(h => [`  - label: Hand to ${h}`, `    agent: ${h}`, '    prompt: Continue with the work described above.'])); }
+  out.push('loop:');
+  const skills = scalarYaml((a.skills ?? []).map(String));
+  if (skills === undefined) { return { error: 'Those skill names cannot be written safely.' }; }
+  out.push(`  skills: ${skills}`);
+  if (a.schedule) { const s = q(a.schedule.trim(), 'The schedule'); if ('error' in s) { return { error: s.error }; } out.push(`  schedule: ${s.v}`); }
+  if (a.task?.trim()) { const t = q(a.task.trim(), 'The task'); if ('error' in t) { return { error: t.error }; } out.push(`  task: ${t.v}`); }
+  if (a.policy) { out.push(`  policy: ${a.policy}`); }
+  if (a.maxSteps !== undefined) { out.push(`  maxSteps: ${Number(a.maxSteps)}`); }
+  if (a.maxRunsPerDay !== undefined) { out.push(`  maxRunsPerDay: ${Number(a.maxRunsPerDay)}`); }
+  if (goals.length) {
+    const y = goalsYaml(goals);
+    if ('error' in y) { return { error: y.error }; }
+    out.push(...y.lines.map((l, i) => (i === 0 ? `  ${l}` : `    ${l}`)));
+  }
+  out.push('---', '', instructions, '');
+  const after = out.join('\n');
+  return checked(root, file, null, after, `Create agent ${name}`, got => {
+    if (got.name !== name) { return 'The name did not read back as asked.'; }
+    if (got.goals.filter(x => x.id !== 'default').length !== goals.length) { return 'Could not write the goals safely.'; }
+    if (a.schedule && got.schedule !== a.schedule.trim()) { return 'Could not write that schedule safely.'; }
+    return undefined;
+  });
 }
 
 // ---- standing memory: plain text the runtime puts in the prompt of every new run ----

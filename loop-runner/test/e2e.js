@@ -1270,7 +1270,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
       power: async on => { calls.power.push(on); }, reload: async () => { calls.reload++; return []; } };
     const list = JSON.parse((await runChatTool('list_agents', {}, host)).text);
     ok(list.agents.length === 2 && list.agents.find(a => a.name === 'sentinel').schedule === '0 9 * * *' && list.agents.find(a => a.name === 'planner').runsUnattended === false, 'list_agents tells team agents from chat-only ones');
-    ok(CHAT_TOOLS.every(t => t.name && t.description && t.inputSchema.type === 'object') && CHAT_TOOLS.filter(t => t.name.startsWith('propose_')).length === 7, 'every change goes through a propose_ tool');
+    ok(CHAT_TOOLS.every(t => t.name && t.description && t.inputSchema.type === 'object') && CHAT_TOOLS.filter(t => t.name.startsWith('propose_')).length === 10, 'every change goes through a propose_ tool');
 
     const sched = await runChatTool('propose_schedule', { agent: 'sentinel', schedule: '*/30 9-18 * * 1-5' }, host);
     ok(sched.proposal && sched.proposal.detail.includes('+  schedule: "*/30 9-18 * * 1-5"') && fs.readFileSync(file, 'utf8') === src, 'a schedule request becomes a diff and writes nothing');
@@ -1306,6 +1306,114 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     await pw.proposal.apply();
     ok(calls.power.join() === 'false', 'stop is proposed, then done on Apply');
     ok((await runChatTool('propose_team_power', { on: true }, host)).text.includes('already running'), 'starting a running team is a no-op');
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
+  console.log('@loop: goals, skills and new agents');
+  {
+    const { runChatTool } = require(`${OUT}/chatTools.js`);
+    const M = require(`${OUT}/manage.js`);
+    const { parseFrontmatter } = require(`${OUT}/frontmatter.js`);
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-author-'));
+    const A = n => path.join(R, '.github', 'agents', `${n}.agent.md`);
+    fs.mkdirSync(path.join(R, '.github', 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(R, '.github', 'skills', 'probe'), { recursive: true });
+    fs.writeFileSync(path.join(R, '.github', 'skills', 'probe', 'SKILL.md'), '---\nname: probe\ndescription: checks\n---\nCheck.\n');
+    fs.mkdirSync(path.join(R, '.loop', 'policies'), { recursive: true });
+    fs.writeFileSync(path.join(R, '.loop', 'policies', 'ro.json'), '{}');
+    const src = '---\nname: sentinel\ndescription: watches\nloop:\n  skills: [probe]\n  schedule: "0 9 * * *"\n  task: Look.\n  maxSteps: 12\n---\nYou watch.\n';
+    fs.writeFileSync(A('sentinel'), src);
+    const reloads = [];
+    const host = { root: R, state: () => ({ running: true }), submit() {}, answer() {}, power: async () => {}, reload: async () => { reloads.push(1); return []; }, guidePath: path.join(__dirname, '..', 'guides', 'authoring.md') };
+    const cardOf = async (name, input) => runChatTool(name, input, host);
+
+    // goals
+    const add = await cardOf('propose_goals', { agent: 'sentinel', op: 'add', id: 'release-health', text: 'Releases run normally', schedule: '*/15 * * * *', skills: ['probe'], urgent: true, maxRunsPerDay: 6 });
+    ok(add.proposal && fs.readFileSync(A('sentinel'), 'utf8') === src, 'adding a goal is proposed and writes nothing');
+    ok(add.proposal.detail.includes('Will run on its own') && add.proposal.detail.includes('*/15 * * * *') && add.proposal.detail.indexOf('Will run on its own') < add.proposal.detail.indexOf('```diff'), 'the card says when it will run, above the diff');
+    await add.proposal.apply();
+    const g1 = loadAgents(R).get('sentinel').goals.find(g => g.id === 'release-health');
+    ok(g1 && g1.schedule === '*/15 * * * *' && g1.urgent === true && g1.maxRunsPerDay === 6 && g1.skills[0] === 'probe' && reloads.length === 1, 'Apply writes the goal; the team loader reads it back; the team is reloaded');
+    const after1 = fs.readFileSync(A('sentinel'), 'utf8');
+    ok(after1.startsWith(src.slice(0, src.indexOf('---\nYou watch.'))) && after1.endsWith('---\nYou watch.\n') && after1.includes('  maxSteps: 12\n  goals:\n    - id: "release-health"'), 'the rest of the file is untouched and goals goes at the end of the loop block');
+    const upd = await cardOf('propose_goals', { agent: 'sentinel', op: 'update', id: 'release-health', schedule: '0 * * * *' });
+    ok(upd.proposal && upd.proposal.detail.includes('-      schedule: "*/15 * * * *"') && upd.proposal.detail.includes('+      schedule: "0 * * * *"') && !upd.proposal.detail.includes('maxRunsPerDay'), 'update changes only the given field');
+    await upd.proposal.apply();
+    ok(loadAgents(R).get('sentinel').goals.find(g => g.id === 'release-health').maxRunsPerDay === 6, 'update keeps the other fields');
+    for (const [input, why] of [
+      [{ agent: 'sentinel', op: 'add', id: 'release-health', text: 'x' }, 'a duplicate id'],
+      [{ agent: 'sentinel', op: 'add', id: 'Bad Id', text: 'x' }, 'an id with spaces and capitals'],
+      [{ agent: 'sentinel', op: 'add', id: 'g2' }, 'a goal with no text'],
+      [{ agent: 'sentinel', op: 'add', id: 'g2', text: 'x', schedule: '61 * * * *' }, 'an invalid cron'],
+      [{ agent: 'sentinel', op: 'add', id: 'g2', text: 'x', wakeIf: 'true' }, 'wakeIf without a schedule'],
+      [{ agent: 'sentinel', op: 'add', id: 'g2', text: 'x', skills: ['ghost'] }, 'an unknown skill'],
+      [{ agent: 'sentinel', op: 'add', id: 'g2', text: 'x', policy: '.loop/policies/missing.json' }, 'a policy that does not exist'],
+      [{ agent: 'sentinel', op: 'add', id: 'g2', text: 'x', policy: '.loop/policies/../../x' }, 'a policy path that climbs out'],
+      [{ agent: 'sentinel', op: 'update', id: 'nope', text: 'x' }, 'updating a goal that is not there'],
+      [{ agent: 'sentinel', op: 'remove', id: 'default' }, 'touching the legacy default goal'],
+      [{ agent: 'nobody', op: 'add', id: 'g2', text: 'x' }, 'an unknown agent']
+    ]) { ok((await cardOf('propose_goals', input)).text.startsWith('Not proposed'), `goals: ${why} is explained, not proposed`); }
+    const rem = await cardOf('propose_goals', { agent: 'sentinel', op: 'remove', id: 'release-health' });
+    await rem.proposal.apply();
+    ok(fs.readFileSync(A('sentinel'), 'utf8') === src, 'removing the only goal gives back the original file byte for byte');
+
+    // skills
+    const sk = await cardOf('propose_skills', { agent: 'sentinel', add: ['probe', 'ghost'] });
+    ok(sk.text.startsWith('Not proposed') && /ghost/.test(sk.text), 'a skill that does not exist is refused by name');
+    ok((await cardOf('propose_skills', { agent: 'sentinel', add: ['probe'] })).text.startsWith('Not proposed'), 'adding what it already has changes nothing');
+    ok((await cardOf('propose_skills', { agent: 'sentinel', remove: ['other'] })).text.startsWith('Not proposed'), 'removing a skill it does not have is refused');
+    const rmSk = await cardOf('propose_skills', { agent: 'sentinel', remove: ['probe'] });
+    await rmSk.proposal.apply();
+    ok(loadAgents(R).get('sentinel').skills.length === 0 && !/skills:/.test(fs.readFileSync(A('sentinel'), 'utf8')), 'removing the last skill removes the key');
+    fs.writeFileSync(A('sentinel'), src);
+
+    // a block-style list is replaced whole
+    fs.writeFileSync(A('sentinel'), src.replace('  skills: [probe]', '  skills:\n    - probe\n    - other'));
+    const sk2 = M.proposeSkills(R, 'sentinel', { remove: ['other'] });
+    ok(sk2.change && parseFrontmatter(sk2.change.after).meta.loop.skills.join() === 'probe' && !sk2.change.after.includes('- other'), 'a block-style skills list is rewritten cleanly');
+    fs.writeFileSync(A('sentinel'), src);
+
+    // new agents
+    const mk = await cardOf('propose_agent', { name: 'release-watch', description: 'Watches releases.', instructions: 'You watch releases.\nBe brief.', skills: ['probe'] });
+    ok(mk.proposal && !fs.existsSync(A('release-watch')), 'a new agent is proposed and no file exists yet');
+    ok(mk.proposal.detail.includes('Will not run on its own') && /not.*on its own/.test(mk.text), 'without a schedule the card and the model are told it will not run on its own');
+    await mk.proposal.apply();
+    const rw = loadAgents(R).get('release-watch');
+    ok(rw && rw.description === 'Watches releases.' && rw.skills[0] === 'probe' && !rw.schedule && rw.goals.length === 0 && rw.body.startsWith('You watch releases.'), 'Apply creates an agent that joins the team with no schedule');
+    const sch = await cardOf('propose_agent', { name: 'nightly', description: 'Runs nightly.', instructions: 'Do it.', schedule: '0 2 * * *', task: 'Run the nightly job.', policy: '.loop/policies/ro.json', goals: [{ id: 'g1', text: 'Stay green', schedule: '*/5 * * * *' }], handoffs: ['sentinel'], maxSteps: 20 });
+    ok(sch.proposal && sch.proposal.detail.includes('Will run on its own') && sch.proposal.detail.includes('0 2 * * *') && sch.proposal.detail.includes('goal g1') && sch.proposal.detail.includes('.loop/policies/ro.json'), 'with a schedule the card spells out every automatic run and the policy');
+    await sch.proposal.apply();
+    const nt = loadAgents(R).get('nightly');
+    ok(nt && nt.schedule === '0 2 * * *' && nt.task === 'Run the nightly job.' && nt.policy === '.loop/policies/ro.json' && nt.maxSteps === 20 && nt.handoffs[0] === 'sentinel' && nt.goals.some(g => g.id === 'g1'), 'every field reads back');
+    for (const [input, why] of [
+      [{ name: 'sentinel', description: 'd', instructions: 'x' }, 'a name that is taken'],
+      [{ name: 'Bad Name', description: 'd', instructions: 'x' }, 'a bad name'],
+      [{ name: 'loop', description: 'd', instructions: 'x' }, 'a reserved name'],
+      [{ name: 'a1', description: '', instructions: 'x' }, 'no description'],
+      [{ name: 'a1', description: 'd', instructions: ' ' }, 'no instructions'],
+      [{ name: 'a1', description: 'd', instructions: 'x', skills: ['ghost'] }, 'an unknown skill'],
+      [{ name: 'a1', description: 'd', instructions: 'x', handoffs: ['ghost'] }, 'a handoff to nobody'],
+      [{ name: 'a1', description: 'd', instructions: 'x', schedule: '0 9 * * *' }, 'a schedule without a task'],
+      [{ name: 'a1', description: 'd', instructions: 'x', schedule: 'nope', task: 't' }, 'a bad cron'],
+      [{ name: 'a1', description: 'd', instructions: 'x', policy: '.github/agents/sentinel.agent.md' }, 'a policy outside .loop/policies'],
+      [{ name: 'a1', description: 'd', instructions: 'x', policy: '.loop/policies/new.json' }, 'a policy that does not exist (chat cannot create one)'],
+      [{ name: 'a1', description: 'He said "go" and \'stop\'', instructions: 'x' }, 'a description that cannot be quoted safely']
+    ]) { ok((await cardOf('propose_agent', input)).text.startsWith('Not proposed'), `new agent: ${why} is explained, not proposed`); }
+    ok(!fs.existsSync(A('a1')) && !fs.existsSync(A('Bad Name')), 'a refused proposal leaves no file behind');
+    // a file that appears between the proposal and Apply is never overwritten
+    const race = await cardOf('propose_agent', { name: 'raced', description: 'd', instructions: 'x' });
+    fs.writeFileSync(A('raced'), 'someone else wrote this\n');
+    let blocked = false; try { await race.proposal.apply(); } catch (e) { blocked = /changed since/.test(e.message); }
+    ok(blocked && fs.readFileSync(A('raced'), 'utf8') === 'someone else wrote this\n', 'Apply refuses to overwrite a file that appeared after the proposal');
+
+    // guide
+    const guide = (await cardOf('get_authoring_guide', {})).text;
+    ok(guide.includes('propose_agent') && guide.includes('goals') && guide.includes('wakeIf') && guide.includes('Leave out `schedule`'), 'the authoring guide is served and covers goals, probes and new agents');
+    ok((await runChatTool('get_authoring_guide', {}, { ...host, guidePath: path.join(R, 'nope.md') })).text.includes('could not be read'), 'a missing guide is reported, not thrown');
+    // the guide only names tools and fields that exist
+    const { CHAT_TOOLS } = require(`${OUT}/chatTools.js`);
+    const named = [...new Set([...guide.matchAll(/`(propose_[a-z_]+|get_[a-z_]+|list_[a-z_]+)`/g)].map(m => m[1]))];
+    ok(named.length > 5 && named.every(n => CHAT_TOOLS.some(t => t.name === n)), 'every tool the guide names exists');
     fs.rmSync(R, { recursive: true, force: true });
   }
 

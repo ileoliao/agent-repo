@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Change, Proposed, applyChange, diffOf, memoryFor, proposeForget, proposeRemember, proposeRoleEdit, proposeSchedule } from './manage';
+import { Change, GoalInput, Proposed, applyChange, diffOf, memoryFor, proposeAgent, proposeForget, proposeGoals, proposeRemember, proposeRoleEdit, proposeSchedule, proposeSkills } from './manage';
 import { loadAllAgents } from './team';
 import { listGates } from './queue';
 import { recentRuns } from './runs';
@@ -25,6 +25,8 @@ export interface ChatHost {
   power(on: boolean): Promise<void>;
   /** Re-read agent files; returns config problems. */
   reload(): Promise<string[]>;
+  /** The authoring guide shipped with the extension. Defaults to guides/authoring.md next to out/. */
+  guidePath?: string;
 }
 
 export interface Proposal {
@@ -58,6 +60,26 @@ export const CHAT_TOOLS: ChatTool[] = [
     description: "Propose a change to an agent's role instructions: replace exactly one occurrence of old_text with new_text. Read the agent first and quote old_text exactly.",
     inputSchema: obj({ agent: str('Agent name'), old_text: str('Exact existing text'), new_text: str('Replacement') }, ['agent', 'old_text', 'new_text'])
   },
+  {
+    name: 'propose_goals',
+    description: "Propose adding, changing or removing one goal (a standing responsibility with its own schedule) of an agent. op is add, update or remove. For add, give id (lowercase letters, digits, hyphens) and text; schedule is a 5-field cron in LOCAL time; wakeIf is a zero-token pre-check command (needs a schedule). update changes only the fields you give. The single top-level schedule of an agent is changed with propose_schedule, not here. Call get_authoring_guide first. The human must apply it.",
+    inputSchema: obj({ agent: str('Agent name'), op: { type: 'string', enum: ['add', 'update', 'remove'] }, id: str('Goal id'), text: str('What the agent is responsible for'), schedule: str('Cron expression'), wakeIf: str('Pre-check command'), task: str('What a run does (defaults to text)'),
+      skills: { type: 'array', items: { type: 'string' }, description: 'Extra skills for runs of this goal only' }, policy: str('Existing file under .loop/policies/'), urgent: { type: 'boolean', description: 'Tell the human as soon as the pre-check finds something' }, maxSilence: str('For example 2h: tell the human if no pre-check ran for this long'), maxRunsPerDay: { type: 'number', description: 'Whole number, at least 1' } }, ['agent', 'op', 'id'])
+  },
+  {
+    name: 'propose_skills',
+    description: "Propose adding or removing skills in an agent's loop.skills. A skill must already exist in the workspace (list them by reading an agent's file or the authoring guide); this tool does not create skills. The human must apply it.",
+    inputSchema: obj({ agent: str('Agent name'), add: { type: 'array', items: { type: 'string' } }, remove: { type: 'array', items: { type: 'string' } } }, ['agent'])
+  },
+  {
+    name: 'propose_agent',
+    description: "Propose creating a new agent file. Call get_authoring_guide and list_agents first. The new agent does NOT run on its own unless you give it a schedule or goals; leave them out unless the human asked for automatic runs. Skills and the policy must already exist (policy is a file under .loop/policies/; this tool cannot create skills or policies). The human must apply it.",
+    inputSchema: obj({ name: str('Lowercase letters, digits and hyphens'), description: str('One sentence: what it does (teammates read this to decide handoffs)'), instructions: str('The role instructions: how the agent works'),
+      skills: { type: 'array', items: { type: 'string' } }, handoffs: { type: 'array', items: { type: 'string' }, description: 'Names of existing team agents it may hand work to' }, model: str('Optional VS Code model display name'),
+      schedule: str('Optional cron (LOCAL time); needs task'), task: str('What a scheduled run does'), goals: { type: 'array', items: { type: 'object' }, description: 'Optional goals, same fields as propose_goals' },
+      policy: str('Existing file under .loop/policies/'), maxSteps: { type: 'number' }, maxRunsPerDay: { type: 'number' } }, ['name', 'description', 'instructions'])
+  },
+  { name: 'get_authoring_guide', description: 'The reference for writing agents, goals and skills for Loop Runner: file format, every field, conventions. Read it before proposing a new agent or goal.', inputSchema: obj({}, []) },
   { name: 'propose_remember', description: "Propose a standing note that every new run of an agent (or 'all' agents) is told. Use for lasting preferences and rules, not one-off tasks.", inputSchema: obj({ agent: str("Agent name or 'all'"), note: str('One short sentence') }, ['agent', 'note']) },
   { name: 'propose_forget', description: 'Propose removing the one standing note that contains the given text.', inputSchema: obj({ agent: str("Agent name or 'all'"), match: str('Text that identifies the note') }, ['agent', 'match']) },
   { name: 'propose_run', description: 'Propose giving a team agent a one-off task to run now.', inputSchema: obj({ agent: str('Agent name'), task: str('The task') }, ['agent', 'task']) },
@@ -72,10 +94,10 @@ function fromChange(p: Proposed, host: ChatHost): ToolResult {
   if ('error' in p) { return { text: `Not proposed: ${p.error}` }; }
   const c: Change = p.change;
   return {
-    text: `Proposal ready: "${c.summary}". It is shown to the human with an Apply button; nothing has changed yet. Tell them briefly what it does and wait.`,
+    text: `Proposal ready: "${c.summary}". It is shown to the human with an Apply button; nothing has changed yet. Tell them briefly what it does${c.notes ? ` (${c.notes.replace(/\*\*/g, '').replace(/\n/g, ' ')})` : ''} and wait.`,
     proposal: {
       title: c.summary,
-      detail: '```diff\n' + diffOf(c) + '\n```',
+      detail: `${c.notes ? c.notes + '\n\n' : ''}` + '```diff\n' + diffOf(c) + '\n```',
       apply: async () => {
         applyChange(host.root, c);
         const problems = c.file.startsWith('.github/') ? await host.reload() : [];
@@ -114,6 +136,16 @@ export async function runChatTool(name: string, input: any, host: ChatHost): Pro
       return fromChange(proposeSchedule(root, String(input.agent), { schedule: input.off ? null : input.schedule, task: input.task }), host);
     case 'propose_role_edit':
       return fromChange(proposeRoleEdit(root, String(input.agent), String(input.old_text ?? ''), String(input.new_text ?? '')), host);
+    case 'propose_goals':
+      return fromChange(proposeGoals(root, String(input.agent), String(input.op) as 'add' | 'update' | 'remove', input as GoalInput), host);
+    case 'propose_skills':
+      return fromChange(proposeSkills(root, String(input.agent), { add: input.add, remove: input.remove }), host);
+    case 'propose_agent':
+      return fromChange(proposeAgent(root, input), host);
+    case 'get_authoring_guide': {
+      try { return { text: fs.readFileSync(host.guidePath ?? path.join(__dirname, '..', 'guides', 'authoring.md'), 'utf8') }; }
+      catch { return { text: 'The authoring guide could not be read. Say so, and work from get_agent on an existing agent instead.' }; }
+    }
     case 'propose_remember':
       return fromChange(proposeRemember(root, String(input.agent), String(input.note ?? '')), host);
     case 'propose_forget':

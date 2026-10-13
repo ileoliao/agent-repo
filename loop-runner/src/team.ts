@@ -86,41 +86,66 @@ export function loadSkills(root: string): Map<string, SkillDef> {
   return skills;
 }
 
+/** One agent file's text as an AgentDef. `fileName` is the basename inside .github/agents. */
+export function agentFromText(fileName: string, text: string): AgentDef & { inLoop: boolean } {
+  const { meta, body } = parseFrontmatter(text);
+  const loop = meta.loop && typeof meta.loop === 'object' && !Array.isArray(meta.loop) ? meta.loop : undefined;
+  const name = String(meta.name ?? fileName.replace(/(\.agent)?\.md$/, ''));
+  const task = loop?.task ? String(loop.task) : undefined;
+  const goals = [
+    ...(loop?.schedule ? [{ id: 'default', text: task ?? '', schedule: String(loop.schedule), wakeIf: loop.wakeIf ? String(loop.wakeIf) : undefined, task: task ?? '', skills: [],
+      maxRunsPerDay: typeof loop.maxRunsPerDay === 'number' ? loop.maxRunsPerDay : undefined } as GoalDef] : []),
+    ...list(loop?.goals).map(readGoal)
+  ];
+  return {
+    name,
+    description: String(meta.description ?? ''),
+    body,
+    handoffs: list(meta.handoffs).map((h: any) => (typeof h === 'object' && h ? String(h.agent ?? '') : String(h))).filter(Boolean),
+    models: list(meta.model).map(String),
+    skills: list(loop?.skills).map(String),
+    schedule: loop?.schedule ? String(loop.schedule) : undefined,
+    task: loop?.task ? String(loop.task) : undefined,
+    wakeIf: loop?.wakeIf ? String(loop.wakeIf) : undefined,
+    modelFamily: loop?.model ? String(loop.model) : undefined,
+    maxSteps: typeof loop?.maxSteps === 'number' ? loop.maxSteps : undefined,
+    maxRunsPerDay: typeof loop?.maxRunsPerDay === 'number' ? loop.maxRunsPerDay : undefined,
+    policy: loop?.policy ? String(loop.policy) : undefined,
+    goals,
+    file: path.posix.join(AGENT_DIR, fileName),
+    inLoop: !!loop
+  };
+}
+
 /** Every agent in .github/agents, team member or not. */
 export function loadAllAgents(root: string): Map<string, AgentDef & { inLoop: boolean }> {
   const agents = new Map<string, AgentDef & { inLoop: boolean }>();
   const abs = path.join(root, AGENT_DIR);
   if (!fs.existsSync(abs)) { return agents; }
   for (const f of fs.readdirSync(abs).filter(x => x.endsWith('.md')).sort()) {
-    const { meta, body } = parseFrontmatter(fs.readFileSync(path.join(abs, f), 'utf8'));
-    const loop = meta.loop && typeof meta.loop === 'object' && !Array.isArray(meta.loop) ? meta.loop : undefined;
-    const name = String(meta.name ?? f.replace(/(\.agent)?\.md$/, ''));
-    const task = loop?.task ? String(loop.task) : undefined;
-    const goals = [
-      ...(loop?.schedule ? [{ id: 'default', text: task ?? '', schedule: String(loop.schedule), wakeIf: loop.wakeIf ? String(loop.wakeIf) : undefined, task: task ?? '', skills: [],
-        maxRunsPerDay: typeof loop.maxRunsPerDay === 'number' ? loop.maxRunsPerDay : undefined } as GoalDef] : []),
-      ...list(loop?.goals).map(readGoal)
-    ];
-    agents.set(name, {
-      name,
-      description: String(meta.description ?? ''),
-      body,
-      handoffs: list(meta.handoffs).map((h: any) => (typeof h === 'object' && h ? String(h.agent ?? '') : String(h))).filter(Boolean),
-      models: list(meta.model).map(String),
-      skills: list(loop?.skills).map(String),
-      schedule: loop?.schedule ? String(loop.schedule) : undefined,
-      task: loop?.task ? String(loop.task) : undefined,
-      wakeIf: loop?.wakeIf ? String(loop.wakeIf) : undefined,
-      modelFamily: loop?.model ? String(loop.model) : undefined,
-      maxSteps: typeof loop?.maxSteps === 'number' ? loop.maxSteps : undefined,
-      maxRunsPerDay: typeof loop?.maxRunsPerDay === 'number' ? loop.maxRunsPerDay : undefined,
-      policy: loop?.policy ? String(loop.policy) : undefined,
-      goals,
-      file: path.posix.join(AGENT_DIR, f),
-      inLoop: !!loop
-    });
+    const a = agentFromText(f, fs.readFileSync(path.join(abs, f), 'utf8'));
+    agents.set(a.name, a);
   }
   return agents;
+}
+
+/**
+ * Problems the team would have if this file were written. Run on a proposed file before showing a diff, so a bad
+ * change is refused up front instead of failing at the next reload. Only the problems that involve this agent
+ * (or that it causes) are returned, not ones the team already had.
+ */
+export function problemsIfWritten(root: string, fileName: string, text: string): string[] {
+  const after = agentFromText(fileName, text);
+  const all = loadAllAgents(root);
+  const before = [...all.values()].find(a => a.file === after.file);
+  const was = new Set(validateTeam(teamOf(all), loadSkills(root), all));
+  if (before) { all.delete(before.name); }
+  all.set(after.name, after);
+  return validateTeam(teamOf(all), loadSkills(root), all).filter(e => !was.has(e));
+}
+
+function teamOf(all: Map<string, AgentDef & { inLoop: boolean }>): Map<string, AgentDef> {
+  return new Map([...all].filter(([, a]) => a.inLoop));
 }
 
 function readGoal(g: any): GoalDef {
