@@ -292,12 +292,13 @@ function gateCard(g: GateView, note = false): string {
   const truncated = previews.some(p => p.truncated);
   const alerts = missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '';
   // The files and the covers-what-you-saw line are behind one fold, so the command and the buttons share a screen.
-  const fold = previews.length || g.files.length ? `<details class="gatefiles" data-k="gf-${esc(g.id)}"><summary>${icon('chevron', 'chev')}<span>Files this will use (${previews.length || g.files.length})</span></summary>
+  const names = (previews.length ? previews.map(p => p.path) : g.files).map(f => baseName(f));
+  const fold = previews.length || g.files.length ? `<details class="gatefiles" data-k="gf-${esc(g.id)}"><summary>${icon('chevron', 'chev')}<span>Approving also covers ${names.length === 1 ? 'this file' : `these ${names.length} files`}: <b>${esc(clip(names.join(', '), 70))}</b></span></summary>
     <div class="note">${truncated ? 'Approval covers the whole of each file; open a long one to read it all.' : 'Approval covers the files shown.'}</div>${files}</details>` : '';
   return `<section class="card attention approval" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${g.body ? `<p class="body brief" title="${esc(g.body)}">${esc(g.body)}</p>` : ''}
     <div class="label">Command that will run</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${alerts}
-    <div class="row actions">${btn('Reject', `data-reject="${esc(g.id)}" title="Sends the text in the box below as the reason, if you wrote one"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div>
-    ${note ? `<div class="note">Runs as you, not in a sandbox. Nothing but this exact command is run.</div>` : ''}${fold}</section>`;
+    ${fold}<div class="row actions">${btn('Reject', `data-reject="${esc(g.id)}" title="Sends the text in the box below as the reason, if you wrote one"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div>
+    ${note ? `<div class="note">Runs as you, not in a sandbox.</div>` : ''}</section>`;
 }
 
 /** A question or approval that comes after the one being handled: seen in order, decided in order. */
@@ -314,7 +315,7 @@ function blockedCard(b: BlockedView): string {
 
 /** One line per to-do for the Overview: click to handle it in that mate's Chat. */
 function needRow(kind: string, title: string, agent: string, at: string): string {
-  return `<button class="needrow" data-agent="${esc(agent)}" title="Handle this in ${esc(agent)}'s chat">${icon(kind === 'Question' ? 'help' : kind === 'Approval' ? 'bell' : 'alert', 'lead warn')}<span class="grow ell">${esc(title)}</span><span class="tag">${esc(agent)}</span><span class="muted nowrap">${esc(kind)}</span><span class="muted nowrap">${stamp(at, ago(at))}</span>${icon('chevron')}</button>`;
+  return `<button class="needrow" data-agent="${esc(agent)}" title="Handle this in ${esc(agent)}'s chat">${icon(kind === 'Question' ? 'help' : kind === 'Approval' ? 'bell' : 'alert', 'lead warn')}<span class="grow ell" title="${esc(title)}">${esc(title)}</span>${kind === 'Blocked' ? '' : `<span class="tag">${esc(agent)}</span>`}<span class="muted nowrap">${esc(kind)}</span><span class="muted nowrap">${stamp(at, ago(at))}</span>${icon('chevron')}</button>`;
 }
 
 /** For each command policy refused: say which rule did it, and offer the one-click allow only when no deny rule is involved. */
@@ -366,13 +367,14 @@ function runCard(r: ConsoleRun, blocked: BlockedView[] = []): string {
   // Under the summary, without opening the run: what it produced, or the one-click fix when a command was blocked.
   const split = splitOutputs(r.deliverables, r.outputs);
   const fileRows = r.status === 'running' ? [] : shownFiles(split.deliverables, split.supporting).rows;
-  const rerun = blocked.length ? btn('Allow and rerun', `data-allow-agent="${esc(blocked[0].agent)}" data-allow-cmd="${esc(blocked[0].command)}" data-rerun="1" title="Allow ${esc(clip(blocked[0].command, 80))} for ${esc(blocked[0].agent)} only, then run ${esc(blocked[0].agent)} again"`, 'secondary', 'play') : '';
+  const rerun = blocked.length ? btn('Decide in Chat', `data-agent="${esc(blocked[0].agent)}" title="Allow or dismiss ${esc(clip(blocked[0].command, 80))} in ${esc(blocked[0].agent)}'s chat"`, 'secondary', 'send') : '';
+  const hint = blocked.length ? 'A command it needed was not allowed. Decide in Chat.' : STATUS_HINT[r.status];
   const extra = rerun + fileRows.map(f => delivRow({ path: f })).join('');
   const dur = r.status === 'running' ? span(r.started, new Date().toISOString()) : span(r.started, r.updated);
   const live = r.status === 'running';
   return `<details class="run" ${live ? 'open' : ''} data-k="r-${esc(r.chainId)}" data-status="${esc(r.status)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
-    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && STATUS_HINT[r.status] ? `<span class="run-why">${esc(STATUS_HINT[r.status])}</span>` : ''}${extra ? `<span class="run-extra">${extra}</span>` : ''}</summary>
-    <div class="run-body">${refusalsOf(r)}${STATUS_HINT[r.status] ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(STATUS_HINT[r.status])}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
+    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && hint ? `<span class="run-why">${esc(hint)}</span>` : ''}${extra ? `<span class="run-extra">${extra}</span>` : ''}</summary>
+    <div class="run-body">${refusalsOf(r)}${hint ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(hint)}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
     <div class="label">What happened</div><ol class="timeline">${shown || '<li class="muted">No steps recorded.</li>'}</ol>
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
@@ -630,7 +632,7 @@ export function renderBody(m: ConsoleModel): string {
   const todos = m.pending.length + blocked.length;
   const firstAgent = m.pending[0]?.agent ?? blocked[0]?.agent;
   const nextRun = m.next ? ` · next run ${esc(when(m.next.at))}` : '';
-  const state = todos ? `<button class="state wait" data-agent="${esc(firstAgent!)}" title="Open the conversation with ${esc(firstAgent!)}, who is waiting for you">${icon('bell')}${todos} waiting on you${m.running ? nextRun : ' · mates off'}</button>`
+  const state = todos ? `<button class="state wait" data-agent="${esc(firstAgent!)}" title="Open the conversation with ${esc(firstAgent!)}, who is waiting for you">${icon('bell')}${todos} waiting on you${m.running && m.active ? ` · ${esc([m.active].flat().join(', '))} running` : ''}</button>`
     : !m.running ? `<span class="state off">${icon('stop')}Mates off</span>`
     : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
     : `<span class="state idle">${icon('check')}All good${m.next ? nextRun : ' · nothing scheduled'}</span>`;
@@ -640,7 +642,7 @@ export function renderBody(m: ConsoleModel): string {
   const actions = !hasAgents ? '' : (m.running ? btn('Stop mates', 'data-cmd="stopTeam" title="Stop every mate. Work in progress is kept and picked up when you start again."', 'secondary', 'stop') : btn('Start mates', 'data-cmd="startTeam" title="Start every mate: schedules and triggers begin, queued work runs"', 'primary', 'play'))
     + btn('Give a mate a task', 'data-cmd="runAgent" title="Pick a mate and give it a one-off task now"', 'secondary', 'send') + latest;
   // One line per to-do. Handling it happens in that mate's Chat, where the one input box is.
-  const needs = todos ? `<div class="needlist">${[...m.pending.map(g => needRow(g.kind === 'question' ? 'Question' : 'Approval', g.title, g.agent, g.createdAt)), ...blocked.map(b => needRow('Blocked command', clip(b.command, 90), b.agent, b.at))].join('')}</div>` : empty('check', 'Nothing is waiting for you', 'Questions, approvals and blocked commands from mates show up here.');
+  const needs = todos ? `<div class="needlist">${[...m.pending.map(g => needRow(g.kind === 'question' ? 'Question' : 'Approval', g.title, g.agent, g.createdAt)), ...blocked.map(b => needRow('Blocked', `${b.agent} was blocked: ${clip(b.command, 70)}`, b.agent, b.at))].join('')}</div>` : empty('check', 'Nothing is waiting for you', 'Questions, approvals and blocked commands from mates show up here.');
   const DECIDED: Record<string, string> = { executed: 'Approved, ran', failed: 'Approved, failed', rejected: 'Rejected', answered: 'Answered' };
   const decisions = (m.decisions ?? []).length ? `<details class="decisions"><summary>${icon('chevron', 'chev')}<span>Recent decisions</span><span class="count">${m.decisions!.length}</span><span class="muted ell grow">Last: ${esc(DECIDED[m.decisions![0].status] ?? m.decisions![0].status)} · ${esc(m.decisions![0].title)}</span></summary><ul>${m.decisions!.map(d => `<li><span class="chip ${d.status === 'failed' ? 'bad' : d.status === 'rejected' ? 'mute' : 'ok'}">${esc(DECIDED[d.status] ?? d.status)}</span><span class="grow ell" title="${esc(d.title)}">${esc(d.title)}</span><span class="tag">${esc(d.agent)}</span><span class="muted nowrap">${stamp(d.at, ago(d.at))}</span></li>`).join('')}</ul></details>` : '';
   const tasks = m.tasks ?? [];
@@ -909,6 +911,9 @@ window.addEventListener('message', ev => {
   document.querySelectorAll('textarea[data-input]').forEach(t => { if (typed[t.dataset.input]) t.value = typed[t.dataset.input]; if (t.dataset.chatInput) autosize(t); });
   scan();
   if (fk) { const t = document.querySelector('[data-' + fk[0].replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + '="' + CSS.escape(fk[1]) + '"]'); if (t) { t.focus(); if (sel != null && t.setSelectionRange) t.setSelectionRange(sel, sel); } }
+  // A new question puts the cursor in the answer box, once; later refreshes leave the cursor where the reader put it.
+  const af = document.querySelector('textarea[data-answer-for]');
+  if (!fk && af && af.dataset.answerFor !== window.answerFocused) { window.answerFocused = af.dataset.answerFor; af.focus(); }
   window.scrollTo(0, y);
   const th2 = document.querySelector('[data-thread]');
   if (th2) th2.scrollTop = (stick || th2.dataset.thread !== whose) ? th2.scrollHeight : topBefore;

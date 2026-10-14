@@ -43,7 +43,7 @@ console.log('a blocked command is a to-do, and counts everywhere');
   ok(card && /beta/.test(card.textContent) && card.querySelector('pre.cmd').textContent === CMD && card.querySelector('[data-allow-agent="beta"][data-allow-cmd="harbor status --json"]') && card.querySelector('[data-dismiss-agent="beta"]'), 'its card shows the mate, the exact command, and Allow and Dismiss');
   const ov = dom(renderBody(model(R, { tab: 'overview' })));
   const row = ov.querySelector('.needlist .needrow');
-  ok(ov.querySelectorAll('.needrow').length === 1 && row.dataset.agent === 'beta' && /harbor status/.test(row.textContent) && /Blocked command/.test(row.textContent) && /beta/.test(row.textContent), 'the Overview lists it as one compact row that opens that mate\'s Chat');
+  ok(ov.querySelectorAll('.needrow').length === 1 && row.dataset.agent === 'beta' && /harbor status/.test(row.textContent) && /beta was blocked/.test(row.textContent), 'the Overview lists it as one compact row that opens that mate\'s Chat');
   ok(!ov.querySelector('[data-blocked]') && !ov.querySelector('[data-approve]') && !ov.querySelector('.tile') && /1 waiting on you/.test(ov.querySelector('.state.wait').textContent), 'with no full cards and no stat tiles on the Overview');
 }
 
@@ -71,17 +71,18 @@ console.log('allowed or dismissed: not a to-do any more');
   ok(model(R4).blocked.length === 0, 'a command a deny rule blocks is not offered for a click');
 }
 
-console.log('Recent runs: Allow and rerun');
+console.log('Recent runs: one entry for a blocked command');
 {
   const R = world();
   const ov = dom(renderBody(model(R, { tab: 'overview' })));
-  const b = ov.querySelector('details.run summary [data-rerun="1"]');
-  ok(b && b.dataset.allowAgent === 'beta' && b.dataset.allowCmd === CMD && /Allow and rerun/.test(b.textContent), 'a run blocked by a command carries Allow and rerun on its row');
+  const b = ov.querySelector('details.run summary [data-agent="beta"]');
+  ok(b && /Decide in Chat/.test(b.textContent) && !ov.querySelector('[data-rerun]') && !ov.querySelector('details.run summary [data-allow-agent]'), 'a run blocked by a command points to the card in Chat, with no second Allow on its row');
+  ok(!/tell it what it needs/.test(ov.querySelector('details.run').textContent), 'and no longer says to tell it what it needs');
   Q.audit(R, 'cx', { type: 'start', agent: 'alpha', from: 'schedule', task: 'x' });
   Q.audit(R, 'cx', { type: 'end', agent: 'alpha', step: 1, status: 'blocked', summary: 'needs a secret', outputs: [] });
   const ov2 = dom(renderBody(model(R, { tab: 'overview' })));
   const rows = [...ov2.querySelectorAll('details.run')];
-  ok(rows.length === 2 && rows.filter(r => r.querySelector('[data-rerun]')).length === 1 && !rows.find(r => /alpha/.test(r.querySelector('.run-agent').textContent)).querySelector('[data-rerun]'), 'a Blocked run for any other reason keeps its old row');
+  ok(rows.length === 2 && rows.filter(r => /Decide in Chat/.test(r.querySelector('summary').textContent)).length === 1, 'a Blocked run for any other reason keeps its old row');
 }
 
 console.log('where the console opens');
@@ -103,10 +104,10 @@ console.log('the approval card fits one screen');
   const card = () => dom(renderBody(model(R, { agent: 'beta' }))).querySelector('[data-gate="ap1"]');
   const c = card();
   const order = [...c.querySelectorAll('.card-title, .body, pre.cmd, [data-reject], [data-approve], details.gatefiles')].map(x => x.matches('.card-title') ? 'title' : x.matches('.body') ? 'body' : x.matches('pre.cmd') ? 'cmd' : x.matches('[data-reject]') ? 'reject' : x.matches('[data-approve]') ? 'approve' : 'files');
-  ok(order.join() === 'title,body,cmd,reject,approve,files', 'title, short note, exact command and both buttons come first; the files after them');
+  ok(order.join() === 'title,body,cmd,files,reject,approve', 'title, short note, exact command, the one line naming the files, then both buttons');
   ok(!c.querySelector('textarea') && c.querySelector('[data-copy="bash post.sh"]') && /beta/.test(c.querySelector('.meta').textContent), 'no text box, a copy button for the command, and the mate\'s name');
   const fold = c.querySelector('details.gatefiles');
-  ok(!fold.open && /Files this will use \(1\)/.test(fold.querySelector('summary').textContent) && fold.querySelector('[data-hash-for=".loop/outbox/d.md"]') && fold.querySelector('[data-open=".loop/outbox/d.md"]') && /covers the files shown/.test(fold.textContent), 'the files are folded away, with their hash kept, and say what approval covers');
+  ok(!fold.open && /Approving also covers this file: d\.md/.test(fold.querySelector('summary').textContent) && !/Nothing but this exact command/.test(c.textContent) && fold.querySelector('[data-hash-for=".loop/outbox/d.md"]') && fold.querySelector('[data-open=".loop/outbox/d.md"]') && /covers the files shown/.test(fold.textContent), 'the files are named in one line and folded, with their hash kept, and say what approval covers');
   ok(/Runs as you, not in a sandbox/.test(c.textContent) && !/Runs as you/.test(fold.textContent), 'the first approval carries the one-time note about running as you, outside the fold');
   setUiFlag(R, 'approvalNoteSeen');
   ok(model(R).firstApproval === false && !/Runs as you/.test(card().textContent), 'once an approval was decided the note is not shown again');
