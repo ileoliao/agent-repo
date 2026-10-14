@@ -102,7 +102,7 @@ ok(/Runs only when you give it a task/.test(renderBody({ ...base, tab: 'chat', c
 ok(/data-insert="@b "/.test(head) && !/data-insert="\/stop"/.test(head) && /data-insert="\/stop"/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ state: 'running' }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'shortcut chips offer other mates, and /stop only while it runs');
 ok(/title="Talk to a mate/.test(head) && /title="Everything at a glance/.test(head), 'each tab says what it is for');
 ok(/Check &amp; tools/.test(head), 'the menu name says that checking is in there');
-ok(/class="tab-sub">talk to a mate/.test(head) && /class="tab-sub">all mates and runs/.test(head), 'each tab says in words what it is for, without hovering');
+ok(!/tab-sub/.test(head) && /data-tab="chat"[^>]*title="Talk to a mate/.test(head) && /data-tab="overview"[^>]*title="Everything at a glance/.test(head), 'the tabs are just their names; what each is for is in the hover text');
 const card2 = renderBody({ ...base, agents: [{ ...agent, file: '.github/agents/a.agent.md', triggers: [{ kind: 'schedule', text: '0 9 * * *' }] }] });
 ok(/data-agent="a"[^>]*>[^]*Chat/.test(card2) && /class="agent-name"[^>]*data-open="\.github\/agents\/a\.agent\.md"/.test(card2) && !/iconbtn/.test(card2), 'an overview card links to that mate\'s chat, opens its file from the name, and has no unlabelled buttons');
 ok(/Give a mate a task/.test(renderBody(base)) && /Stop all mates/.test(renderBody(base)) && !/Latest/.test(renderBody(base)), 'the top buttons say whom they affect, stopping everyone sits in the menu, and a Latest button appears only once a mate has produced something');
