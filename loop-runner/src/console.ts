@@ -328,10 +328,9 @@ function refusalsOf(r: { agent: string; steps: { refused?: { command: string; ru
     if (rows.length >= 3) { break; }
     const { command, rule } = s.refused;
     const open = `<a class="link" href="#" data-open=".loop/policy.json">policy file</a>`;
-    // In the chat the same command is a to-do card below (Allow, Dismiss), so the history line only says what happened.
-    rows.push(rule === 'no allow rule matched' && compact
-      ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> was not allowed.</span></div>`
-      : rule === 'no allow rule matched'
+    // In the chat the same command is a to-do card below (Allow, Dismiss), so the history says nothing more than "N refused".
+    if (rule === 'no allow rule matched' && compact) { continue; }
+    rows.push(rule === 'no allow rule matched'
       ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> is not allowed yet. Allowing adds this exact command for ${esc(r.agent)} only. <a class="link" href="#" data-open=".loop/policy.json">Policy file</a></span>${btn('Allow it', `data-allow-agent="${esc(r.agent)}" data-allow-cmd="${esc(command)}" title="Adds this exact command for ${esc(r.agent)} only. Anything else it tries is still checked against the policy."`, 'secondary', 'check')}</div>`
       : `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> matches the deny rule <code>${esc(clip(rule, 80))}</code>. A deny rule is a limit you set on purpose, so it is not lifted with one click. Open the ${open} to change it.</span></div>`);
   }
@@ -414,13 +413,13 @@ function agentRow(a: AgentRow, copilotOff = false, out?: LatestOutput): string {
   const trig = (a.triggers ?? []).map(t => t.kind === 'schedule' ? plainCron(t.text) : t.kind === 'webhook' ? `when webhook “${t.text}” is called` : `when a new file appears in ${t.text}`);
   const icoFor = (k: string) => (k === 'schedule' ? 'clock' : k === 'webhook' ? 'send' : 'file');
   const runs = (a.triggers ?? []).length ? `<dt>Runs</dt><dd class="trigs">${(a.triggers ?? []).map((t, i) => `<span class="trig">${icon(icoFor(t.kind))}${esc(trig[i])}</span>`).join('')}</dd>` : '';
-  const pauseBtn = a.paused ? iconBtn('Resume', `data-cmd="resumeAgent" data-arg="${esc(a.name)}" title="Resume: let ${esc(a.name)} wake on its schedule and triggers again"`, 'play') : (a.triggers ?? []).length ? iconBtn('Pause', `data-cmd="pauseAgent" data-arg="${esc(a.name)}" title="Pause: skip ${esc(a.name)}'s scheduled and event wakes. A task you give it still runs."`, 'stop') : '';
-  return `<div class="agent ${a.paused ? 'paused' : ''}"><div class="agent-top">${avatar(a.name, a.paused ? 'idle' : a.state === 'running' ? 'working' : a.state === 'waiting' ? 'waiting' : 'idle', 26)}<a class="agent-name" href="#" data-open="${esc(a.file)}" title="Open ${esc(a.file)}">${esc(a.name)}</a>
+  const pauseBtn = a.paused ? btn('Resume', `data-cmd="resumeAgent" data-arg="${esc(a.name)}" title="Let ${esc(a.name)} wake on its schedule and triggers again"`, 'secondary', 'play') : (a.triggers ?? []).length ? btn('Pause', `data-cmd="pauseAgent" data-arg="${esc(a.name)}" title="Skip ${esc(a.name)}'s scheduled and event wakes. A task you give it still runs."`, 'secondary', 'stop') : '';
+  return `<div class="agent ${a.paused ? 'paused' : ''}"><div class="agent-top">${avatar(a.name, a.paused ? 'idle' : a.state === 'running' ? 'working' : a.state === 'waiting' ? 'waiting' : 'idle', 26)}<a class="agent-name" href="#" data-open="${esc(a.file)}" title="Edit ${esc(a.file)}: its instructions, schedule and skills">${esc(a.name)}</a>
     <span class="chip ${tone}">${icon(a.paused ? 'stop' : a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
     <dl class="kv">${runs}
     <dt>Next</dt><dd>${a.paused ? '<span class="muted">paused</span>' : a.next ? stamp(a.next.toISOString(), when(a.next.toISOString())) : '<span class="muted">when you give it a task or a trigger fires</span>'}</dd>
     ${lw ? `<dt>Last check</dt><dd>${last}</dd>` : ''}${a.model ? `<dt>Model</dt><dd class="mono">${esc(a.model)}</dd>` : ''}</dl>${latestLine(out)}
-    <div class="agent-actions">${btn('Chat', `data-agent="${esc(a.name)}" title="Open the conversation with ${esc(a.name)}"`, 'secondary', 'send')}${btn('Run now', `data-cmd="runAgent" data-arg="${esc(a.name)}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot first"' : ` title="Give ${esc(a.name)} a task now"`}`, 'secondary', 'send')}${pauseBtn}${iconBtn('Edit file', `data-open="${esc(a.file)}" title="Edit file: ${esc(a.file)}"`, 'file')}</div></div>`;
+    <div class="agent-actions">${btn('Chat', `data-agent="${esc(a.name)}" title="Open the conversation with ${esc(a.name)}"`, 'secondary', 'send')}${btn('Run now', `data-cmd="runAgent" data-arg="${esc(a.name)}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot first"' : ` title="Give ${esc(a.name)} a task now"`}`, 'secondary', 'send')}${pauseBtn}</div></div>`;
 }
 
 
@@ -561,7 +560,7 @@ function dayLabel(d: Date, now = new Date()): string {
 /** What wakes this mate, in words: it is the first thing a person wants to know about it. */
 function chatFacts(sel: ChatModel['agents'][number]): string {
   const t = (sel.triggers ?? []).map(x => x.kind === 'schedule' ? plainCron(x.text) : x.kind === 'webhook' ? `webhook “${x.text}”` : `new files in ${x.text}`);
-  return `<div class="muted ch-facts">${sel.paused ? '<b>Paused</b> · ' : ''}${t.length ? `Runs ${esc(t.join(' · '))}` : 'Runs only when you give it a task'}</div>`;
+  return `<div class="muted ch-facts">${sel.paused ? '<b>Paused</b> · ' : ''}${t.length ? `Runs ${esc(t.join(' · '))}` : 'Runs only when you give it a task'}${sel.file ? ` · <a class="link" href="#" data-open="${esc(sel.file)}" title="Open ${esc(sel.file)}: its instructions, schedule and skills">Edit file</a>` : ''}</div>`;
 }
 
 /** The few things a person does to a mate, one click from its conversation. */
@@ -570,7 +569,6 @@ function chatActions(sel: ChatModel['agents'][number], copilotOff: boolean): str
   const btns = [
     btn('Run now', `data-cmd="runAgent" data-arg="${n}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot first"' : ` title="Give ${n} a task now"`}`, 'secondary', 'send'),
     (sel.triggers ?? []).length || sel.paused ? (sel.paused ? btn('Resume', `data-cmd="resumeAgent" data-arg="${n}" title="Wake ${n} on its schedule and triggers again"`, 'secondary', 'play') : btn('Pause', `data-cmd="pauseAgent" data-arg="${n}" title="Skip ${n}'s scheduled and event wakes. A task you give it still runs."`, 'secondary', 'stop')) : '',
-    sel.file ? btn('Edit file', `data-open="${esc(sel.file)}" title="Open ${esc(sel.file)}: its instructions, schedule and skills"`, 'secondary', 'file') : ''
   ].join('');
   return `<div class="ch-actions" role="group" aria-label="Actions for ${n}">${btns}</div>`;
 }
@@ -639,7 +637,7 @@ export function renderBody(m: ConsoleModel): string {
   // A brand-new workspace gets only the way forward: no tabs, no team controls that would do nothing.
   const hasAgents = m.agents.length > 0 || m.runs.length > 0 || todos > 0 || (m.tasks ?? []).length > 0;
   const latest = m.latest ? btn(`Latest: ${clip(m.latest.agent, 24)} · ${clip(baseName(m.latest.path), 32)}`, `data-open="${esc(m.latest.path)}" title="Open ${esc(m.latest.path)}, the newest file a mate produced"`, 'secondary', 'file') : '';
-  const actions = !hasAgents ? '' : (m.running ? btn('Stop mates', 'data-cmd="stopTeam" title="Stop every mate. Work in progress is kept and picked up when you start again."', 'secondary', 'stop') : btn('Start mates', 'data-cmd="startTeam" title="Start every mate: schedules and triggers begin, queued work runs"', 'primary', 'play'))
+  const actions = !hasAgents ? '' : (m.running ? '' : btn('Start mates', 'data-cmd="startTeam" title="Start every mate: schedules and triggers begin, queued work runs"', 'primary', 'play'))
     + btn('Give a mate a task', 'data-cmd="runAgent" title="Pick a mate and give it a one-off task now"', 'secondary', 'send') + latest;
   // One line per to-do. Handling it happens in that mate's Chat, where the one input box is.
   const needs = todos ? `<div class="needlist">${[...m.pending.map(g => needRow(g.kind === 'question' ? 'Question' : 'Approval', g.title, g.agent, g.createdAt)), ...blocked.map(b => needRow('Blocked', `${b.agent} was blocked: ${clip(b.command, 70)}`, b.agent, b.at))].join('')}</div>` : empty('check', 'Nothing is waiting for you', 'Questions, approvals and blocked commands from mates show up here.');
@@ -656,7 +654,7 @@ export function renderBody(m: ConsoleModel): string {
   const stoppedWithWork = !m.running && todos > 0;
   const stoppedNote = stoppedWithWork ? `<div class="alert warn" role="status">${icon('alert')}<span><b>Nothing will run until you press Start mates.</b></span></div>` : '';
   const item = (cmd: string, title: string, sub: string, kind = '') => `<button class="menuitem ${kind}" data-cmd="${cmd}"><span class="mi-title">${esc(title)}</span><span class="mi-sub">${esc(sub)}</span></button>`;
-  const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<details class="toolmenu"><summary class="btn secondary" aria-haspopup="menu"><span>Check &amp; tools</span><span class="caret" aria-hidden="true"></span></summary><div class="menu" role="menu">${item('runDoctor', 'Check mates', 'Confirm every mate can run, and run their pre-checks once')}${item('showHealth', 'Health report', 'How each mate has been doing, and what to improve')}${item('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${item('cleanUp', 'Clean up', 'Delete finished work you no longer need. Asks first')}<div class="mi-foot">Or ask <code>@mate</code> in Chat for anything here.</div></div></details></div>` : '';
+  const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<details class="toolmenu"><summary class="btn secondary" aria-haspopup="menu"><span>Check &amp; tools</span><span class="caret" aria-hidden="true"></span></summary><div class="menu" role="menu">${m.running ? item('stopTeam', 'Stop all mates', 'Nothing new runs until you press Start mates. Work in progress is kept') : ''}${item('runDoctor', 'Check mates', 'Confirm every mate can run, and run their pre-checks once')}${item('showHealth', 'Health report', 'How each mate has been doing, and what to improve')}${item('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${item('cleanUp', 'Clean up', 'Delete finished work you no longer need. Asks first')}<div class="mi-foot">Or ask <code>@mate</code> in Chat for anything here.</div></div></details></div>` : '';
   const copilotChip = m.copilot === undefined ? '' : m.copilot > 0 ? `<span class="chip ok" title="${m.copilot} Copilot model${m.copilot > 1 ? 's' : ''} available">${icon('check')}<span>Copilot ready</span></span>` : `<span class="chip warn">${icon('alert')}<span>Copilot not signed in</span></span>`;
   const copilotNote = m.copilot === 0 ? `<div class="alert warn" role="alert">${icon('alert')}<span><b>GitHub Copilot is not signed in.</b> Agents use your Copilot models, so none can run until you sign in to GitHub Copilot in VS Code (Accounts menu, bottom left).</span></div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
@@ -831,7 +829,7 @@ function scan() {
 function updatePinned() {
   const th = document.querySelector('.thread'); if (!th) return;
   const p = th.querySelector('.pinned'), g = th.querySelector('.thread-gates'); if (!p || !g) return;
-  const top = g.offsetTop - th.scrollTop, inView = th.clientHeight > 0 && top >= 0 && top < th.clientHeight - 80;
+  const top = g.getBoundingClientRect().top - th.getBoundingClientRect().top, inView = th.clientHeight > 0 && top >= 0 && top < th.clientHeight - 80;
   p.classList.toggle('hidden', inView);
 }
 document.addEventListener('scroll', e => { if (e.target && e.target.classList && e.target.classList.contains('thread')) updatePinned(); }, true);

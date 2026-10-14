@@ -61,7 +61,7 @@ ok(!/<img src=x>/.test(hostile), 'an agent name cannot break out of the card');
 
 console.log('wording and refusals');
 ok(/>1 waiting on you/.test(renderBody({ ...base, pending: [{ id: 'g', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now, previews: [] }] })) && /All good/.test(renderBody(base)) && !/>open</.test(renderBody({ ...base, pending: [{ id: 'g', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now, previews: [] }] })), 'the status pill says how many things wait on you, or that all is good, with no vague "open"');
-ok(/data-cmd="stopTeam"[^>]*><[^]*Stop mates/.test(renderBody(base)) && !/Start team|Stop team/.test(renderBody({ ...base, running: false })), 'one vocabulary: agents');
+ok(/data-cmd="stopTeam"[^>]*><[^]*Stop all mates/.test(renderBody(base)) && !/class="btn[^"]*"[^>]*data-cmd="stopTeam"/.test(renderBody(base)) && !/Start team|Stop team/.test(renderBody({ ...base, running: false })), 'one vocabulary: agents');
 const step = (cmd, rule) => ({ step: 1, kind: 'tool', title: 'run_command', detail: `REFUSED by policy (${rule}).`, ok: false, refused: { command: cmd, rule } });
 const refused = renderBody({ ...base, runs: [{ ...run('blocked', 'Could not reach the API.'), steps: [step('harbor status --json', 'no allow rule matched')] }] });
 ok(/data-allow-agent="a" data-allow-cmd="harbor status --json"/.test(refused) && /Allow it/.test(refused) && /exact command for a only/.test(refused) && /is not allowed yet/.test(refused), 'a command no rule allowed gets a one-click Allow for that mate');
@@ -78,7 +78,7 @@ const threadRun = (steps) => ({ kind: 'result', ts: now, chainId: 'c1', status: 
 const tstep = (cmd, rule) => ({ step: 1, kind: 'tool', title: 'run_command', phrase: 'ran a command', routine: false, detail: `REFUSED by policy (${rule}).`, ok: false, refused: { command: cmd, rule } });
 const inChat = ev => renderBody({ ...base, tab: 'chat', chat: { agents: [{ name: 'a', description: 'd', state: 'idle', avatar: 'blocked', line: 'x', pendingMessages: 0, needsYou: 0 }], selected: 'a', events: [ev], hidden: 0, gates: [] } });
 const chatAllow = inChat(threadRun([tstep('harbor status --json', 'no allow rule matched')]));
-ok(!/data-allow-agent/.test(chatAllow) && /was not allowed\./.test(chatAllow), 'a blocked result in the chat only says what happened: Allow lives on the to-do card');
+ok(!/data-allow-agent/.test(chatAllow) && !/was not allowed\./.test(chatAllow) && /1 refused/.test(chatAllow), 'a blocked result in the chat only counts the refusal: the command and Allow live once, on the to-do card');
 ok(!/data-allow-agent/.test(inChat(threadRun([tstep('curl https://x', '\\bcurl\\b')]))) && /matches the deny rule/.test(inChat(threadRun([tstep('curl https://x', '\\bcurl\\b')]))), 'a deny rule is explained in the chat too, with no Allow');
 ok(/class="daysep"[^]*Today/.test(inChat({ kind: 'status', ts: now, label: 'x', tone: 'info', chainId: 'c' })) , 'the thread marks the day');
 const old = new Date(Date.now() - 3 * 86_400_000).toISOString();
@@ -96,7 +96,7 @@ console.log('discoverability');
 const rowsFor = (over = {}) => [{ name: 'a', description: 'd', file: '.github/agents/a.agent.md', triggers: [{ kind: 'schedule', text: '0 9 * * 1-5' }, { kind: 'webhook', text: 'deploy' }], state: 'idle', avatar: 'idle', line: 'x', pendingMessages: 0, needsYou: 0, ...over }, { name: 'b', description: 'd', state: 'idle', avatar: 'idle', line: 'x', pendingMessages: 0, needsYou: 0 }];
 const head = renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor(), selected: 'a', events: [], hidden: 0, gates: [] } });
 ok(/Runs weekdays at 09:00 · webhook “deploy”/.test(head), 'the conversation says what wakes the mate');
-ok(/class="ch-actions"[^]*data-cmd="runAgent" data-arg="a"[^]*data-cmd="pauseAgent" data-arg="a"[^]*data-open="\.github\/agents\/a\.agent\.md"/.test(head), 'and offers Run now, Pause and Edit right there');
+ok(/class="ch-actions"[^]*data-cmd="runAgent" data-arg="a"[^]*data-cmd="pauseAgent" data-arg="a"/.test(head) && /class="link"[^>]*data-open="\.github\/agents\/a\.agent\.md"[^>]*>Edit file/.test(head), 'and offers Run now and Pause as buttons, Edit file as a link in the facts line');
 ok(/data-cmd="resumeAgent"/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ paused: true }), selected: 'a', events: [], hidden: 0, gates: [] } })) && /Paused/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ paused: true }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'a paused mate says so and offers Resume');
 ok(/Runs only when you give it a task/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ triggers: [] }), selected: 'a', events: [], hidden: 0, gates: [] } })) && !/data-cmd="pauseAgent"/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ triggers: [] }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'a mate with no triggers says it runs on request, with nothing to pause');
 ok(/data-insert="@b "/.test(head) && !/data-insert="\/stop"/.test(head) && /data-insert="\/stop"/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ state: 'running' }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'shortcut chips offer other mates, and /stop only while it runs');
@@ -104,8 +104,8 @@ ok(/title="Talk to a mate/.test(head) && /title="Everything at a glance/.test(he
 ok(/Check &amp; tools/.test(head), 'the menu name says that checking is in there');
 ok(/class="tab-sub">talk to a mate/.test(head) && /class="tab-sub">all mates and runs/.test(head), 'each tab says in words what it is for, without hovering');
 const card2 = renderBody({ ...base, agents: [{ ...agent, file: '.github/agents/a.agent.md', triggers: [{ kind: 'schedule', text: '0 9 * * *' }] }] });
-ok(/data-agent="a"[^>]*>[^]*Chat/.test(card2) && /data-open="\.github\/agents\/a\.agent\.md"[^>]*aria-label="Edit file"/.test(card2), 'an overview card links to that mate\'s chat and its file');
-ok(/Give a mate a task/.test(renderBody(base)) && /title="Stop every mate/.test(renderBody(base)) && !/Latest/.test(renderBody(base)), 'the top buttons say whom they affect, and a Latest button appears only once a mate has produced something');
+ok(/data-agent="a"[^>]*>[^]*Chat/.test(card2) && /class="agent-name"[^>]*data-open="\.github\/agents\/a\.agent\.md"/.test(card2) && !/iconbtn/.test(card2), 'an overview card links to that mate\'s chat, opens its file from the name, and has no unlabelled buttons');
+ok(/Give a mate a task/.test(renderBody(base)) && /Stop all mates/.test(renderBody(base)) && !/Latest/.test(renderBody(base)), 'the top buttons say whom they affect, stopping everyone sits in the menu, and a Latest button appears only once a mate has produced something');
 ok(/class="chips-row"[^]*ask for status/.test(head) && !/ask for status/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ state: 'running' }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'an idle mate gets a ready-made question to try, a running one does not');
 ok(/appears at the top once you have a mate/.test(renderBody({ ...base, running: false, agents: [], runs: [], tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'the disabled Start says why');
 console.log('the everyday thread');
