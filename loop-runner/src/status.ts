@@ -71,3 +71,44 @@ export function agentRows(root: string, activeAgent?: Active, now = new Date()):
 export function nextWake(rows: AgentRow[]): { agent: string; at: Date } | undefined {
   return rows.filter(r => r.next).map(r => ({ agent: r.name, at: r.next! })).sort((a, b) => a.at.getTime() - b.at.getTime())[0];
 }
+
+/** Questions and approvals waiting for the human, counted straight from the gates on disk. */
+export function pendingCount(root: string | undefined): number {
+  return root ? listGates(root).filter(g => g.status === 'pending').length : 0;
+}
+
+export interface BarState {
+  running: boolean;
+  /** Questions and approvals waiting on the human. */
+  pending: number;
+  /** Mates with a run in progress, in the order they started. */
+  active: string[];
+  /** The step the single running mate is on. */
+  step?: number;
+  /** The next scheduled wake, as HH:MM. */
+  next?: string;
+}
+
+/**
+ * The one status bar item. In priority: something needs you; a mate is working; mates are on and quiet; mates are off.
+ * Pure, so the wording is tested without VS Code.
+ */
+export function statusBar(s: BarState): { text: string; tooltip: string } {
+  const names = s.active.join(', ');
+  if (s.pending > 0) {
+    return {
+      text: `$(bell-dot) ${s.pending} ${s.pending === 1 ? 'needs' : 'need'} you${names ? ` · ${names} working` : ''}`,
+      tooltip: `${s.pending === 1 ? 'One thing needs' : `${s.pending} things need`} you: click to open Harbor Mate.`
+    };
+  }
+  if (s.active.length) {
+    return {
+      text: `$(sync~spin) ${names}${s.active.length === 1 && s.step ? ` · step ${s.step}` : ''}`,
+      tooltip: `${names} ${s.active.length === 1 ? 'is' : 'are'} working: click to open Harbor Mate.`
+    };
+  }
+  if (s.running) {
+    return { text: `$(check) Mates${s.next ? ` · next ${s.next}` : ''}`, tooltip: `Mates are on and nothing needs you${s.next ? `; the next wake is at ${s.next}` : ''}: click to open Harbor Mate.` };
+  }
+  return { text: '$(circle-slash) Mates off', tooltip: 'Mates are off: click to open Harbor Mate and start them.' };
+}

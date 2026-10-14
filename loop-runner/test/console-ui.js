@@ -148,6 +148,26 @@ console.log('refusals and the thread');
   ok(/You approved “Roll back”/.test(dec) && /You rejected “Post it”/.test(dec) && /too risky/.test(dec) && /You answered “Which\?”/.test(dec), 'a settled question or approval reads as what you did');
 }
 
+console.log('the one status bar item');
+{
+  const { statusBar, pendingCount } = require(`${OUT}/status.js`);
+  const t = o => statusBar({ running: true, pending: 0, active: [], ...o }).text;
+  ok(t({ pending: 3 }) === '$(bell-dot) 3 need you' && t({ pending: 1 }) === '$(bell-dot) 1 needs you', 'something waiting: the bell and how many');
+  ok(t({ pending: 2, active: ['daily-report'], step: 4 }) === '$(bell-dot) 2 need you · daily-report working', 'and the mate that is working, if one is');
+  ok(t({ pending: 2, active: ['a', 'b'] }) === '$(bell-dot) 2 need you · a, b working', 'or several');
+  ok(t({ active: ['daily-report'], step: 4 }) === '$(sync~spin) daily-report · step 4' && t({ active: ['daily-report'] }) === '$(sync~spin) daily-report', 'a mate working: its name and step');
+  ok(t({ active: ['a', 'b'], step: 4 }) === '$(sync~spin) a, b', 'several working: a comma list, no single step');
+  ok(t({ next: '09:00' }) === '$(check) Mates · next 09:00' && t({}) === '$(check) Mates', 'on and quiet: when the next wake is');
+  ok(t({ running: false }) === '$(circle-slash) Mates off', 'off');
+  ok(t({ running: false, pending: 1 }) === '$(bell-dot) 1 needs you', 'waiting beats off: a question needs you even with the mates stopped');
+  ok(statusBar({ running: true, pending: 2, active: [] }).tooltip.split('.').filter(Boolean).length === 1 && !/\n/.test(statusBar({ running: false, pending: 0, active: [] }).tooltip), 'the tooltip is one sentence');
+  const fs = require('fs'), os = require('os'), Q = require(`${OUT}/queue.js`);
+  const R = fs.mkdtempSync(path.join(os.tmpdir(), 'bar-'));
+  Q.saveGate(R, { id: 'p1', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now });
+  Q.saveGate(R, { id: 'p2', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'x', files: [], resume: true, status: 'executed', createdAt: now });
+  ok(pendingCount(R) === 1 && pendingCount(undefined) === 0, 'the count comes straight from the gates on disk');
+}
+
 console.log('plain schedules');
 ok(plainCron('0 9 * * 1-5') === 'weekdays at 09:00' && plainCron('*/30 * * * *') === 'every 30 minutes' && plainCron('15 8 * * *') === 'every day at 08:15' && plainCron('0 */2 * * 3') === '0 */2 * * 3', 'common cron shapes read as words, others are left as written');
 console.log(`${n} console wording checks passed`);

@@ -1,7 +1,7 @@
 {
   "name": "harbor-mate",
   "displayName": "Harbor Mate",
-  "description": "Unattended runtime for VS Code custom agents on Copilot models: schedules with zero-token wake checks, handoffs, ask/approve gates that resume, policy and audit.",
+  "description": "Mates: VS Code custom agents that work unattended on Copilot models. Schedules with zero-token wake checks, handoffs, ask/approve gates that resume, policy and audit.",
   "version": "1.0.0",
   "publisher": "local",
   "private": true,
@@ -36,27 +36,12 @@
       },
       {
         "command": "harborMate.openConsole",
-        "title": "Open Console",
-        "category": "Harbor Mate"
-      },
-      {
-        "command": "harborMate.menu",
-        "title": "Menu",
-        "category": "Harbor Mate"
-      },
-      {
-        "command": "harborMate.openLatestResult",
-        "title": "Open Latest Result",
-        "category": "Harbor Mate"
-      },
-      {
-        "command": "harborMate.status",
-        "title": "Show Team Status",
+        "title": "Open",
         "category": "Harbor Mate"
       },
       {
         "command": "harborMate.runAgent",
-        "title": "Give an Agent a Task",
+        "title": "Give a Mate a Task",
         "category": "Harbor Mate"
       },
       {
@@ -66,7 +51,7 @@
       },
       {
         "command": "harborMate.getStarted",
-        "title": "Get Started (Add a Starter Mate)",
+        "title": "Add a Mate",
         "category": "Harbor Mate"
       },
       {
@@ -76,7 +61,7 @@
       },
       {
         "command": "harborMate.runDoctor",
-        "title": "Check Mates (Doctor)",
+        "title": "Check Mates",
         "category": "Harbor Mate"
       },
       {
@@ -91,7 +76,7 @@
       },
       {
         "command": "harborMate.setSecret",
-        "title": "Set Secret (env var for skill scripts)",
+        "title": "Set Secret",
         "category": "Harbor Mate"
       },
       {
@@ -103,40 +88,6 @@
         "command": "harborMate.listModels",
         "title": "List Available Models",
         "category": "Harbor Mate"
-      },
-      {
-        "command": "harborMate.focusInbox",
-        "title": "Open Inbox",
-        "category": "Harbor Mate"
-      },
-      {
-        "command": "harborMate.openGate",
-        "title": "Open",
-        "category": "Harbor Mate"
-      },
-      {
-        "command": "harborMate.answer",
-        "title": "Answer",
-        "category": "Harbor Mate",
-        "icon": "$(reply)"
-      },
-      {
-        "command": "harborMate.approve",
-        "title": "Approve",
-        "category": "Harbor Mate",
-        "icon": "$(check)"
-      },
-      {
-        "command": "harborMate.reject",
-        "title": "Reject",
-        "category": "Harbor Mate",
-        "icon": "$(close)"
-      },
-      {
-        "command": "harborMate.refreshInbox",
-        "title": "Refresh",
-        "category": "Harbor Mate",
-        "icon": "$(refresh)"
       },
       {
         "command": "harborMate.chat.apply",
@@ -159,68 +110,8 @@
         "category": "Harbor Mate"
       }
     ],
-    "views": {
-      "explorer": [
-        {
-          "id": "harborMate.inbox",
-          "name": "Harbor Mate Inbox"
-        }
-      ]
-    },
     "menus": {
-      "view/title": [
-        {
-          "command": "harborMate.refreshInbox",
-          "when": "view == harborMate.inbox",
-          "group": "navigation"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "harborMate.answer",
-          "when": "view == harborMate.inbox && viewItem == question-pending",
-          "group": "inline"
-        },
-        {
-          "command": "harborMate.approve",
-          "when": "view == harborMate.inbox && viewItem == approval-pending",
-          "group": "inline"
-        },
-        {
-          "command": "harborMate.reject",
-          "when": "view == harborMate.inbox && viewItem == approval-pending",
-          "group": "inline"
-        }
-      ],
       "commandPalette": [
-        {
-          "command": "harborMate.setSecret",
-          "when": "false"
-        },
-        {
-          "command": "harborMate.listModels",
-          "when": "false"
-        },
-        {
-          "command": "harborMate.testNotify",
-          "when": "false"
-        },
-        {
-          "command": "harborMate.openGate",
-          "when": "false"
-        },
-        {
-          "command": "harborMate.answer",
-          "when": "false"
-        },
-        {
-          "command": "harborMate.approve",
-          "when": "false"
-        },
-        {
-          "command": "harborMate.reject",
-          "when": "false"
-        },
         {
           "command": "harborMate.chat.apply",
           "when": "false"
@@ -245,7 +136,7 @@
         "harborMate.modelFamily": {
           "type": "string",
           "default": "",
-          "description": "Default Copilot model family for agents without a 'model' field. Empty = first available."
+          "description": "Default Copilot model family for mates without a 'model' field. Empty = first available."
         },
         "harborMate.maxSteps": {
           "type": "number",
@@ -271,13 +162,13 @@
         "harborMate.policyFile": {
           "type": "string",
           "default": ".loop/policy.json",
-          "description": "Default policy for agents without their own 'policy' field."
+          "description": "Default policy for mates without their own 'policy' field."
         },
         "harborMate.notifyCommand": {
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "Command run whenever the team needs you (question, approval, blocked, error). Receives the event as JSON in LOOP_EVENT, plus LOOP_EVENT_KIND and LOOP_EVENT_TITLE; secrets are injected. Typically a notify skill script, e.g. \"python3 .github/skills/notify-wecom/scripts/send.py\". User settings only, so a repository cannot set it."
+          "description": "Command run whenever a mate needs you (question, approval, blocked, error). Receives the event as JSON in LOOP_EVENT, plus LOOP_EVENT_KIND and LOOP_EVENT_TITLE; secrets are injected. Typically a notify skill script, e.g. \"python3 .github/skills/notify-wecom/scripts/send.py\". User settings only, so a repository cannot set it."
         },
         "harborMate.retention.doneDays": {
           "type": "number",
@@ -307,7 +198,7 @@
           "type": "string",
           "default": "",
           "scope": "application",
-          "markdownDescription": "Post a message here when an agent needs you (a question, an approval, a blocked or failed run). Paste an incoming-webhook URL from Slack, Microsoft Teams or Discord; any other https URL receives the event as JSON. Set it in your user settings, not in a workspace."
+          "markdownDescription": "Post a message here when a mate needs you (a question, an approval, a blocked or failed run). Paste an incoming-webhook URL from Slack, Microsoft Teams or Discord; any other https URL receives the event as JSON. Set it in your user settings, not in a workspace."
         },
         "harborMate.triggerPort": {
           "type": "number",
@@ -324,7 +215,7 @@
           },
           "default": [],
           "scope": "application",
-          "markdownDescription": "Folders put in front of PATH for every command an agent or probe runs. Use it when a CLI (for example `harbor`) works in your terminal but VS Code cannot find it. Set it in your user settings."
+          "markdownDescription": "Folders put in front of PATH for every command a mate or probe runs. Use it when a CLI (for example `harbor`) works in your terminal but VS Code cannot find it. Set it in your user settings."
         }
       }
     },
@@ -333,12 +224,12 @@
         "id": "harborMate.mate",
         "name": "mate",
         "fullName": "Harbor Mate",
-        "description": "Talk to your agents: see what they are doing, give tasks, change schedules, leave standing notes",
+        "description": "Talk to your mates: see what they are doing, give tasks, change schedules, leave standing notes",
         "isSticky": true,
         "commands": [
           {
             "name": "status",
-            "description": "Team, schedules and what needs you"
+            "description": "Mates, schedules and what needs you"
           },
           {
             "name": "pending",
@@ -346,7 +237,7 @@
           },
           {
             "name": "doctor",
-            "description": "Check that your agents can run, and run their probes once"
+            "description": "Check that your mates can run, and run their probes once"
           },
           {
             "name": "health",
@@ -354,7 +245,7 @@
           },
           {
             "name": "improve",
-            "description": "Review an agent and propose the smallest fixes"
+            "description": "Review a mate and propose the smallest fixes"
           }
         ]
       }

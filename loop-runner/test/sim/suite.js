@@ -73,13 +73,14 @@ async function phasePark(check) {
   const cmds = await vscode.commands.getCommands(true);
   check('Start Team command is registered', cmds.includes('harborMate.startTeam') && cmds.includes('harborMate.stopTeam'), 'harborMate.startTeam');
 
-  const wanted = ['getStarted', 'runDoctor', 'showHealth', 'cleanUp', 'openConsole', 'menu'].map(n => `harborMate.${n}`);
+  const wanted = ['getStarted', 'runDoctor', 'showHealth', 'cleanUp', 'openConsole'].map(n => `harborMate.${n}`);
   check('the new commands are registered in real VS Code', wanted.every(c => cmds.includes(c)), wanted.filter(c => !cmds.includes(c)).join(', ') || 'all present');
+  check('the retired commands are gone', !cmds.some(c => /^harborMate\.(menu|focusInbox|refreshInbox|openGate|openLatestResult)$/.test(c)), 'menu, inbox and latest-result commands removed');
   check('the old loopRunner commands are gone', !cmds.some(c => c.startsWith('loopRunner.')), cmds.filter(c => c.startsWith('loopRunner.')).join(', '));
 
   const activation = readJson(path.join(WS, '.loop', 'sim-activation.json'));
   check('first open does not auto-start', activation.willAutoStart === false, JSON.stringify(activation));
-  check('status bar is painted at the end of activation', String(activation.bar).includes('Harbor Mate'), activation.bar);
+  check('status bar is painted at the end of activation', String(activation.bar).includes('Mates off'), activation.bar);
 
   const before = await vscode.commands.executeCommand('harborMate._sim.snapshot');
   check('team stays idle until Start Team', before && before.running === false, JSON.stringify(before));
