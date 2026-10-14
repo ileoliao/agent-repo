@@ -138,6 +138,6 @@ console.log('results first');
   const t = Date.now() / 1000 + 5; fs.utimesSync(path.join(R, '.loop/runs', new Date().toISOString().slice(0, 10), 'cs.jsonl'), t, t);
   const d2 = dom(renderBody(model(R, { agent: 'alpha' })));
   const names = [...d2.querySelectorAll('.rdelivs .dname')].map(x => x.textContent);
-  ok(['a.ts', 'b.ts', 'c.ts'].every(f => names.includes(f)) && !names.includes('d.ts') && /1 supporting file/.test(d2.textContent), 'a run that declared nothing shows the first few files it wrote directly, and folds the rest');
+  ok(['a.ts', 'b.ts', 'c.ts'].every(f => names.includes(f)) && !names.includes('d.ts') && /1 supporting file/.test(d2.body.textContent), 'a run that declared nothing shows the first few files it wrote directly, and folds the rest');
 }
 console.log(`${n} attention checks passed`);
