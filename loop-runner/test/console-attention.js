@@ -107,7 +107,7 @@ console.log('the approval card fits one screen');
   ok(order.join() === 'title,body,cmd,files,reject,approve', 'title, short note, exact command, the one line naming the files, then both buttons');
   ok(!c.querySelector('textarea') && c.querySelector('[data-copy="bash post.sh"]') && /beta/.test(c.querySelector('.meta').textContent), 'no text box, a copy button for the command, and the mate\'s name');
   const fold = c.querySelector('details.gatefiles');
-  ok(!fold.open && /Approving also covers this file: d\.md/.test(fold.querySelector('summary').textContent) && !/Nothing but this exact command/.test(c.textContent) && fold.querySelector('[data-hash-for=".loop/outbox/d.md"]') && fold.querySelector('[data-open=".loop/outbox/d.md"]') && /covers the files shown/.test(fold.textContent), 'the files are named in one line and folded, with their hash kept, and say what approval covers');
+  ok(!fold.open && /Also covers: d\.md/.test(fold.querySelector('summary').textContent) && !/Nothing but this exact command/.test(c.textContent) && fold.querySelector('[data-hash-for=".loop/outbox/d.md"]') && fold.querySelector('[data-open=".loop/outbox/d.md"]') && /covers the files shown/.test(fold.textContent), 'the files are named in one line and folded, with their hash kept, and say what approval covers');
   ok(/Runs as you, not in a sandbox/.test(c.textContent) && !/Runs as you/.test(fold.textContent), 'the first approval carries the one-time note about running as you, outside the fold');
   setUiFlag(R, 'approvalNoteSeen');
   ok(model(R).firstApproval === false && !/Runs as you/.test(card().textContent), 'once an approval was decided the note is not shown again');

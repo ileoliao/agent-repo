@@ -286,17 +286,16 @@ function gateCard(g: GateView, note = false): string {
     const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
     const opts = (g.options ?? []).map(o => btn(o, `data-pick="${esc(g.id)}" data-text="${esc(o)}"`, 'secondary')).join('');
     return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Question from ${esc(g.agent)}">${head}${body}${files}
-      ${opts ? `<div class="label">Suggested answers</div><div class="row wrap">${opts}</div>` : ''}
-      <div class="muted tiny">${opts ? 'Pick one, or type your answer' : 'Type your answer'} in the box below.</div></section>`;
+      ${opts ? `<div class="label">Suggested answers</div><div class="row wrap">${opts}</div>` : ''}</section>`;
   }
   const truncated = previews.some(p => p.truncated);
   const alerts = missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '';
   // The files and the covers-what-you-saw line are behind one fold, so the command and the buttons share a screen.
   const names = (previews.length ? previews.map(p => p.path) : g.files).map(f => baseName(f));
-  const fold = previews.length || g.files.length ? `<details class="gatefiles" data-k="gf-${esc(g.id)}"><summary>${icon('chevron', 'chev')}<span>Approving also covers ${names.length === 1 ? 'this file' : `these ${names.length} files`}: <b>${esc(clip(names.join(', '), 70))}</b></span></summary>
+  const fold = previews.length || g.files.length ? `<details class="gatefiles" data-k="gf-${esc(g.id)}"><summary>${icon('chevron', 'chev')}<span>Also covers: <b>${esc(clip(names.join(', '), 70))}</b></span></summary>
     <div class="note">${truncated ? 'Approval covers the whole of each file; open a long one to read it all.' : 'Approval covers the files shown.'}</div>${files}</details>` : '';
   return `<section class="card attention approval" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${g.body ? `<p class="body brief" title="${esc(g.body)}">${esc(g.body)}</p>` : ''}
-    <div class="label">Command that will run</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${alerts}
+    <div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${alerts}
     ${fold}<div class="row actions">${btn('Reject', `data-reject="${esc(g.id)}" title="Sends the text in the box below as the reason, if you wrote one"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div>
     ${note ? `<div class="note">Runs as you, not in a sandbox.</div>` : ''}</section>`;
 }
@@ -308,8 +307,8 @@ const gateQueued = (g: GateView) => `<div class="card queued" data-queued="${esc
 function blockedCard(b: BlockedView): string {
   return `<section class="card attention blocked" data-blocked="${esc(b.id)}" aria-label="Blocked command from ${esc(b.agent)}"><div class="card-head">${icon('alert', 'lead warn')}<div class="grow"><div class="card-title">${esc(b.agent)} was blocked from running a command</div>
     ${todoMeta(b.agent, 'Blocked command', b.at, `Refused in run ${b.chainId}.`)}</div></div>
-    <p class="body brief">No policy rule allows it yet. Allowing adds only this exact command, for ${esc(b.agent)} only.</p>
-    <div class="label">Blocked command</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(b.command)}</pre>${copy(b.command, 'command')}</div>
+    <p class="body brief">Allow this exact command for ${esc(b.agent)} only.</p>
+    <div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(b.command)}</pre>${copy(b.command, 'command')}</div>
     <div class="row actions">${btn('Dismiss', `data-dismiss-agent="${esc(b.agent)}" data-dismiss-cmd="${esc(b.command)}" title="Stop asking about this command"`, 'secondary', 'x')}${btn('Allow', `data-allow-agent="${esc(b.agent)}" data-allow-cmd="${esc(b.command)}" title="Adds this exact command for ${esc(b.agent)} only. Anything else it tries is still checked against the policy."`, 'primary', 'check')}</div></section>`;
 }
 
@@ -367,7 +366,7 @@ function runCard(r: ConsoleRun, blocked: BlockedView[] = []): string {
   const split = splitOutputs(r.deliverables, r.outputs);
   const fileRows = r.status === 'running' ? [] : shownFiles(split.deliverables, split.supporting).rows;
   const rerun = blocked.length ? btn('Decide in Chat', `data-agent="${esc(blocked[0].agent)}" title="Allow or dismiss ${esc(clip(blocked[0].command, 80))} in ${esc(blocked[0].agent)}'s chat"`, 'secondary', 'send') : '';
-  const hint = blocked.length ? 'A command it needed was not allowed. Decide in Chat.' : STATUS_HINT[r.status];
+  const hint = blocked.length ? '' : STATUS_HINT[r.status];
   const extra = rerun + fileRows.map(f => delivRow({ path: f })).join('');
   const dur = r.status === 'running' ? span(r.started, new Date().toISOString()) : span(r.started, r.updated);
   const live = r.status === 'running';
@@ -410,14 +409,14 @@ function agentRow(a: AgentRow, copilotOff = false, out?: LatestOutput): string {
   const last = !lw ? '<span class="muted">none yet</span>'
     : lw.capped !== undefined ? `daily cap reached (${lw.capped}) <span class="muted">${stamp(lw.at, ago(lw.at))}</span>`
     : `${lw.wake ? 'found work' : 'nothing to do'} <span class="muted">${stamp(lw.at, ago(lw.at))}</span>`;
-  const trig = (a.triggers ?? []).map(t => t.kind === 'schedule' ? plainCron(t.text) : t.kind === 'webhook' ? `when webhook “${t.text}” is called` : `when a new file appears in ${t.text}`);
+  const trig = (a.triggers ?? []).map(t => t.kind === 'schedule' ? plainCron(t.text) : t.kind === 'webhook' ? `on webhook “${t.text}”` : `on new files in ${t.text}`);
   const icoFor = (k: string) => (k === 'schedule' ? 'clock' : k === 'webhook' ? 'send' : 'file');
-  const runs = (a.triggers ?? []).length ? `<dt>Runs</dt><dd class="trigs">${(a.triggers ?? []).map((t, i) => `<span class="trig">${icon(icoFor(t.kind))}${esc(trig[i])}</span>`).join('')}</dd>` : '';
+  const runs = (a.triggers ?? []).length ? `<dt>Runs</dt><dd class="trigs">${(a.triggers ?? []).map((t, i) => `<span class="trig">${icon(icoFor(t.kind))}${esc(trig[i])}</span>`).join('')}</dd>` : '<dt>Runs</dt><dd class="muted">on demand</dd>';
   const pauseBtn = a.paused ? btn('Resume', `data-cmd="resumeAgent" data-arg="${esc(a.name)}" title="Let ${esc(a.name)} wake on its schedule and triggers again"`, 'secondary', 'play') : (a.triggers ?? []).length ? btn('Pause', `data-cmd="pauseAgent" data-arg="${esc(a.name)}" title="Skip ${esc(a.name)}'s scheduled and event wakes. A task you give it still runs."`, 'secondary', 'stop') : '';
   return `<div class="agent ${a.paused ? 'paused' : ''}"><div class="agent-top">${avatar(a.name, a.paused ? 'idle' : a.state === 'running' ? 'working' : a.state === 'waiting' ? 'waiting' : 'idle', 26)}<a class="agent-name" href="#" data-open="${esc(a.file)}" title="Edit ${esc(a.file)}: its instructions, schedule and skills">${esc(a.name)}</a>
     <span class="chip ${tone}">${icon(a.paused ? 'stop' : a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
     <dl class="kv">${runs}
-    <dt>Next</dt><dd>${a.paused ? '<span class="muted">paused</span>' : a.next ? stamp(a.next.toISOString(), when(a.next.toISOString())) : '<span class="muted">when you give it a task or a trigger fires</span>'}</dd>
+    ${a.paused || a.next ? `<dt>Next</dt><dd>${a.paused ? '<span class="muted">paused</span>' : stamp(a.next!.toISOString(), when(a.next!.toISOString()))}</dd>` : ''}
     ${lw ? `<dt>Last check</dt><dd>${last}</dd>` : ''}${a.model ? `<dt>Model</dt><dd class="mono">${esc(a.model)}</dd>` : ''}</dl>${latestLine(out)}
     <div class="agent-actions">${btn('Chat', `data-agent="${esc(a.name)}" title="Open the conversation with ${esc(a.name)}"`, 'secondary', 'send')}${btn('Run now', `data-cmd="runAgent" data-arg="${esc(a.name)}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot first"' : ` title="Give ${esc(a.name)} a task now"`}`, 'secondary', 'send')}${pauseBtn}</div></div>`;
 }
@@ -658,7 +657,7 @@ export function renderBody(m: ConsoleModel): string {
   const copilotChip = m.copilot === undefined ? '' : m.copilot > 0 ? `<span class="chip ok" title="${m.copilot} Copilot model${m.copilot > 1 ? 's' : ''} available">${icon('check')}<span>Copilot ready</span></span>` : `<span class="chip warn">${icon('alert')}<span>Copilot not signed in</span></span>`;
   const copilotNote = m.copilot === 0 ? `<div class="alert warn" role="alert">${icon('alert')}<span><b>GitHub Copilot is not signed in.</b> Agents use your Copilot models, so none can run until you sign in to GitHub Copilot in VS Code (Accounts menu, bottom left).</span></div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
-  return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}${copilotChip}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
+  return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}${copilotChip}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(time(m.updatedAt))}</time></span><div class="row">${actions}</div></header>
     ${note}${hasAgents ? copilotNote : ''}${stoppedNote}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="cols"><main><h2>Needs you${todos ? `<span class="count warn">${todos}</span>` : ''}</h2>${needs}
     ${decisions}${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Mates</h2>${agents}</aside></div>`}`;
 }

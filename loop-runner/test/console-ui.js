@@ -49,7 +49,7 @@ ok(!/use the buttons above/.test(chat({ state: 'waiting' }, [gate('approval')]))
 console.log('agent cards act');
 const card = (over = {}) => renderBody({ ...base, agents: [{ ...agent, triggers: [{ kind: 'schedule', text: '0 9 * * 1-5' }, { kind: 'webhook', text: 'deploy' }, { kind: 'file', text: 'reports/*.md' }], ...over }] });
 const c1 = card();
-ok(/weekdays at 09:00/.test(c1) && /webhook “deploy”/.test(c1) && /new file appears in reports\/\*\.md/.test(c1), 'a card says what wakes the agent, in words');
+ok(/weekdays at 09:00/.test(c1) && /webhook “deploy”/.test(c1) && /new files in reports\/\*\.md/.test(c1), 'a card says what wakes the agent, in words');
 ok(/data-cmd="runAgent" data-arg="a"/.test(c1) && /data-cmd="pauseAgent" data-arg="a"/.test(c1), 'a card can run the agent now and pause it');
 const c2 = card({ paused: true });
 ok(/data-cmd="resumeAgent"/.test(c2) && !/data-cmd="pauseAgent"/.test(c2) && /Paused/.test(c2), 'a paused agent shows Paused and offers Resume');
