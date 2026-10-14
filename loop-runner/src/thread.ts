@@ -79,13 +79,13 @@ export type ThreadEvent =
   | { kind: 'human'; ts: string; id: string; text: string; status: 'pending' | 'delivered'; deliveredAt?: string; via?: HumanMessage['via'] }
   | { kind: 'agent'; ts: string; text: string; step: number }
   | { kind: 'steps'; ts: string; steps: ThreadStep[] }
-  | { kind: 'status'; ts: string; label: string; tone: Tone; detail?: string; chainId: string; outputs?: string[] }
+  | { kind: 'status'; ts: string; label: string; tone: Tone; detail?: string; chainId: string; outputs?: string[]; /** The line that opens a run (its task): the run's card says it, so it is not repeated inside the fold. */ start?: boolean }
   /** How a run ended, as one card: the key result. `detail` is the full finish summary. */
-  | { kind: 'result'; ts: string; chainId: string; status: string; label: string; tone: Tone; /** Why the run ended this way, for the label's hover text. */ why?: string; goal?: string; detail?: string; next?: string; handoff?: { to: string; task: string }; deliverables: { path: string; preview?: string }[]; supporting: string[]; /** One line per question or approval settled during the run: "You approved: Roll back payments-service". */ approvals?: string[];
+  | { kind: 'result'; ts: string; chainId: string; status: string; label: string; tone: Tone; /** How the run began (`schedule`, `user`, a mate's name...): its task is only worth showing when it adds something. */ from?: string; /** Why the run ended this way, for the label's hover text. */ why?: string; goal?: string; detail?: string; next?: string; handoff?: { to: string; task: string }; deliverables: { path: string; preview?: string }[]; supporting: string[]; /** One line per question or approval settled during the run: "You approved: Roll back payments-service". */ approvals?: string[];
       /** Everything the run did, folded behind the card: today's detailed view, one click away. */
       fold: ThreadEvent[]; stepCount: number; problems: { refused: number; error: number; failed: number } }
   /** A run that has started and not ended (working, or parked on a gate): one card, its steps folded, like a finished run. */
-  | { kind: 'live'; ts: string; chainId: string; goal?: string; fold: ThreadEvent[]; stepCount: number; last?: string; approvals?: string[] }
+  | { kind: 'live'; ts: string; chainId: string; from?: string; goal?: string; fold: ThreadEvent[]; stepCount: number; last?: string; approvals?: string[] }
   | { kind: 'answer'; ts: string; title: string; text: string; tone: Tone; decision: 'answered' | 'executed' | 'failed' | 'rejected' };
 
 /**
@@ -170,7 +170,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
     const flush = () => { if (block) { events.push(block); runBlocks.push(block); block = undefined; } };
     // What the card for this run's end needs, gathered between its start and its end.
     let runBlocks: Extract<ThreadEvent, { kind: 'steps' }>[] = [];
-    let goal: string | undefined, next: string | undefined, handoff: { to: string; task: string } | undefined, wrote: string[] = [];
+    let from = '', goal: string | undefined, next: string | undefined, handoff: { to: string; task: string } | undefined, wrote: string[] = [];
     let approvals: string[] = [];
     let errEv: { ev: ThreadEvent; message: string } | undefined;
     let runStart = 0, open = false;
@@ -199,11 +199,11 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
         resetRun();
         open = true;
         runStart = events.length;
-        const from = String(e.from ?? '');
+        from = String(e.from ?? '');
         goal = from === 'chat' ? undefined : clip(firstLine(String(e.task ?? '')), 140) || undefined;
         events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'info',
           label: from === 'schedule' ? 'Scheduled run started' : from === 'chat' ? 'Started from your message' : from === 'task' ? 'Woken: a task it holds progressed' : from === 'user' ? 'Task from you' : `Handed over by ${from}`,
-          detail: from === 'chat' ? undefined : clip(String(e.task ?? ''), 240) });
+          detail: from === 'chat' ? undefined : clip(String(e.task ?? ''), 240), start: true });
       } else if (e.type === 'resume') {
         events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'info', label: e.from === 'checkpoint' ? 'Continued after an interruption' : 'Continued after your answer' });
       } else if (e.type === 'model') {
@@ -224,7 +224,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
         const count = (re: RegExp) => bad.filter(x => re.test(x.detail ?? '')).length;
         const problems = { refused: count(/^REFUSED/), error: count(/^ERROR/), failed: 0 };
         problems.failed = bad.length - problems.refused - problems.error;
-        events.push({ kind: 'result', ts: e.ts, chainId: c.chainId, status: st, label, tone, why, goal,
+        events.push({ kind: 'result', ts: e.ts, chainId: c.chainId, status: st, label, tone, why, from, goal,
           detail: [summary, msg].filter(Boolean).join('\n') || undefined, next: st === 'open' ? next : undefined, handoff, deliverables: split.deliverables.map(d => ({ path: d, preview: previewOf(root, d) })), supporting: split.supporting, approvals: approvals.length ? approvals : undefined,
           fold, stepCount: fold.reduce((n2, f) => n2 + (f.kind === 'steps' ? f.steps.length : 0), 0), problems });
         resetRun();
@@ -244,7 +244,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
       const fold = events.splice(runStart);
       const first = fold[0];
       const all = fold.flatMap(f => (f.kind === 'steps' ? f.steps : []));
-      events.push({ kind: 'live', ts: first?.ts ?? '', chainId: c.chainId, goal, fold, stepCount: all.length, last: all[all.length - 1]?.phrase, approvals: approvals.length ? approvals : undefined });
+      events.push({ kind: 'live', ts: first?.ts ?? '', chainId: c.chainId, from, goal, fold, stepCount: all.length, last: all[all.length - 1]?.phrase, approvals: approvals.length ? approvals : undefined });
     }
   }
   for (const m of listMessages(root, agent)) {
@@ -296,7 +296,8 @@ export interface Glance {
   pendingMessages: number;
 }
 
-const BAD_END = new Set(['blocked', 'error', 'stalled', 'max_steps']);
+/** Only a failure turns the face red; a blocked run is waiting on something, which its card and amber rule already say. */
+const BAD_END = new Set(['error', 'stalled', 'max_steps']);
 const HOUR = 3600_000;
 
 export function glance(root: string, agent: string, description: string, active?: Active, now = new Date()): Glance {

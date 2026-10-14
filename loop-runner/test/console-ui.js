@@ -95,7 +95,7 @@ console.log('the composer');
   ok(/data-chat-cancel="a"/.test(chat('running')) && /class="composer running"/.test(chat('running')), 'the Stop button stays while the mate works');
   ok(!/class="muted hint"/.test(chat('idle')) && /class="muted hint">a reads this at its next step\./.test(chat('running')), 'the hint is gone when idle and says something useful when it works');
   ok(/class="muted hint">a reads this once you have decided/.test(chat('waiting', [gate('approval')])) && !/class="muted hint"/.test(chat('waiting', [gate('question')])), 'an approval waiting says when the message is read; a question needs no hint');
-  ok(/The mates are off\. This is saved/.test(renderBody({ ...base, running: false })) && /a has work queued and reads this when it starts\./.test(chat('queued')), 'the hint still says when the mates are off or the work is queued');
+  ok(/class="muted hint">a reads this when mates are on\./.test(renderBody({ ...base, running: false })) && /a has work queued and reads this when it starts\./.test(chat('queued')), 'the hint says honestly when the mates are off, or that the work is queued');
   ok(/Message it below/.test(renderBody({ ...base, runs: [run('done')] })) && /No runs yet\. Runs only when you give it a task|No runs yet\. Runs when you message it/.test(renderBody(base)), 'an empty conversation says so in one line; a mate that never ran says No runs yet');
 }
 
@@ -124,7 +124,7 @@ console.log('mates in the roster and header');
   const hostile = renderBody({ ...base, chat: chatOf([row({ name: 'a"><img src=x>', triggers: [{ kind: 'schedule', text: '0 9 * * *' }] })]) });
   ok(!/<img src=x>/.test(hostile), 'a mate name cannot break out of the markup');
   const latest = renderBody({ ...base, outputs: { a: { agent: 'a', path: '.loop/outbox/a/today.md', at: now } } });
-  ok(/Latest output: <span[^>]*>today\.md/.test(latest), 'the header still shows the latest output');
+  ok(/<a class="link"[^>]*data-open=".loop\/outbox\/a\/today\.md"[^>]*><svg[^]*Open today\.md<\/a>/.test(latest) && !/Latest output/.test(latest), 'the header has one quiet link, "Open today.md", with the file icon');
 }
 
 console.log('refusals and the thread');
@@ -173,8 +173,8 @@ console.log('round three: live run, quiet actions, off, first run');
 {
   const live = (extra = {}) => renderBody({ ...base, runs: [{ ...run('running'), step: 3 }], chat: chatOf([row({ state: 'running', avatar: 'working', line: 'Read app.js' })], 'a', [{ kind: 'live', ts: now, chainId: 'c1', goal: 'Write the report.', stepCount: 2, last: 'Read app.js', fold: [{ kind: 'steps', ts: now, steps: [{ step: 1, kind: 'tool', title: 'run_command · git log', phrase: 'Ran git log', routine: false, ok: true }, { step: 2, kind: 'tool', title: 'read_file · app.js', phrase: 'Read app.js', routine: false, ok: true }] }], ...extra }]) });
   const d = new (require('jsdom').JSDOM)(`<body>${live()}</body>`).window.document;
-  ok(d.querySelectorAll('.rcard.live').length === 1 && !d.querySelector('.turn.working') && d.querySelector('.rcard.live .rgoal').textContent === 'Write the report.', 'a live run is one card with its task line, and no separate "is working" row');
-  ok(d.querySelector('.rcard.live details.rfold') && !d.querySelector('.rcard.live details.rfold').open && /Show 2 steps/.test(d.querySelector('.rfold summary').textContent) && /Read app\.js/.test(d.querySelector('.fold-gist').textContent), 'its steps are one collapsed fold that shows the last step');
+  ok(d.querySelectorAll('.rcard.live').length === 1 && !d.querySelector('.turn.working') && d.querySelector('.rcard.live .rgoal').textContent === 'Read app.js' && !d.querySelector('.rgoalline'), 'a live run is one card titled by what it is doing now, with no task line and no separate "is working" row');
+  ok(d.querySelector('.rcard.live details.rfold') && !d.querySelector('.rcard.live details.rfold').open && /Show 2 steps/.test(d.querySelector('.rfold summary').textContent), 'its steps are one collapsed fold');
   ok(/working · step 3 · /.test(d.querySelector('.rcard.live .live-line').textContent), 'and it ends with "working · step N · time"');
   ok(/Ran git log/.test(d.querySelector('.rfold-body').textContent) && !/run_command|read_file/.test(d.querySelector('.rfold-body').textContent.replace(/\s+/g, ' ')), 'steps use human verbs, not tool names');
   ok(!/live-line/.test(renderBody({ ...base, chat: chatOf([row({ state: 'waiting', avatar: 'waiting', needsYou: 1 })], 'a', [{ kind: 'live', ts: now, chainId: 'c1', fold: [], stepCount: 0 }]) })), 'a run parked on a gate has no spinner line');
@@ -187,6 +187,34 @@ console.log('round three: live run, quiet actions, off, first run');
   ok(/All quiet · next/.test(pill(renderBody({ ...base, next: { agent: 'a', at: new Date(Date.now() + 7200e3).toISOString() } }))), 'all quiet renders');
   const first = renderBody({ ...base, chat: chatOf([row({ triggers: [{ kind: 'schedule', text: '0 9 * * 1-5' }] })]) });
   ok(/No runs yet\. Runs weekdays at 09:00\./.test(first) && (first.match(/data-cmd="runAgent"/g) || []).length === 1, 'a mate that never ran says when it runs, with one Run now button (not two)');
+}
+
+console.log('round four: one row per step, the outcome is the title, stopped explains itself');
+{
+  const JS = require('jsdom').JSDOM;
+  const steps = [{ step: 1, kind: 'tool', title: 'run_command · git log --since=1d', phrase: 'Ran git log --since=1d', routine: false, detail: 'abc123 commit one', ok: true }, { step: 2, kind: 'tool', title: 'write_file · today.md', phrase: 'Wrote today.md', routine: false, detail: '[exit 0]', ok: true }, { step: 3, kind: 'tool', title: 'run_command · rm x', phrase: 'Ran rm x', routine: false, detail: 'REFUSED by policy', ok: false }];
+  const result = o => ({ kind: 'result', ts: now, chainId: 'c1', status: 'done', label: 'Done', tone: 'ok', from: 'schedule', goal: 'Write the report.', detail: 'Report written: 12 commits across 3 areas.', deliverables: [], supporting: [], fold: [{ kind: 'status', ts: now, label: 'Scheduled run started', tone: 'info', chainId: 'c1', detail: 'Write the report.', start: true }, { kind: 'steps', ts: now, steps }], stepCount: 3, problems: { refused: 1, error: 0, failed: 0 }, ...o });
+  const view = (ev, over = {}, goals) => new JS(`<body>${renderBody({ ...base, ...over, chat: chatOf([row({ goals })], 'a', [ev]) })}</body>`).window.document;
+  const d = view(result());
+  const body = d.querySelector('.rfold-body');
+  ok(body.querySelectorAll('.steprow').length === 3 && !body.querySelector('.sline') && !body.querySelector('time') && !/Write the report/.test(body.textContent), 'expanded: exactly one row per step, no repeated task heading, no second timestamp');
+  ok(/^Ran\s*git log --since=1d/.test(body.querySelectorAll('.steprow')[0].textContent.trim()) && body.querySelectorAll('.steprow')[0].querySelector('code.mono').textContent === 'git log --since=1d' && body.querySelectorAll('.steprow')[0].matches('details'), 'a row is the verb plus the command in monospace, and its output sits behind its own expand');
+  ok(body.querySelectorAll('.steprow')[1].textContent.trim() === 'Wrote today.md' && !body.querySelectorAll('.steprow')[1].matches('details'), 'a step with nothing to say is just its line');
+  ok(body.querySelector('.steprow.bad .result-bad') && /REFUSED/.test(body.querySelector('.steprow.bad .result-bad').textContent), 'a failed step shows its error below, in the error colour');
+  ok(d.querySelector('.rcard .rgoal').textContent === 'Report written: 12 commits across 3 areas.' && !d.querySelector('.rgoalline') && !d.querySelector('.rsum'), 'the finished card\'s title is the outcome; the task is not repeated');
+  ok(/Write the report\./.test(view(result(), {}, [{ id: 'a', text: 'A', triggers: [] }, { id: 'b', text: 'B', triggers: [] }]).querySelector('.rgoalline')?.textContent ?? '') && /Write the report\./.test(view(result({ from: 'techlead' })).querySelector('.rgoalline')?.textContent ?? ''), 'the task shows as a small muted line when the mate has several goals, or the run came from a teammate or you');
+  const long = result({ detail: 'First line of the summary.\nMore detail follows here.' });
+  ok(view(long).querySelector('.rgoal').textContent === 'First line of the summary.' && /More detail follows/.test(view(long).querySelector('.rsum').textContent), 'a longer summary: first line is the title, the rest sits under it');
+  const off = renderBody({ ...base, running: false, runs: [run('done')], chat: chatOf([row({ triggers: [{ kind: 'schedule', text: '0 9 * * 1-5' }] })]) });
+  ok(/Mates are off\. Nothing runs until you start them\./.test(off) && !/data-cmd="runAgent"/.test(off) && !/data-cmd="pauseAgent"/.test(off), 'with the mates off: one note, and no Run now or Pause');
+  ok(!/Mates are off\. Nothing/.test(renderBody({ ...base, runs: [run('done')] })) && /data-cmd="runAgent"/.test(renderBody({ ...base, runs: [run('done')] })), 'with them on, neither');
+  const offFirst = renderBody({ ...base, running: false, chat: chatOf([row()]) });
+  ok(/Start mates to run it\./.test(offFirst) && !/data-cmd="runAgent"/.test(offFirst), 'a never-run mate says to start the mates instead of offering Run now');
+  const blocked = renderBody({ ...base, chat: { ...chatOf([row({ needsYou: 1 })]), blocked: [{ id: 'b1', agent: 'a', command: 'x', chainId: 'c', at: now }] } });
+  ok(!/>Blocked command</.test(blocked) && /<div class="meta"><span><time/.test(blocked), 'the blocked card says Blocked once (its title); its meta is just the time');
+  const warnCard = new JS(`<body>${renderBody({ ...base, chat: chatOf([row()], 'a', [result({ status: 'blocked', label: 'Blocked', tone: 'warn' })]) })}</body>`).window.document;
+  const failCard = new JS(`<body>${renderBody({ ...base, chat: chatOf([row()], 'a', [result({ status: 'error', label: 'Failed', tone: 'bad' })]) })}</body>`).window.document;
+  ok(!warnCard.querySelector('.turn-av .av.blocked') && failCard.querySelector('.turn-av .av.blocked'), 'only a failed run gets the red ring on its avatar, not a blocked one');
 }
 
 console.log('plain schedules');

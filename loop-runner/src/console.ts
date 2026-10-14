@@ -275,7 +275,7 @@ const btn = (label: string, attrs: string, kind = '', ic = '') => `<button class
 const copy = (text: string, label: string) => `<button class="btn ghost" data-copy="${esc(text)}" aria-label="Copy ${esc(label)}" title="Copy ${esc(label)}">${icon('copy')}</button>`;
 
 /** Mate name, kind and age: the line every to-do card (question, approval, blocked command) opens with. */
-const todoMeta = (kind: string, at: string, tip = '') => `<div class="meta"><span${tip ? ` title="${esc(tip)}"` : ''}>${esc(kind)}</span><span>${stamp(at, ago(at))}</span></div>`;
+const todoMeta = (kind: string, at: string, tip = '') => `<div class="meta">${kind ? `<span${tip ? ` title="${esc(tip)}"` : ''}>${esc(kind)}</span>` : ''}<span>${stamp(at, ago(at))}</span></div>`;
 
 /**
  * A question or an approval, as a card. The composer at the bottom of the chat answers a question;
@@ -315,7 +315,7 @@ const gateQueued = (g: GateView) => `<div class="card queued" data-queued="${esc
 /** A refused command that no rule allowed: shaped like an approval, with Allow and Dismiss. */
 function blockedCard(b: BlockedView): string {
   return `<section class="card attention blocked" data-blocked="${esc(b.id)}" aria-label="Blocked command from ${esc(b.agent)}"><div class="card-head">${icon('alert', 'lead warn')}<div class="grow"><div class="card-title">Blocked from running a command</div>
-    ${todoMeta('Blocked command', b.at, `Refused in run ${b.chainId}.`)}</div></div>
+    ${todoMeta('', b.at)}</div></div>
     <p class="body brief">Allow this exact command for ${esc(b.agent)} only.</p>
     <div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(b.command)}</pre>${copy(b.command, 'command')}</div>
     <div class="row actions">${btn('Dismiss', `data-dismiss-agent="${esc(b.agent)}" data-dismiss-cmd="${esc(b.command)}" title="Stop asking about this command"`, 'ghost')}${btn('Allow', `data-allow-agent="${esc(b.agent)}" data-allow-cmd="${esc(b.command)}" title="Adds this exact command for ${esc(b.agent)} only. Anything else it tries is still checked against the policy."`, 'primary', 'check')}</div></section>`;
@@ -353,7 +353,7 @@ const baseName = (p: string) => p.slice(p.lastIndexOf('/') + 1);
 
 /** "Latest output: today.md · 3 h ago · Open". Nothing when the mate has produced nothing. */
 function latestLine(o?: LatestOutput): string {
-  return o ? `<div class="muted lastout">Latest output: <span class="mono" title="${esc(o.path)}">${esc(baseName(o.path))}</span> · ${stamp(o.at, ago(o.at))} · <a class="link" href="#" data-open="${esc(o.path)}">Open</a></div>` : '';
+  return o ? `<div class="lastout"><a class="link" href="#" data-open="${esc(o.path)}" title="${esc(o.path)} · ${esc(new Date(o.at).toLocaleString())}">${icon('file')}Open ${esc(baseName(o.path))}</a></div>` : '';
 }
 
 /** A cron expression in words, for the common shapes; anything else is shown as written. */
@@ -436,14 +436,39 @@ function stepsBlock(steps: ThreadStep[], ts: string): string {
 
 /** What the live card's last line says: it is working, how far, for how long. */
 interface LiveInfo { working: boolean; step?: number; started?: string }
+/** `fold`: drawing inside a run's fold (one row per step, no repeated heading). `multiGoal`: the mate has several goals, so a run's task says which. */
+interface Ctx { live?: LiveInfo; multiGoal?: boolean; fold?: boolean }
 
-function threadEvent(e: ThreadEvent, agent: string, live?: LiveInfo): string {
+const STEP_VERB = /^(Ran|Read|Wrote|Edited|Listed) ([^]*)$/;
+
+/** One row per step inside a run's fold: the verb, the command or path in monospace, and the result only if it is worth opening (or went wrong). */
+function stepRows(steps: ThreadStep[]): string {
+  return `<div class="steprows">${steps.map(s => {
+    const m = STEP_VERB.exec(s.phrase);
+    const line = m ? `<span class="sverb">${esc(m[1])}</span> <code class="mono">${esc(m[2])}</code>` : `<span>${esc(s.phrase)}</span>`;
+    const tip = esc(s.title.replace(/^\w+ · /, ''));
+    if (!s.ok) {
+      return `<div class="steprow bad" title="${tip}"><span class="node">${icon('x')}</span><div class="grow"><div>${line} <span class="bad-count">· ${esc(badWord(s))}</span></div>${s.detail ? `<div class="result-bad small wrap-text">${esc(s.detail)}</div>` : ''}</div></div>`;
+    }
+    if (!s.detail || /^(\[exit 0\]|ok)$/.test(s.detail)) {
+      return `<div class="steprow" title="${tip}"><span class="node">${icon('dot')}</span><div class="grow">${line}</div></div>`;
+    }
+    return `<details class="steprow stepdet" title="${tip}"><summary>${icon('chevron', 'chev')}<span class="grow">${line}</span></summary><div class="small muted wrap-text sdet">${esc(s.detail)}</div></details>`;
+  }).join('')}</div>`;
+}
+
+/** What a run was for, as a small muted line: only when it tells something the card does not (several goals, or a task from you or a teammate). */
+const taskLine = (goal: string | undefined, from: string | undefined, ctx: Ctx) => (goal && (ctx.multiGoal || (from && from !== 'schedule')) ? `<div class="rgoalline muted ell" title="${esc(goal)}">${esc(goal)}</div>` : '');
+
+function threadEvent(e: ThreadEvent, agent: string, ctx: Ctx = {}): string {
+  const live = ctx.live;
+  const foldOf = (f: ThreadEvent[]) => f.filter(x => !(x.kind === 'status' && x.start)).map(x => (x.kind === 'steps' ? stepRows(x.steps) : threadEvent(x, agent, { fold: true }))).join('');
   if (e.kind === 'live') {
-    const inner = e.fold.map(f => threadEvent(f, agent)).join('');
+    const inner = foldOf(e.fold);
     const label = e.stepCount ? `Show ${plural(e.stepCount, 'step', 'steps')}` : 'Show details';
-    const fold = inner ? `<details class="rfold" data-k="lf-${esc(e.chainId)}"><summary>${icon('chevron', 'chev')}<span class="fold-label">${esc(label)}</span>${e.last ? `<span class="fold-gist">${esc(clip(e.last, 60))}</span>` : ''}</summary><div class="rfold-body">${inner}</div></details>` : '';
+    const fold = inner ? `<details class="rfold" data-k="lf-${esc(e.chainId)}"><summary>${icon('chevron', 'chev')}<span class="fold-label">${esc(label)}</span></summary><div class="rfold-body">${inner}</div></details>` : '';
     const spin = live?.working ? `<div class="rline live-line" role="status">${icon('spin', 'spin')}<span>working${live.step ? ` · step ${live.step}` : ''}${live.started ? ` · ${esc(span(live.started, new Date().toISOString()))}` : ''}</span></div>` : '';
-    return `<div class="rcard live" data-result="live"><div class="rtop"><span class="rgoal ell"${e.goal ? ` title="${esc(e.goal)}"` : ''}>${esc(e.goal ?? 'Started from your message')}</span><span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${(e.approvals ?? []).map(a => `<div class="rline wrap-text">${esc(a)}</div>`).join('')}${fold}${spin}</div>`;
+    return `<div class="rcard live" data-result="live"><div class="rtop"><span class="rgoal ell strong" title="${esc(e.last ?? '')}">${esc(e.last ?? 'Starting…')}</span><span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${taskLine(e.goal, e.from, ctx)}${(e.approvals ?? []).map(a => `<div class="rline wrap-text">${esc(a)}</div>`).join('')}${fold}${spin}</div>`;
   }
   if (e.kind === 'human') {
     const seen = e.status === 'pending' ? `waiting for ${esc(agent)} to read it` : esc(DELIVERY[e.via ?? ''] ?? 'read');
@@ -458,7 +483,7 @@ function threadEvent(e: ThreadEvent, agent: string, live?: LiveInfo): string {
   }
   if (e.kind === 'steps') { return stepsBlock(e.steps, e.ts); }
   if (e.kind === 'result') {
-    const inner = e.fold.map(f => threadEvent(f, agent)).join('');
+    const inner = foldOf(e.fold);
     const stepPhrases = e.fold.flatMap(f => (f.kind === 'steps' ? f.steps.map(x => x.phrase) : [])).filter(Boolean);
     const gist = [...new Set(stepPhrases)].slice(0, 2).map(x => clip(x, 38)).join(' · ');
     const label = e.stepCount ? `Show ${plural(e.stepCount, 'step', 'steps')}` : 'Show details';
@@ -474,8 +499,12 @@ function threadEvent(e: ThreadEvent, agent: string, live?: LiveInfo): string {
     const sup = sf.rest.length ? `<details class="rsup" data-k="rs-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${plural(sf.rest.length, 'supporting file', 'supporting files')}</span></summary><div class="rfiles">${sf.rest.map(o => `<a class="filechip" href="#" data-open="${esc(o)}" title="${esc(o)}">${icon('file')}<span class="ell">${esc(o)}</span></a>`).join('')}</div></details>` : '';
     const files = sf.rows.map(p => delivRow(e.deliverables.find(d => d.path === p) ?? { path: p })).join('');
     const line = (k: string, v: string) => `<div class="rline wrap-text"><span class="rk">${esc(k)}</span> ${esc(v)}</div>`;
-    return `<div class="rcard ${esc(e.status)} ${toneOf(e.tone)}" data-result="${esc(e.status)}"><div class="rtop"><span class="chip ${toneOf(e.tone)}"${e.why ? ` title="${esc(e.why)}"` : ''}>${esc(e.label)}</span>${e.goal ? `<span class="rgoal ell" title="${esc(e.goal)}">${esc(e.goal)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`
-      + (e.detail ? `<div class="rsum wrap-text">${esc(e.detail)}</div>` : '')
+    // The outcome is the title; the rest of a long summary sits under it.
+    const title = firstLine(e.detail ?? '') || e.goal || '';
+    const rest = e.detail && (e.detail.includes('\n') ? e.detail.slice(e.detail.indexOf('\n') + 1).trim() : e.detail.length > 140 ? e.detail : '');
+    return `<div class="rcard ${esc(e.status)} ${toneOf(e.tone)}" data-result="${esc(e.status)}"><div class="rtop"><span class="chip ${toneOf(e.tone)}"${e.why ? ` title="${esc(e.why)}"` : ''}>${esc(e.label)}</span><span class="rgoal ell strong" title="${esc(title)}">${esc(clip(title, 140))}</span><span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`
+      + taskLine(e.detail ? e.goal : undefined, e.from, ctx)
+      + (rest ? `<div class="rsum wrap-text">${esc(rest)}</div>` : '')
       + (e.next ? line('Next:', e.next) : '') + (e.handoff ? line(`Handed to ${e.handoff.to}:`, e.handoff.task) : '')
       + (e.approvals ?? []).map(a => `<div class="rline wrap-text">${esc(a)}</div>`).join('')
       + (files ? `<div class="rdelivs">${files}</div>` : '') + sup + (probs ? `<div class="rprob">${esc(probs)}</div>` : '') + refusals + fold + '</div>';
@@ -489,8 +518,8 @@ function composerHint(name: string, state: ChatState, running: boolean, openKind
   switch (state) {
     case 'running': return `${name} reads this at its next step.`;
     case 'waiting': return openKind === 'approval' ? `${name} reads this once you have decided.` : '';
-    case 'queued': return `${name} has work queued and reads this when it starts.${running ? '' : ' The mates are off.'}`;
-    default: return running ? '' : 'The mates are off. This is saved, and runs when you start them.';
+    case 'queued': return running ? `${name} has work queued and reads this when it starts.` : `${name} reads this when mates are on.`;
+    default: return running ? '' : `${name} reads this when mates are on.`;
   }
 }
 
@@ -539,7 +568,9 @@ function taskLines(tasks: Task[], name: string): string {
 }
 
 /** The few things a person does to a mate, one click from its conversation. */
-function chatActions(sel: ChatAgent, copilotOff: boolean, hideRun = false): string {
+function chatActions(sel: ChatAgent, copilotOff: boolean, hideRun = false, off = false): string {
+  // While the mates are off neither button does anything: the note above the thread says why.
+  if (off) { return ''; }
   const n = esc(sel.name);
   const btns = [
     hideRun ? '' : btn('Run now', `data-cmd="runAgent" data-arg="${n}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot to let mates run."' : ` title="Give ${n} a task now"`}`, 'secondary', 'send'),
@@ -570,8 +601,8 @@ function renderChat(m: ConsoleModel): string {
     const sep = key && key !== lastDay ? `<div class="daysep"><span>${esc(dayLabel(d!))}</span></div>` : '';
     if (key) { lastDay = key; }
     const tone = e.kind === 'result' ? e.tone : undefined;
-    const av: AvatarState = e.kind === 'live' ? (sel.state === 'running' ? 'working' : 'idle') : tone === 'ok' ? 'done' : tone === 'warn' || tone === 'bad' ? 'blocked' : 'idle';
-    return sep + (e.kind === 'result' || e.kind === 'live' ? `<div class="turn"><span class="turn-av">${avatar(sel.name, av, 26)}</span>${threadEvent(e, sel.name, { working: sel.state === 'running', step: liveRun?.step, started: liveRun?.started })}</div>` : threadEvent(e, sel.name));
+    const av: AvatarState = e.kind === 'live' ? (sel.state === 'running' ? 'working' : 'idle') : tone === 'ok' ? 'done' : tone === 'bad' ? 'blocked' : 'idle';
+    return sep + (e.kind === 'result' || e.kind === 'live' ? `<div class="turn"><span class="turn-av">${avatar(sel.name, av, 26)}</span>${threadEvent(e, sel.name, { live: { working: sel.state === 'running', step: liveRun?.step, started: liveRun?.started }, multiGoal: (sel.goals ?? []).length > 1 })}</div>` : threadEvent(e, sel.name));
   }).join('');
   const working = sel.state === 'running' && !c.events.some(e => e.kind === 'live') ? `<div class="turn working" role="status"><span class="turn-av">${avatar(sel.name, 'working', 26)}</span><div class="working-text">${icon('spin', 'spin')}<span><b>${esc(sel.name)}</b> is working: ${esc(sel.line)}${liveRun ? ` <span class="muted">· ${esc(span(liveRun.started, new Date().toISOString()))} · step ${liveRun.step}</span>` : ''}</span></div></div>` : '';
   // Everything waiting on the person, in one place at the end of the thread: the oldest question or approval is answered through the
@@ -583,7 +614,7 @@ function renderChat(m: ConsoleModel): string {
   const firstRun = !c.events.length && !todo && !m.runs.some(r => r.agent === sel.name) && !m.outputs?.[sel.name];
   const wakes = (sel.triggers ?? []).map(triggerWords);
   const nextWakeWords = wakes.length ? `Runs ${esc(wakes.join(' · '))}` : 'Runs when you message it';
-  const empty0 = firstRun ? `<div class="empty firstrun"><div class="empty-title">No runs yet. ${nextWakeWords}.</div>${btn('Run now', `data-cmd="runAgent" data-arg="${esc(sel.name)}"${m.copilot === 0 ? ' disabled title="Sign in to GitHub Copilot to let mates run."' : ` title="Give ${esc(sel.name)} a task now"`}`, 'secondary', 'send')}</div>`
+  const empty0 = firstRun ? `<div class="empty firstrun"><div class="empty-title">No runs yet. ${nextWakeWords}.</div>${!m.running ? '<div class="muted">Start mates to run it.</div>' : btn('Run now', `data-cmd="runAgent" data-arg="${esc(sel.name)}"${m.copilot === 0 ? ' disabled title="Sign in to GitHub Copilot to let mates run."' : ` title="Give ${esc(sel.name)} a task now"`}`, 'secondary', 'send')}</div>`
     : !c.events.length && !todo ? empty('send', `Nothing yet with ${sel.name}`, 'Message it below. If it is idle, that starts a run.') : '';
   const running = sel.state === 'running';
   const hint = composerHint(sel.name, sel.state, m.running, first?.kind);
@@ -592,7 +623,7 @@ function renderChat(m: ConsoleModel): string {
   return `<div class="chat">
     <nav class="roster" aria-label="Mates">${list}</nav>
     <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
-      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(stateWord(sel))}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}${latestLine(m.outputs?.[sel.name])}</div>${chatActions(sel, m.copilot === 0, firstRun)}</header>${tasks ? `<div class="ch-tasks">${tasks}</div>` : ''}
+      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(stateWord(sel))}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}${latestLine(m.outputs?.[sel.name])}</div>${chatActions(sel, m.copilot === 0, firstRun, !m.running)}</header>${tasks ? `<div class="ch-tasks">${tasks}</div>` : ''}${m.running ? '' : '<div class="offnote muted">Mates are off. Nothing runs until you start them.</div>'}
       <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${todo ? `<button class="pinned" data-jump=".thread-gates" title="Scroll to what ${esc(sel.name)} is asking">${icon('bell')}<span><b>${esc(sel.name)}</b> needs you: ${esc(clip(first ? first.title : `blocked: ${blocked[0].command}`, 60))}${todo > 1 ? ` and ${todo - 1} more` : ''}</span><span class="pin-go">Jump</span></button>` : ''}${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${working}${gates}</div>
       <div class="composer ${running ? 'running' : ''}">${hint ? `<div class="muted hint">${esc(hint)}</div>` : ''}
         <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}"${first?.kind === 'question' ? ` data-answer-for="${esc(first.id)}"` : ''} aria-label="${word} ${esc(sel.name)}" placeholder="${word} ${esc(sel.name)}…"></textarea>`
@@ -648,7 +679,7 @@ textarea,select{background:var(--vscode-input-background);color:var(--vscode-inp
 .card.queued{display:flex;align-items:center;gap:10px;padding:8px 14px;border-left:3px solid var(--warn);opacity:.85}.card.queued .lead{margin-top:0}
 .row.actions{justify-content:flex-end;margin-top:10px}.body.brief{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-height:none;cursor:pointer}.body.brief.open{-webkit-line-clamp:unset}
 .gatefiles{margin-top:10px}.gatefiles>summary{color:var(--vscode-descriptionForeground);padding:2px 0;width:fit-content}.gatefiles>.note{margin:6px 0 0}
-.lastout{font-size:.88em;margin-top:2px}
+.lastout{font-size:.88em;margin-top:2px}.ch-facts a.link,.lastout a.link{text-decoration:none;display:inline-flex;align-items:center;gap:4px}.ch-facts a.link:hover,.lastout a.link:hover{text-decoration:underline}
 .count{padding:0 7px;border-radius:999px;font-size:.95em;color:var(--vscode-badge-foreground);background:var(--vscode-badge-background)}.count.warn{background:var(--warn);color:var(--vscode-editor-background)}
 .card{border:1px solid var(--vscode-panel-border);border-radius:var(--r);padding:14px;margin-bottom:var(--gap);background:var(--vscode-sideBar-background,transparent)}
 .card.attention{border-left:3px solid var(--warn)}
@@ -717,7 +748,7 @@ time{font-weight:400}
 .rgoal{flex:1;min-width:0;color:var(--vscode-descriptionForeground)}.rgoal.ell,.rcard .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rtop .stime{margin-left:auto;font-size:.88em;color:var(--vscode-descriptionForeground)}
 .rquiet{margin-left:38px;padding-left:12px;font-size:.88em;min-width:0}.rprob{margin-top:3px;color:var(--warn-text);font-size:.9em}
 .rfold{margin-top:6px;color:var(--vscode-descriptionForeground);font-size:.95em}.rfold>summary{padding:3px 10px 3px 6px;width:fit-content;max-width:100%;display:flex;gap:8px;align-items:center;border:1px solid var(--vscode-panel-border);border-radius:999px;cursor:pointer}.rfold>summary:hover{background:var(--vscode-list-hoverBackground)}.fold-label{color:var(--vscode-foreground);font-weight:600;white-space:nowrap;flex:none}.fold-gist{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rfold-body{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px 0;padding-left:0;color:var(--vscode-foreground);font-size:1.08em}
-.rfold-body .steps,.rfold-body .sline,.rfold-body .rcard,.rfold-body .rquiet{margin-left:0;width:auto}.empty.firstrun{margin-bottom:auto;gap:10px}.live-line{display:flex;align-items:center;gap:8px;margin-top:6px}.rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
+.rfold-body .steps,.rfold-body .sline,.rfold-body .rcard,.rfold-body .rquiet{margin-left:0;width:auto}.empty.firstrun{margin-bottom:auto;gap:10px}.offnote{padding:6px 16px;font-size:.88em;border-bottom:1px solid var(--vscode-panel-border)}.steprows{display:flex;flex-direction:column;gap:3px;font-size:.9em}.steprow{display:flex;gap:8px;align-items:baseline;min-width:0}.steprow .node{margin-top:0;flex:none;align-self:center}.steprow .grow{overflow-wrap:anywhere}.steprow .mono{font-size:.92em}.stepdet{display:block}.stepdet>summary{display:flex;gap:8px;align-items:center;cursor:pointer}.stepdet>summary .chev{width:12px;height:12px}.sdet{margin:2px 0 4px 20px}.rgoalline{font-size:.86em;margin-top:1px}.rgoal.strong{color:var(--vscode-foreground);font-weight:500}.link{text-decoration:none}.link:hover{text-decoration:underline}.lastout .link{display:inline-flex;gap:5px;align-items:center}.lastout .ic{width:13px;height:13px}.live-line{display:flex;align-items:center;gap:8px;margin-top:6px}.rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
 .rdelivs{display:flex;flex-direction:column;gap:4px;margin-top:6px}.deliv{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:5px 8px;border-radius:6px;background:var(--vscode-input-background);color:var(--vscode-foreground);text-decoration:none}.deliv:hover{background:var(--vscode-list-hoverBackground)}.deliv svg{margin-top:2px;color:var(--vscode-textLink-foreground);flex:none}
 .dtext{display:flex;flex-direction:column;min-width:0;flex:1}.dline{display:flex;gap:8px;align-items:baseline;min-width:0}.dname{font-weight:600;color:var(--vscode-textLink-foreground);flex:none;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ddir{color:var(--vscode-descriptionForeground);font-size:.88em;min-width:0}.dprev{color:var(--vscode-descriptionForeground);font-size:.92em}
 .rsup{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}.rsup>summary{padding:1px 0;width:fit-content}

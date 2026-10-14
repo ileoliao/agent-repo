@@ -158,7 +158,7 @@ console.log('results first');
   ok(!/Latest/.test(bar.textContent) && !bar.querySelector('[data-open]'), 'the top bar carries no Latest button: the file is in the mate\'s header');
   ok(!/Latest output/.test(dom(renderBody(model(R, { agent: 'beta' }))).querySelector('.chat-head').textContent), 'a mate with no output says nothing about one');
   const chat = dom(renderBody(model(R, { agent: 'alpha' })));
-  ok(/Latest output: today\.md/.test(chat.querySelector('.chat-head').textContent) && chat.querySelector('.rcard .rdelivs [data-open=".loop/outbox/alpha/today.md"]'), 'the conversation head and the run block in it show the file too');
+  ok(/Open today\.md/.test(chat.querySelector('.chat-head').textContent) && chat.querySelector('.rcard .rdelivs [data-open=".loop/outbox/alpha/today.md"]'), 'the conversation head and the run block in it show the file too');
   Q.audit(R, 'cs', { type: 'start', agent: 'alpha', from: 'schedule', task: 'Code' });
   Q.audit(R, 'cs', { type: 'end', agent: 'alpha', step: 1, status: 'done', summary: 'Edited', outputs: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] });
   const t = Date.now() / 1000 + 5; fs.utimesSync(path.join(R, '.loop/runs', new Date().toISOString().slice(0, 10), 'cs.jsonl'), t, t);
