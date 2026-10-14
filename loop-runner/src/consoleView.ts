@@ -7,6 +7,7 @@ import * as path from 'path';
 import { ConsoleModel, consoleModel, renderBody, renderPage } from './console';
 import { closeTaskByHuman } from './tasks';
 import { Active } from './textutil';
+import { dismissBlock, setUiFlag } from './maintenance';
 
 /** What the console can ask the extension to do. Each action reuses an existing code path. */
 export interface ConsoleActions {
@@ -65,9 +66,12 @@ export class ConsolePanel {
     this.lastHtml = '';
     panel.onDidDispose(() => { this.panel = undefined; this.lastHtml = ''; });
     panel.onDidChangeViewState(() => { if (panel.visible) { this.refresh(true); } });
+    // Opening with something waiting lands on the Chat of the mate behind the first to-do (the model picks it when no mate is chosen).
+    // Anything the person switches to afterwards is kept by `view`, so a refresh never takes it away.
+    if (this.todos(this.model()) > 0) { this.view = { tab: 'chat' }; }
     const model = this.model();
     panel.webview.html = renderPage(model, crypto.randomBytes(16).toString('hex'), panel.webview.cspSource);
-    this.title(model.pending.length);
+    this.title(this.todos(model));
     panel.webview.onDidReceiveMessage(m => void this.handle(m));
   }
 
@@ -76,13 +80,16 @@ export class ConsolePanel {
     if (!this.panel || (!this.panel.visible && !force)) { return; }
     const model = this.model();
     const html = renderBody(model);
-    this.title(model.pending.length);
+    this.title(this.todos(model));
     // updatedAt changes every time; compare without it so an idle console does not redraw (and lose focus) every 5 s.
     const key = html.replace(/<time[^>]*data-updated[^>]*>[^<]*<\/time>/, '');
     if (key === this.lastHtml && !force) { return; }
     this.lastHtml = key;
     void this.panel.webview.postMessage({ type: 'body', html });
   }
+
+  /** Everything waiting on the person: questions, approvals and blocked commands. */
+  private todos(m: ConsoleModel): number { return m.pending.length + (m.blocked ?? []).length; }
 
   private title(pending: number): void {
     if (this.panel) { this.panel.title = pending ? `Harbor Mate Console (${pending})` : 'Harbor Mate Console'; }
@@ -95,11 +102,24 @@ export class ConsolePanel {
         note: { tone: 'info', text: 'Open a folder in VS Code to use Harbor Mate.' } };
     }
     try {
-      return { ...consoleModel(r, { ...this.a.state(), tab: this.view.tab, agent: this.view.agent }), copilot: this.a.copilotModels?.() };
+      return { ...consoleModel(r, { ...this.a.state(), tab: this.view.tab, agent: this.view.agent, defaultPolicy: this.a.defaultPolicy?.() }), copilot: this.a.copilotModels?.() };
     } catch (e: any) {
       return { tab: this.view.tab, running: this.a.state().running, active: this.a.state().active, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
         note: { tone: 'bad', text: `Could not read .loop data: ${e?.message ?? e}. Showing nothing rather than something stale.` } };
     }
+  }
+
+  /** Ask, then add the exact command to that mate's own policy. True when it was allowed. */
+  private async allow(r: string, agent: string, command: string): Promise<boolean> {
+    const plan = planAllowCommand(r, agent, command, this.a.defaultPolicy?.() ?? '.loop/policy.json');
+    if ('error' in plan) { void vscode.window.showWarningMessage(`Harbor Mate: ${plan.error}`); return false; }
+    const shared = plan.shared.length ? `\n\nThis policy file is also used by ${plan.shared.join(', ')}, so they get the same permission.` : '';
+    const ok = await vscode.window.showWarningMessage(`Let ${agent} run this command from now on?`, { modal: true, detail: `${command}\n\nOnly this exact command, only for ${agent}. It is saved in ${plan.file}. Anything else it tries is still checked against the policy.${shared}` }, 'Allow');
+    if (ok !== 'Allow') { return false; }
+    for (const c of plan.changes) { applyChange(r, c); }
+    await vscode.commands.executeCommand('harborMate.reloadTeam');
+    void vscode.window.showInformationMessage(`Harbor Mate: ${agent} may now run that command. Policy: ${plan.file}.`);
+    return true;
   }
 
   private async handle(m: any): Promise<void> {
@@ -114,24 +134,24 @@ export class ConsolePanel {
           const id = String(m.id);
           if (this.inFlight.has(id)) { return; }
           this.inFlight.add(id);
-          try { await this.a.approve(id, m.seen && typeof m.seen === 'object' ? m.seen : {}); } finally { this.inFlight.delete(id); void this.panel?.webview.postMessage({ type: 'idle', id }); }
+          try { await this.a.approve(id, m.seen && typeof m.seen === 'object' ? m.seen : {}); setUiFlag(r, 'approvalNoteSeen'); } finally { this.inFlight.delete(id); void this.panel?.webview.postMessage({ type: 'idle', id }); }
           break;
         }
-        case 'reject': this.a.reject(String(m.id), String(m.feedback ?? '')); break;
+        case 'reject': this.a.reject(String(m.id), String(m.feedback ?? '')); setUiFlag(r, 'approvalNoteSeen'); break;
         case 'view':
           this.view = { tab: m.tab === 'overview' ? 'overview' : 'chat', agent: typeof m.agent === 'string' && m.agent ? m.agent : this.view.agent };
           break;
         case 'allowCommand': {
           const agent = String(m.agent ?? ''), command = String(m.command ?? '');
           if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(agent)) { return; }
-          const plan = planAllowCommand(r, agent, command, this.a.defaultPolicy?.() ?? '.loop/policy.json');
-          if ('error' in plan) { void vscode.window.showWarningMessage(`Harbor Mate: ${plan.error}`); return; }
-          const shared = plan.shared.length ? `\n\nThis policy file is also used by ${plan.shared.join(', ')}, so they get the same permission.` : '';
-          const ok = await vscode.window.showWarningMessage(`Let ${agent} run this command from now on?`, { modal: true, detail: `${command}\n\nOnly this exact command, only for ${agent}. It is saved in ${plan.file}. Anything else it tries is still checked against the policy.${shared}` }, 'Allow');
-          if (ok !== 'Allow') { return; }
-          for (const c of plan.changes) { applyChange(r, c); }
-          await vscode.commands.executeCommand('harborMate.reloadTeam');
-          void vscode.window.showInformationMessage(`Harbor Mate: ${agent} may now run that command. Policy: ${plan.file}.`);
+          const allowed = await this.allow(r, agent, command);
+          // "Allow and rerun" reuses Run now, so the person still says what to run.
+          if (allowed && m.rerun === true) { await vscode.commands.executeCommand(COMMANDS.runAgent, agent); }
+          break;
+        }
+        case 'dismissBlock': {
+          const agent = String(m.agent ?? '');
+          if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(agent)) { dismissBlock(r, agent, String(m.command ?? '')); }
           break;
         }
         case 'closeTask': closeTaskByHuman(r, String(m.id)); break;

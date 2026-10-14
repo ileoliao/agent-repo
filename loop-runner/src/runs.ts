@@ -13,6 +13,8 @@ export interface RunSummary {
   file: string;
   /** Workspace-relative files the run wrote successfully (from the end event; empty for older runs). */
   outputs: string[];
+  /** The files the agent declared as meant for the human (the end event's `deliverables`); absent for older runs. */
+  deliverables?: string[];
   /** Highest step reached. */
   step: number;
   /** ISO time of the chain's last event. */
@@ -86,6 +88,7 @@ export function recentRuns(root: string, limit = 15): RunSummary[] {
       started: String(first.ts ?? ''),
       file,
       outputs: Array.isArray(last?.type === 'end' ? last.outputs : undefined) ? last.outputs.map(String) : [],
+      deliverables: last?.type === 'end' && Array.isArray(last.deliverables) ? last.deliverables.map(String) : undefined,
       step: Math.max(0, ...events.map(e => Number(e.step) || 0)),
       updated: String(events[events.length - 1].ts ?? first.ts ?? '')
     });

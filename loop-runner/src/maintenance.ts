@@ -175,6 +175,29 @@ export function setPaused(root: string, agent: string, paused: boolean): void {
   fs.writeFileSync(pausedFile(root), JSON.stringify({ agents: [...s].sort() }, null, 2));
 }
 
+// ---- what the console has been told to stop showing ----
+
+const uiFile = (root: string) => L(root, 'ui-state.json');
+interface UiState { dismissed?: unknown; flags?: unknown }
+/** One blocked command of one mate: the unit "Dismiss" ignores from then on. */
+export const blockKey = (agent: string, command: string) => `${agent}\n${command}`;
+export function dismissedBlocks(root: string): Set<string> {
+  const v = readJson<UiState>(uiFile(root));
+  return new Set(Array.isArray(v?.dismissed) ? (v!.dismissed as unknown[]).map(String) : []);
+}
+function saveUi(root: string, dismissed: Set<string>, flags: Set<string>): void {
+  fs.mkdirSync(path.dirname(uiFile(root)), { recursive: true });
+  fs.writeFileSync(uiFile(root), JSON.stringify({ dismissed: [...dismissed].slice(-200), flags: [...flags].sort() }, null, 2));
+}
+const uiFlags = (root: string) => { const v = readJson<UiState>(uiFile(root)); return new Set(Array.isArray(v?.flags) ? (v!.flags as unknown[]).map(String) : []); };
+export const uiFlag = (root: string, name: string): boolean => uiFlags(root).has(name);
+/** Stop offering to allow this command for this mate. Nothing in the policy changes. */
+export function dismissBlock(root: string, agent: string, command: string): void {
+  saveUi(root, new Set([...dismissedBlocks(root), blockKey(agent, command)]), uiFlags(root));
+}
+/** A one-time hint the human has seen (for example the note on the first approval card). */
+export function setUiFlag(root: string, name: string): void { saveUi(root, dismissedBlocks(root), new Set([...uiFlags(root), name])); }
+
 // ---- the queue ----
 
 export interface QueueRow { id: string; agent: string; state: 'queued' | 'waiting'; task: string; from: string; createdAt: string }

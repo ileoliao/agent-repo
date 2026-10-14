@@ -6,7 +6,9 @@ import { RunSummary, recentRuns } from './runs';
 import { AgentRow, agentRows, nextWake } from './status';
 import { refusalOf, Active, brief, clip, firstLine, isActive } from './textutil';
 import { Task, listTasks } from './tasks';
-import { AvatarState, ChatState, ThreadEvent, ThreadStep, Tone, buildThread, glance } from './thread';
+import { AvatarState, ChatState, ThreadEvent, ThreadStep, Tone, buildThread, glance, splitOutputs } from './thread';
+import { blockKey, dismissedBlocks, uiFlag } from './maintenance';
+import { planAllowCommand } from './policyEdit';
 
 /** One line of a run's story: what the agent did at a step. */
 export interface Step {
@@ -37,6 +39,12 @@ function previewsOf(root: string, g: Gate): GateView['previews'] {
   });
 }
 
+/** A command policy refused that no rule allowed: a to-do like a question or an approval, until the human allows or dismisses it. */
+export interface BlockedView { id: string; agent: string; command: string; chainId: string; at: string }
+
+/** The newest file a mate produced, for the "Latest output" line and the top button. */
+export interface LatestOutput { agent: string; path: string; at: string }
+
 export interface ChatModel {
   agents: { name: string; description: string; file?: string; triggers?: AgentRow['triggers']; paused?: boolean; state: ChatState; avatar: AvatarState; line: string; at?: string; pendingMessages: number; needsYou: number }[];
   selected?: string;
@@ -45,6 +53,8 @@ export interface ChatModel {
   hidden: number;
   /** The selected agent's open questions and approvals, shown at the end of the conversation. */
   gates: GateView[];
+  /** The selected agent's blocked commands waiting to be allowed or dismissed. */
+  blocked?: BlockedView[];
 }
 
 export interface ConsoleModel {
@@ -52,6 +62,13 @@ export interface ConsoleModel {
   active?: Active;
   next?: { agent: string; at: string };
   pending: GateView[];
+  /** Blocked commands waiting for the human, counted with `pending` everywhere. Absent in older callers. */
+  blocked?: BlockedView[];
+  /** Newest produced file per agent (and the newest of all, `latest`). Absent in older callers. */
+  outputs?: Record<string, LatestOutput>;
+  latest?: LatestOutput;
+  /** The "runs as you, not in a sandbox" note has not been shown yet (no approval decided so far). */
+  firstApproval?: boolean;
   /** Tasks agents have in progress (state open). Absent in older callers. */
   tasks?: Task[];
   /** The last questions and approvals the human settled: an audit trail visible where it is needed. */
@@ -98,17 +115,64 @@ export function stepsOf(file: string): Step[] {
 }
 
 /** Everything the console shows, as plain data. Pure and read-only: the same files the sidebar reads. */
-export function consoleModel(root: string, state: { running: boolean; active?: Active; tab?: 'chat' | 'overview'; agent?: string }, now = new Date(), runLimit = 10): ConsoleModel {
+/** The file a run is known for: the last file it declared for the human, else the last one it wrote. */
+export function mainOutput(r: { outputs: string[]; deliverables?: string[] }): string | undefined {
+  const split = splitOutputs(r.deliverables, r.outputs);
+  return split.deliverables[split.deliverables.length - 1] ?? r.outputs[r.outputs.length - 1];
+}
+
+/**
+ * Commands policy refused that nothing allows yet. Only the mate's newest run counts, and only when it ended blocked:
+ * an older refusal was worked around or is history. Already allowed (by a click or by editing the policy) or dismissed ones are not to-dos.
+ */
+function blockedOf(root: string, runs: ConsoleRun[], defaultPolicy?: string): BlockedView[] {
+  const dismissed = dismissedBlocks(root), seen = new Set<string>(), out: BlockedView[] = [];
+  for (const r of runs) {
+    if (seen.has(r.agent)) { continue; }
+    seen.add(r.agent);
+    if (r.status !== 'blocked') { continue; }
+    for (const s of r.steps) {
+      if (!s.refused || s.refused.rule !== 'no allow rule matched') { continue; }
+      const key = blockKey(r.agent, s.refused.command);
+      if (dismissed.has(key) || out.some(b => b.agent === r.agent && b.command === s.refused!.command)) { continue; }
+      // A plan means the policy still refuses it and a click can fix that; an error means it is allowed now, denied on purpose, or not ours to change.
+      if ('error' in planAllowCommand(root, r.agent, s.refused.command, defaultPolicy)) { continue; }
+      out.push({ id: `b-${r.chainId}-${out.length}`, agent: r.agent, command: s.refused.command, chainId: r.chainId, at: r.updated || r.started });
+      if (out.filter(b => b.agent === r.agent).length >= 3) { break; }
+    }
+  }
+  return out;
+}
+
+export function consoleModel(root: string, state: { running: boolean; active?: Active; tab?: 'chat' | 'overview'; agent?: string; defaultPolicy?: string }, now = new Date(), runLimit = 10): ConsoleModel {
   const agents = agentRows(root, state.active, now);
   const nw = nextWake(agents);
   const tab = state.tab ?? 'chat';
   const pending = listGates(root).filter(g => g.status === 'pending').map(g => ({ ...g, previews: previewsOf(root, g) }));
+  // Runs are read once, more than are shown, so "latest output" still finds a mate whose last runs wrote nothing.
+  const all = recentRuns(root, Math.max(runLimit, 40));
+  const runs: ConsoleRun[] = all.slice(0, runLimit).map(r => ({
+    ...r,
+    // A run whose last event says "running" but that no live worker owns (team stopped, or another agent is active)
+    // was cut off, for example when VS Code closed. Say so instead of showing it as running forever.
+    status: r.status === 'running' && !(state.running && isActive(state.active, r.agent)) ? 'interrupted' : r.status,
+    steps: stepsOf(r.file)
+  }));
+  const blocked = blockedOf(root, runs, state.defaultPolicy);
+  const outputs: Record<string, LatestOutput> = {};
+  for (const r of all) {
+    const f = mainOutput(r);
+    if (f && r.status !== 'running' && !outputs[r.agent]) { outputs[r.agent] = { agent: r.agent, path: f, at: r.updated || r.started }; }
+  }
+  const latest = Object.values(outputs).sort((a, b) => b.at.localeCompare(a.at))[0];
   let chat: ChatModel | undefined;
   if (tab === 'chat') {
-    const rows = agents.map(a => ({ name: a.name, description: a.description, file: a.file, triggers: a.triggers, paused: a.paused, ...glance(root, a.name, a.description, state.active, now) }));
-    const selected = rows.find(r => r.name === state.agent)?.name ?? rows.find(r => r.needsYou)?.name ?? rows.find(r => r.state === 'running')?.name ?? rows[0]?.name;
+    const rows = agents.map(a => { const g = glance(root, a.name, a.description, state.active, now); return { name: a.name, description: a.description, file: a.file, triggers: a.triggers, paused: a.paused, ...g, needsYou: g.needsYou + blocked.filter(b => b.agent === a.name).length }; });
+    // With no choice made, land on the mate behind the first to-do.
+    const first = pending[0]?.agent ?? blocked[0]?.agent;
+    const selected = rows.find(r => r.name === state.agent)?.name ?? rows.find(r => r.name === first)?.name ?? rows.find(r => r.needsYou)?.name ?? rows.find(r => r.state === 'running')?.name ?? rows[0]?.name;
     const th = selected ? buildThread(root, selected) : { events: [], hidden: 0 };
-    chat = { agents: rows, selected, events: th.events, hidden: th.hidden, gates: pending.filter(g => g.agent === selected) };
+    chat = { agents: rows, selected, events: th.events, hidden: th.hidden, gates: pending.filter(g => g.agent === selected), blocked: blocked.filter(b => b.agent === selected) };
   }
   return {
     tab,
@@ -117,16 +181,14 @@ export function consoleModel(root: string, state: { running: boolean; active?: A
     active: state.active,
     next: nw ? { agent: nw.agent, at: nw.at.toISOString() } : undefined,
     pending,
+    blocked,
+    outputs,
+    latest,
+    firstApproval: !uiFlag(root, 'approvalNoteSeen'),
     tasks: listTasks(root).filter(t => t.state === 'open').slice(0, 30),
     decisions: listGates(root).filter(g => g.status !== 'pending').map(g => ({ id: g.id, kind: g.kind, agent: g.agent, title: g.title, status: g.status, at: g.resolvedAt ?? g.createdAt })).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 6),
     agents,
-    // A run whose last event says "running" but that no live worker owns (team stopped, or another agent is active)
-    // was cut off, for example when VS Code closed. Say so instead of showing it as running forever.
-    runs: recentRuns(root, runLimit).map(r => ({
-      ...r,
-      status: r.status === 'running' && !(state.running && isActive(state.active, r.agent)) ? 'interrupted' : r.status,
-      steps: stepsOf(r.file)
-    })),
+    runs,
     updatedAt: now.toISOString()
   };
 }
