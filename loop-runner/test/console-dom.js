@@ -2,14 +2,17 @@
 const { JSDOM } = require('jsdom');
 const path = require('path');
 const OUT = path.join(__dirname, '..', 'out');
-const { renderPage, renderBody, consoleModel } = require(OUT + '/console.js');
+const { renderPage, renderBody: renderBody0, consoleModel } = require(OUT + '/console.js');
 const now = new Date().toISOString();
 const gate = (hash, text) => ({ id: 'g1', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'echo hi', files: ['d.md'], resume: true, status: 'pending', createdAt: now, previews: [{ path: 'd.md', text, sha256: hash, truncated: false }] });
-const base = { running: true, active: undefined, pending: [gate('h1', 'v1')], agents: [], updatedAt: now,
+// The page opens on a mate's Chat, where questions and approvals are decided: keep the open mate's gates in step with `pending`.
+const chatOf = gates => ({ agents: [{ name: 'a', description: 'd', state: 'waiting', avatar: 'waiting', line: 'x', pendingMessages: 0, needsYou: gates.length }], selected: 'a', events: [], hidden: 0, gates });
+const base = { running: true, active: undefined, tab: 'chat', chat: chatOf([gate('h1', 'v1')]), pending: [gate('h1', 'v1')], agents: [], updatedAt: now,
   runs: [{ chainId: 'r1', agent: 'a', status: 'done', summary: 's', started: now, updated: now, file: 'f', outputs: [], step: 1, steps: [] },
          { chainId: 'r2', agent: 'a', status: 'error', summary: 'e', started: now, updated: now, file: 'f', outputs: [], step: 1, steps: [] }] };
+const renderBody = m => renderBody0(m.tab === 'chat' && m.chat === base.chat ? { ...m, chat: chatOf(m.pending) } : m);
 const sent = [];
-const dom = new JSDOM(renderPage(base, 'n', 'x').replace(/<meta http[^>]*>/, '').replace('<script nonce="n">', '<script>'), { runScripts: 'dangerously', pretendToBeVisual: true,
+const dom = new JSDOM(renderPage({ ...base }, 'n', 'x').replace(/<meta http[^>]*>/, '').replace('<script nonce="n">', '<script>'), { runScripts: 'dangerously', pretendToBeVisual: true,
   beforeParse(w) { w.acquireVsCodeApi = () => ({ postMessage: m => sent.push(m) }); w.CSS = { escape: s => String(s).replace(/"/g, '\\"') }; w.scrollTo = () => {}; } });
 const w = dom.window, d = w.document; let n = 0; const ok = (c, m) => { if (!c) { console.log('FAIL', m); process.exitCode = 1; } else { n++; console.log('  ✓', m); } };
 const post = html => w.dispatchEvent(new w.MessageEvent('message', { data: { type: 'body', html } }));
@@ -32,19 +35,30 @@ ap().click();
 ok(sent.filter(m => m.type === 'approve').at(-1).seen['d.md'] === 'h2', 'the new approval is bound to the new hash');
 // filter
 w.dispatchEvent(new w.MessageEvent('message', { data: { type: 'idle', id: 'g1' } }));
+post(renderBody({ ...base, tab: 'overview' }));
 const sel = d.querySelector('[data-filter]'); sel.value = 'problems'; sel.dispatchEvent(new w.Event('change', { bubbles: true }));
 const vis = [...d.querySelectorAll('details.run')].filter(x => !x.classList.contains('hidden')).map(x => x.dataset.status);
 ok(vis.join() === 'error', 'the Problems filter shows only failing runs');
-post(renderBody(base));
+post(renderBody({ ...base, tab: 'overview' }));
 ok(d.querySelector('[data-filter]').value === 'problems', 'the filter survives a refresh');
 // typing is kept across a refresh
 const q = base.pending[0];
-d.querySelector('[data-input]').value = 'my reason';
 post(renderBody({ ...base, pending: [gate('h2', 'v2 CHANGED')] }));
-ok(d.querySelector('[data-input]').value === 'my reason', 'typed text survives a refresh');
-// reject carries the text
+ok(!d.querySelector('.card[data-gate] textarea'), 'the approval card has no text box of its own');
+ok(d.querySelector('[data-chat-input]').dataset.approvalFor === 'g1' && /Reason if you reject/.test(d.querySelector('[data-chat-input]').placeholder) && d.querySelector('[data-chat-send]').disabled, 'the one box takes the rejection reason, and Send is off while an approval waits');
+d.querySelector('[data-chat-input]').value = 'my reason';
+post(renderBody({ ...base, pending: [gate('h2', 'v2 CHANGED')] }));
+ok(d.querySelector('[data-chat-input]').value === 'my reason', 'typed text survives a refresh');
+d.querySelector('[data-chat-input]').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+ok(!sent.some(m => m.type === 'chatSend' || m.type === 'answer'), 'Enter in the box does not send the reason as a message while an approval waits');
+// reject carries the text; approve does not
 d.querySelector('[data-reject]').click();
-ok(sent.at(-1).type === 'reject' && sent.at(-1).feedback === 'my reason', 'reject sends the typed reason');
+ok(sent.at(-1).type === 'reject' && sent.at(-1).feedback === 'my reason' && d.querySelector('[data-chat-input]').value === '', 'reject sends the typed reason');
+d.querySelector('[data-chat-input]').value = 'unused words';
+w.dispatchEvent(new w.MessageEvent('message', { data: { type: 'idle', id: 'g1' } }));
+d.querySelector('[data-approve]').click();
+ok(sent.at(-1).type === 'approve' && sent.at(-1).feedback === undefined && d.querySelector('[data-chat-input]').value === '', 'approve sends no reason and leaves no stale text behind');
+w.dispatchEvent(new w.MessageEvent('message', { data: { type: 'idle', id: 'g1' } }));
 // a hostile id cannot break selectors
 post(renderBody({ ...base, pending: [{ ...gate('h', 'x'), id: 'a"b' }] }));
 let threw = false; try { d.querySelector('[data-approve]').click(); } catch { threw = true; }
@@ -144,10 +158,21 @@ ok(!threw, 'an id with a quote does not throw');
   // an agent's question sits in the thread and can be answered there
   const q = { id: 'gq', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 'Which?', body: 'two', options: ['red', 'blue'], files: [], resume: true, status: 'pending', createdAt: now, previews: [] };
   post2(renderBody(chatModel('a', evts, [q])));
+  ok(!d2.querySelector('[data-gate="gq"] textarea') && d2.querySelector('[data-chat-input]').dataset.answerFor === 'gq' && /Answer a's question/.test(d2.querySelector('[data-chat-input]').placeholder), 'a question card has no text box; the one box answers it');
   d2.querySelector('[data-pick="gq"][data-text="blue"]').click();
-  ok(d2.querySelector('[data-send="gq"]').classList.contains('ready') && d2.querySelector('[data-input="gq"]').value === 'blue', 'picking a suggestion fills the box and lights up Send');
-  d2.querySelector('[data-send="gq"]').click();
-  ok(sent2.at(-1).type === 'answer' && sent2.at(-1).id === 'gq' && sent2.at(-1).text === 'blue', 'a question in the conversation can be answered right there');
+  ok(d2.querySelector('[data-chat-send]').classList.contains('ready') && box().value === 'blue', 'picking a suggestion fills the one box and lights up Send');
+  d2.querySelector('[data-chat-send]').click();
+  ok(sent2.at(-1).type === 'answer' && sent2.at(-1).id === 'gq' && sent2.at(-1).text === 'blue' && box().value === '', 'sending with a question open answers it right there');
+  box().value = 'typed answer';
+  d2.querySelector('[data-chat-send]').click();
+  ok(sent2.at(-1).type === 'answer' && sent2.at(-1).text === 'typed answer' && !sent2.slice(-2).some(m => m.type === 'chatSend'), 'a typed answer is an answer, not a message');
+  box().value = '/stop';
+  d2.querySelector('[data-chat-send]').click();
+  ok(sent2.at(-1).type === 'chatCancel', '/stop still stops the run while a question is open');
+  // several to-dos: the first is handled, the rest wait their turn
+  const q2 = { ...q, id: 'gq2', title: 'Second?' };
+  post2(renderBody(chatModel('a', evts, [q, q2])));
+  ok(d2.querySelector('[data-chat-input]').dataset.answerFor === 'gq' && d2.querySelector('[data-gate="gq"]') && !d2.querySelector('[data-gate="gq2"]') && d2.querySelector('[data-queued="gq2"]'), 'with two to-dos the box answers the first and the second waits behind it');
   w2.close();
 }
 // ---- humanized tool calls, folding, nothing important hidden ----
