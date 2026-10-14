@@ -265,11 +265,17 @@ const btn = (label: string, attrs: string, kind = '', ic = '') => `<button class
 const iconBtn = (label: string, attrs: string, ic: string) => `<button class="btn secondary iconbtn" ${attrs} aria-label="${esc(label)}">${icon(ic)}</button>`;
 const copy = (text: string, label: string) => `<button class="btn ghost" data-copy="${esc(text)}" aria-label="Copy ${esc(label)}" title="Copy ${esc(label)}">${icon('copy')}</button>`;
 
-function gateCard(g: GateView): string {
+/** Mate name, kind and age: the line every to-do card (question, approval, blocked command) opens with. */
+const todoMeta = (agent: string, kind: string, at: string, tip = '') => `<div class="meta"><span class="tag">${esc(agent)}</span><span${tip ? ` title="${esc(tip)}"` : ''}>${esc(kind)}</span><span>${stamp(at, ago(at))}</span></div>`;
+
+/**
+ * A question or an approval, as a card with buttons only: the one text box is the composer at the bottom of the chat
+ * (it answers a question, or gives the reason when rejecting). `note` is the one-time "runs as you" line for a first approval.
+ */
+function gateCard(g: GateView, note = false): string {
   const isQ = g.kind === 'question';
   const head = `<div class="card-head">${icon(isQ ? 'help' : 'bell', 'lead warn')}<div class="grow"><div class="card-title">${esc(g.title)}</div>
-    <div class="meta"><span class="tag">${esc(g.agent)}</span><span title="Asked in run ${esc(String(g.chainId))}. Its steps are under Overview, Recent runs.">${esc(isQ ? 'Question' : 'Approval needed')}</span><span>${stamp(g.createdAt, ago(g.createdAt))}</span></div></div></div>`;
-  const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
+    ${todoMeta(g.agent, isQ ? 'Question' : 'Approval needed', g.createdAt, `Asked in run ${g.chainId}. Its steps are under Overview, Recent runs.`)}</div></div>`;
   const previews = g.previews ?? [];
   const missing = previews.filter(p => p.sha256 === 'missing').map(p => p.path);
   const files = previews.map(p => `<details class="file" open data-k="f-${esc(g.id)}-${esc(p.path)}"><summary>${icon('chevron', 'chev')}${icon('file')}<span class="mono grow">${esc(p.path)}</span>${p.truncated ? '<span class="muted">first part shown</span>' : ''}</summary>
@@ -277,20 +283,38 @@ function gateCard(g: GateView): string {
     <div class="row wrap"><a class="filechip" href="#" data-open="${esc(p.path)}">${icon('file')}${p.truncated ? 'Open full file' : 'Open to edit'}</a></div></details>`).join('')
     + (g.files.length && !previews.length ? g.files.map(f => `<a class="filechip" href="#" data-open="${esc(f)}">${icon('file')}${esc(f)}</a>`).join('') : '');
   if (isQ) {
+    const body = g.body ? `<p class="body">${esc(g.body)}</p>` : '';
     const opts = (g.options ?? []).map(o => btn(o, `data-pick="${esc(g.id)}" data-text="${esc(o)}"`, 'secondary')).join('');
     return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Question from ${esc(g.agent)}">${head}${body}${files}
       ${opts ? `<div class="label">Suggested answers</div><div class="row wrap">${opts}</div>` : ''}
-      <div class="row"><textarea rows="2" placeholder="Type an answer…" aria-label="Your answer" data-input="${esc(g.id)}"></textarea>${btn('Send answer', `data-send="${esc(g.id)}"`, 'primary', 'send')}</div></section>`;
+      <div class="muted tiny">${opts ? 'Pick one, or type your answer' : 'Type your answer'} in the box below.</div></section>`;
   }
   const truncated = previews.some(p => p.truncated);
-  const notes = [
-    missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '',
-    `<div class="note">${previews.length && !missing.length ? (truncated ? 'Approval covers the whole of each file; open a long one to read it all. ' : 'Approval covers the files shown. ') : ''}Runs as you, not in a sandbox.</div>`
-  ].join('');
-  return `<section class="card attention" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${body}
-    <div class="label">Command that will run</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${files}${notes}
-    <div class="row"><textarea rows="1" placeholder="Reason, if you reject (optional)" aria-label="Feedback for the agent" data-input="${esc(g.id)}"></textarea>
-    ${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div></section>`;
+  const alerts = missing.length ? `<div class="alert bad">${icon('alert')}<span>${esc(missing.join(', '))} ${missing.length === 1 ? 'is' : 'are'} missing, so this cannot be approved. Reject it, or ask the agent to write the draft again.</span></div>` : '';
+  // The files and the covers-what-you-saw line are behind one fold, so the command and the buttons share a screen.
+  const fold = previews.length || g.files.length ? `<details class="gatefiles" data-k="gf-${esc(g.id)}"><summary>${icon('chevron', 'chev')}<span>Files this will use (${previews.length || g.files.length})</span></summary>
+    <div class="note">${truncated ? 'Approval covers the whole of each file; open a long one to read it all.' : 'Approval covers the files shown.'}</div>${files}</details>` : '';
+  return `<section class="card attention approval" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${g.body ? `<p class="body brief" title="${esc(g.body)}">${esc(g.body)}</p>` : ''}
+    <div class="label">Command that will run</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${alerts}
+    <div class="row actions">${btn('Reject', `data-reject="${esc(g.id)}" title="Sends the text in the box below as the reason, if you wrote one"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div>
+    ${note ? `<div class="note">Runs as you, not in a sandbox. Nothing but this exact command is run.</div>` : ''}${fold}</section>`;
+}
+
+/** A question or approval that comes after the one being handled: seen in order, decided in order. */
+const gateQueued = (g: GateView) => `<div class="card queued" data-queued="${esc(g.id)}">${icon(g.kind === 'question' ? 'help' : 'bell', 'lead')}<span class="grow ell" title="${esc(g.title)}">${esc(g.title)}</span><span class="muted nowrap">${g.kind === 'question' ? 'Question' : 'Approval'} · next</span></div>`;
+
+/** A refused command that no rule allowed: shaped like an approval, with Allow and Dismiss. */
+function blockedCard(b: BlockedView): string {
+  return `<section class="card attention blocked" data-blocked="${esc(b.id)}" aria-label="Blocked command from ${esc(b.agent)}"><div class="card-head">${icon('alert', 'lead warn')}<div class="grow"><div class="card-title">${esc(b.agent)} was blocked from running a command</div>
+    ${todoMeta(b.agent, 'Blocked command', b.at, `Refused in run ${b.chainId}.`)}</div></div>
+    <p class="body brief">No policy rule allows it yet. Allowing adds only this exact command, for ${esc(b.agent)} only.</p>
+    <div class="label">Blocked command</div><div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(b.command)}</pre>${copy(b.command, 'command')}</div>
+    <div class="row actions">${btn('Dismiss', `data-dismiss-agent="${esc(b.agent)}" data-dismiss-cmd="${esc(b.command)}" title="Stop asking about this command"`, 'secondary', 'x')}${btn('Allow', `data-allow-agent="${esc(b.agent)}" data-allow-cmd="${esc(b.command)}" title="Adds this exact command for ${esc(b.agent)} only. Anything else it tries is still checked against the policy."`, 'primary', 'check')}</div></section>`;
+}
+
+/** One line per to-do for the Overview: click to handle it in that mate's Chat. */
+function needRow(kind: string, title: string, agent: string, at: string): string {
+  return `<button class="needrow" data-agent="${esc(agent)}" title="Handle this in ${esc(agent)}'s chat">${icon(kind === 'Question' ? 'help' : kind === 'Approval' ? 'bell' : 'alert', 'lead warn')}<span class="grow ell">${esc(title)}</span><span class="tag">${esc(agent)}</span><span class="muted nowrap">${esc(kind)}</span><span class="muted nowrap">${stamp(at, ago(at))}</span>${icon('chevron')}</button>`;
 }
 
 /** For each command policy refused: say which rule did it, and offer the one-click allow only when no deny rule is involved. */
@@ -303,24 +327,51 @@ function refusalsOf(r: { agent: string; steps: { refused?: { command: string; ru
     if (rows.length >= 3) { break; }
     const { command, rule } = s.refused;
     const open = `<a class="link" href="#" data-open=".loop/policy.json">policy file</a>`;
-    rows.push(rule === 'no allow rule matched'
-      ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> is not allowed yet.${compact ? '' : ` Allowing adds this exact command for ${esc(r.agent)} only.`} <a class="link" href="#" data-open=".loop/policy.json">Policy file</a></span>${btn('Allow it', `data-allow-agent="${esc(r.agent)}" data-allow-cmd="${esc(command)}" title="Adds this exact command for ${esc(r.agent)} only. Anything else it tries is still checked against the policy."`, 'secondary', 'check')}</div>`
+    // In the chat the same command is a to-do card below (Allow, Dismiss), so the history line only says what happened.
+    rows.push(rule === 'no allow rule matched' && compact
+      ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> was not allowed.</span></div>`
+      : rule === 'no allow rule matched'
+      ? `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> is not allowed yet. Allowing adds this exact command for ${esc(r.agent)} only. <a class="link" href="#" data-open=".loop/policy.json">Policy file</a></span>${btn('Allow it', `data-allow-agent="${esc(r.agent)}" data-allow-cmd="${esc(command)}" title="Adds this exact command for ${esc(r.agent)} only. Anything else it tries is still checked against the policy."`, 'secondary', 'check')}</div>`
       : `<div class="hintbox warn">${icon('alert')}<span class="grow"><code>${esc(clip(command, 140))}</code> matches the deny rule <code>${esc(clip(rule, 80))}</code>. A deny rule is a limit you set on purpose, so it is not lifted with one click. Open the ${open} to change it.</span></div>`);
   }
   return rows.join('');
 }
 
-function runCard(r: ConsoleRun): string {
+/** A produced file as a row: name, folder, and (when known) its first line. One look and one click to open it. */
+function delivRow(d: { path: string; preview?: string }): string {
+  const i = d.path.lastIndexOf('/');
+  return `<a class="deliv" href="#" data-open="${esc(d.path)}" title="${esc(d.path)}">${icon('file')}<span class="dtext"><span class="dline"><span class="dname">${esc(d.path.slice(i + 1))}</span>${i > 0 ? `<span class="ddir ell">${esc(d.path.slice(0, i))}</span>` : ''}</span>${d.preview ? `<span class="dprev ell">${esc(d.preview)}</span>` : ''}</span></a>`;
+}
+
+/** What a finished run shows right under its summary: the files meant for the human, else (up to 3) of the files it wrote. The rest stay folded. */
+function shownFiles(deliverables: string[], supporting: string[]): { rows: string[]; rest: string[] } {
+  const promoted = deliverables.length ? [] : supporting.slice(0, 3);
+  return { rows: [...deliverables, ...promoted], rest: supporting.filter(f => !promoted.includes(f)) };
+}
+
+const baseName = (p: string) => p.slice(p.lastIndexOf('/') + 1);
+
+/** "Latest output: today.md · 3 h ago · Open". Nothing when the mate has produced nothing. */
+function latestLine(o?: LatestOutput): string {
+  return o ? `<div class="muted lastout">Latest output: <span class="mono" title="${esc(o.path)}">${esc(baseName(o.path))}</span> · ${stamp(o.at, ago(o.at))} · <a class="link" href="#" data-open="${esc(o.path)}">Open</a></div>` : '';
+}
+
+function runCard(r: ConsoleRun, blocked: BlockedView[] = []): string {
   const shown = r.steps.map(s => {
     const quiet = s.ok && (s.kind === 'tool' || s.kind === 'gate') && /^(\[exit 0\]|ok)$/.test(s.detail ?? '');
     return `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.kind === 'end' ? 'check' : s.ok ? 'dot' : 'x')}</span>
     <div class="grow"><div class="step-title"><span class="kind">${esc(s.kind)}</span>${s.step ? `<span class="muted">#${s.step}</span>` : ''}<span class="${s.kind === 'tool' || s.kind === 'gate' ? 'mono' : ''}">${esc(s.title)}</span></div>${s.detail && !quiet ? `<div class="${s.ok ? 'muted' : 'result-bad'} wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`;
   }).join('');
   const outs = r.outputs.map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
+  // Under the summary, without opening the run: what it produced, or the one-click fix when a command was blocked.
+  const split = splitOutputs(r.deliverables, r.outputs);
+  const fileRows = r.status === 'running' ? [] : shownFiles(split.deliverables, split.supporting).rows;
+  const rerun = blocked.length ? btn('Allow and rerun', `data-allow-agent="${esc(blocked[0].agent)}" data-allow-cmd="${esc(blocked[0].command)}" data-rerun="1" title="Allow ${esc(clip(blocked[0].command, 80))} for ${esc(blocked[0].agent)} only, then run ${esc(blocked[0].agent)} again"`, 'secondary', 'play') : '';
+  const extra = rerun + fileRows.map(f => delivRow({ path: f })).join('');
   const dur = r.status === 'running' ? span(r.started, new Date().toISOString()) : span(r.started, r.updated);
   const live = r.status === 'running';
   return `<details class="run" ${live ? 'open' : ''} data-k="r-${esc(r.chainId)}" data-status="${esc(r.status)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
-    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && STATUS_HINT[r.status] ? `<span class="run-why">${esc(STATUS_HINT[r.status])}</span>` : ''}</summary>
+    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && STATUS_HINT[r.status] ? `<span class="run-why">${esc(STATUS_HINT[r.status])}</span>` : ''}${extra ? `<span class="run-extra">${extra}</span>` : ''}</summary>
     <div class="run-body">${refusalsOf(r)}${STATUS_HINT[r.status] ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(STATUS_HINT[r.status])}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
     <div class="label">What happened</div><ol class="timeline">${shown || '<li class="muted">No steps recorded.</li>'}</ol>
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
@@ -351,7 +402,7 @@ export function plainCron(c: string): string {
   return c;
 }
 
-function agentRow(a: AgentRow, copilotOff = false): string {
+function agentRow(a: AgentRow, copilotOff = false, out?: LatestOutput): string {
   const label = a.paused ? 'Paused' : a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
   const tone = a.paused ? 'mute' : a.state === 'running' ? 'info' : a.state === 'waiting' ? 'warn' : 'mute';
   const lw = a.lastWake;
@@ -366,7 +417,7 @@ function agentRow(a: AgentRow, copilotOff = false): string {
     <span class="chip ${tone}">${icon(a.paused ? 'stop' : a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
     <dl class="kv">${runs}
     <dt>Next</dt><dd>${a.paused ? '<span class="muted">paused</span>' : a.next ? stamp(a.next.toISOString(), when(a.next.toISOString())) : '<span class="muted">when you give it a task or a trigger fires</span>'}</dd>
-    ${lw ? `<dt>Last check</dt><dd>${last}</dd>` : ''}${a.model ? `<dt>Model</dt><dd class="mono">${esc(a.model)}</dd>` : ''}</dl>
+    ${lw ? `<dt>Last check</dt><dd>${last}</dd>` : ''}${a.model ? `<dt>Model</dt><dd class="mono">${esc(a.model)}</dd>` : ''}</dl>${latestLine(out)}
     <div class="agent-actions">${btn('Chat', `data-agent="${esc(a.name)}" title="Open the conversation with ${esc(a.name)}"`, 'secondary', 'send')}${btn('Run now', `data-cmd="runAgent" data-arg="${esc(a.name)}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot first"' : ` title="Give ${esc(a.name)} a task now"`}`, 'secondary', 'send')}${pauseBtn}${iconBtn('Edit file', `data-open="${esc(a.file)}" title="Edit file: ${esc(a.file)}"`, 'file')}</div></div>`;
 }
 
@@ -455,9 +506,10 @@ function threadEvent(e: ThreadEvent, agent: string): string {
     if (e.status === 'nothing_to_do') {
       return `<div class="rquiet" data-result="nothing_to_do"><div class="rtop"><span class="chip mute">${esc(e.label)}</span>${e.detail ? `<span class="rgoal ell" title="${esc(e.detail)}">${esc(e.detail)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${probs ? `<div class="rprob">${esc(probs)}</div>` : ''}${refusals}${fold}</div>`;
     }
-    const row = (d: { path: string; preview?: string }) => { const i = d.path.lastIndexOf('/'); return `<a class="deliv" href="#" data-open="${esc(d.path)}" title="${esc(d.path)}">${icon('file')}<span class="dtext"><span class="dline"><span class="dname">${esc(d.path.slice(i + 1))}</span>${i > 0 ? `<span class="ddir ell">${esc(d.path.slice(0, i))}</span>` : ''}</span>${d.preview ? `<span class="dprev ell">${esc(d.preview)}</span>` : ''}</span></a>`; };
-    const sup = e.supporting.length ? `<details class="rsup" data-k="rs-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${plural(e.supporting.length, 'supporting file', 'supporting files')}</span></summary><div class="rfiles">${e.supporting.map(o => `<a class="filechip" href="#" data-open="${esc(o)}" title="${esc(o)}">${icon('file')}<span class="ell">${esc(o)}</span></a>`).join('')}</div></details>` : '';
-    const files = e.deliverables.map(row).join('');
+    // Files first: the declared deliverables, or (when it declared none) the first few files it wrote.
+    const sf = shownFiles(e.deliverables.map(d => d.path), e.supporting);
+    const sup = sf.rest.length ? `<details class="rsup" data-k="rs-${esc(e.chainId)}-${esc(e.ts)}"><summary>${icon('chevron', 'chev')}<span>${plural(sf.rest.length, 'supporting file', 'supporting files')}</span></summary><div class="rfiles">${sf.rest.map(o => `<a class="filechip" href="#" data-open="${esc(o)}" title="${esc(o)}">${icon('file')}<span class="ell">${esc(o)}</span></a>`).join('')}</div></details>` : '';
+    const files = sf.rows.map(p => delivRow(e.deliverables.find(d => d.path === p) ?? { path: p })).join('');
     const line = (k: string, v: string) => `<div class="rline wrap-text"><span class="rk">${esc(k)}</span> ${esc(v)}</div>`;
     return `<div class="rcard ${esc(e.status)} ${toneOf(e.tone)}" data-result="${esc(e.status)}"><div class="rtop"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.goal ? `<span class="rgoal ell" title="${esc(e.goal)}">${esc(e.goal)}</span>` : '<span class="rgoal"></span>'}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`
       + (e.detail ? `<div class="rsum wrap-text">${esc(e.detail)}</div>` : '')
@@ -541,57 +593,65 @@ function renderChat(m: ConsoleModel): string {
   }).join('');
   const liveRun = m.runs.find(r => r.agent === sel.name && r.status === 'running');
   const working = sel.state === 'running' ? `<div class="turn working" role="status"><span class="turn-av">${avatar(sel.name, 'working', 26)}</span><div class="working-text">${icon('spin', 'spin')}<span><b>${esc(sel.name)}</b> is working: ${esc(sel.line)}${liveRun ? ` <span class="muted">· ${esc(span(liveRun.started, new Date().toISOString()))} · step ${liveRun.step}</span>` : ''}</span></div></div>` : '';
-  const gates = c.gates.length ? `<div class="thread-gates"><div class="turn gates-head"><span class="turn-av">${avatar(sel.name, 'waiting', 26)}</span><div class="gh-text"><b>${esc(sel.name)}</b> ${c.gates.length === 1 ? (c.gates[0].kind === 'approval' ? 'asks for your approval' : 'has a question for you') : `needs ${c.gates.length} decisions from you`}</div></div>${c.gates.map(gateCard).join('')}</div>` : '';
-  const empty0 = !c.events.length && !c.gates.length ? empty('send', `Nothing yet with ${sel.name}`, 'Say what you want below. If it is idle, this starts a run; if it is working, it will read it at its next step.') : '';
+  // Everything waiting on the person, in one place at the end of the thread: the first question or approval is handled through the
+  // composer below; the ones after it wait their turn; blocked commands carry their own Allow and Dismiss.
+  const blocked = c.blocked ?? [];
+  const todo = c.gates.length + blocked.length;
+  const first = c.gates[0];
+  const todoWord = todo === 1 ? (first ? (first.kind === 'approval' ? 'asks for your approval' : 'has a question for you') : 'was blocked from running a command') : `needs ${todo} decisions from you`;
+  const gates = todo ? `<div class="thread-gates"><div class="turn gates-head"><span class="turn-av">${avatar(sel.name, 'waiting', 26)}</span><div class="gh-text"><b>${esc(sel.name)}</b> ${todoWord}</div></div>${c.gates.map((g, i) => (i === 0 ? gateCard(g, !!m.firstApproval) : gateQueued(g))).join('')}${blocked.map(blockedCard).join('')}</div>` : '';
+  const empty0 = !c.events.length && !todo ? empty('send', `Nothing yet with ${sel.name}`, 'Say what you want below. If it is idle, this starts a run; if it is working, it will read it at its next step.') : '';
   const running = sel.state === 'running';
   return `<div class="chat">
     <nav class="roster" aria-label="Agents">${list}</nav>
     <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
-      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(STATE_LABEL[sel.state])}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}</div>${chatActions(sel, m.copilot === 0)}</header>
-      <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${c.gates.length ? `<button class="pinned" data-jump=".thread-gates" title="Scroll to what ${esc(sel.name)} is asking">${icon('bell')}<span><b>${esc(sel.name)}</b> is waiting for you: ${esc(clip(c.gates[0].title, 60))}${c.gates.length > 1 ? ` and ${c.gates.length - 1} more` : ''}</span><span class="pin-go">Jump</span></button>` : ''}${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${working}${gates}</div>
+      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(STATE_LABEL[sel.state])}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}${latestLine(m.outputs?.[sel.name])}</div>${chatActions(sel, m.copilot === 0)}</header>
+      <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${todo ? `<button class="pinned" data-jump=".thread-gates" title="Scroll to what ${esc(sel.name)} is asking">${icon('bell')}<span><b>${esc(sel.name)}</b> is waiting for you: ${esc(clip(first ? first.title : `blocked: ${blocked[0].command}`, 60))}${todo > 1 ? ` and ${todo - 1} more` : ''}</span><span class="pin-go">Jump</span></button>` : ''}${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${working}${gates}</div>
       <div class="composer ${running ? 'running' : ''}">${composerHint(sel.name, sel.state, m.running) ? `<div class="muted hint">${esc(composerHint(sel.name, sel.state, m.running))}</div>` : ''}
-        <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}" aria-label="Message ${esc(sel.name)}" placeholder="${esc(c.gates.some(g => g.kind === 'approval') ? `Message ${sel.name}. To decide the approval, use the buttons above.` : c.gates.length ? `Answer the question above, or message ${sel.name}…` : `Message ${sel.name}…`)}"></textarea>`
+        <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}"${first ? ` data-${first.kind === 'question' ? 'answer' : 'approval'}-for="${esc(first.id)}"` : ''} aria-label="${first ? (first.kind === 'question' ? `Your answer to ${esc(sel.name)}` : 'Reason if you reject (optional)') : `Message ${esc(sel.name)}`}" placeholder="${esc(first ? (first.kind === 'question' ? `Answer ${sel.name}'s question…` : 'Reason if you reject (optional)…') : `Message ${sel.name}…`)}"></textarea>`
     + `<button class="roundbtn stop" data-chat-cancel="${esc(sel.name)}" title="Stop this run" aria-label="Stop this run">${icon('stop')}<span class="stoplabel">Stop</span></button>`
-    + `<button class="roundbtn send" data-chat-send="${esc(sel.name)}" title="Send" aria-label="Send">${icon('up')}</button></div>
+    + `<button class="roundbtn send" data-chat-send="${esc(sel.name)}"${first?.kind === 'approval' ? ' disabled title="Use Approve or Reject above"' : ' title="Send"'} aria-label="Send">${icon('up')}</button></div>
         <div class="chips-row" role="group" aria-label="Shortcuts">${!running && sel.state !== 'waiting' ? `<button class="chip-btn" data-insert="What did you do last, and what is next?" title="Ask for a quick status">ask for status</button>` : ''}${c.agents.filter(x => x.name !== sel.name).slice(0, 2).map(x => `<button class="chip-btn" data-insert="@${esc(x.name)} " title="Write to ${esc(x.name)} from here">@${esc(x.name)}</button>`).join('')}${running ? '<button class="chip-btn" data-insert="/stop" title="End the current run">/stop</button>' : ''}</div></div>
     </section></div>`;
 }
 
 function renderTabs(m: ConsoleModel): string {
   const tab = (id: string, label: string, extra = '') => `<button role="tab" class="tab ${m.tab === id ? 'on' : ''}" aria-selected="${m.tab === id}" data-tab="${id}" title="${id === 'chat' ? 'Talk to a mate, answer it, see what it did' : 'Everything at a glance: what needs you, tasks, runs and all mates'}"><span class="tab-main">${label}${extra}</span><span class="tab-sub">${id === 'chat' ? 'talk to a mate' : 'all mates and runs'}</span></button>`;
-  const needs = m.pending.length ? `<span class="count warn" title="needs you">${m.pending.length}</span>` : '';
+  const n = m.pending.length + (m.blocked ?? []).length;
+  const needs = n ? `<span class="count warn" title="needs you">${n}</span>` : '';
   return `<nav class="tabs" role="tablist">${tab('chat', 'Chat', needs)}${tab('overview', 'Overview')}</nav>`;
 }
 
 /** Console body (the part that is re-rendered when data changes). */
 export function renderBody(m: ConsoleModel): string {
   const live = m.runs.find(r => r.status === 'running' && isActive(m.active, r.agent));
-  const state = !m.running ? `<span class="state off">${icon('stop')}Mates off</span>`
+  const blocked = m.blocked ?? [];
+  // Everything waiting on the person counts once, wherever it is shown: questions, approvals and blocked commands.
+  const todos = m.pending.length + blocked.length;
+  const firstAgent = m.pending[0]?.agent ?? blocked[0]?.agent;
+  const nextRun = m.next ? ` · next run ${esc(when(m.next.at))}` : '';
+  const state = todos ? `<button class="state wait" data-agent="${esc(firstAgent!)}" title="Open the conversation with ${esc(firstAgent!)}, who is waiting for you">${icon('bell')}${todos} waiting on you${m.running ? nextRun : ' · mates off'}</button>`
+    : !m.running ? `<span class="state off">${icon('stop')}Mates off</span>`
     : m.active ? `<span class="state on">${icon('spin', 'spin')}Running · ${esc([m.active].flat().join(', '))}${live && !Array.isArray(m.active) ? ` · step ${live.step}` : ''}</span>`
-    : m.pending.length ? `<button class="state wait" data-agent="${esc(m.pending[0].agent)}" title="Open the conversation with ${esc(m.pending[0].agent)}, who is waiting for you">${icon('bell')}Mates on · ${m.pending.length} waiting on you · open${m.next ? ` · next run ${esc(when(m.next.at))}` : ''}</button>`
-    : `<span class="state idle">${icon('clock')}Mates on · idle${m.next ? ` · next run ${esc(when(m.next.at))}` : ''}</span>`;
+    : `<span class="state idle">${icon('check')}All good${m.next ? nextRun : ' · nothing scheduled'}</span>`;
   // A brand-new workspace gets only the way forward: no tabs, no team controls that would do nothing.
-  const hasAgents = m.agents.length > 0 || m.runs.length > 0 || m.pending.length > 0 || (m.tasks ?? []).length > 0;
+  const hasAgents = m.agents.length > 0 || m.runs.length > 0 || todos > 0 || (m.tasks ?? []).length > 0;
+  const latest = m.latest ? btn(`Latest: ${clip(m.latest.agent, 24)} · ${clip(baseName(m.latest.path), 32)}`, `data-open="${esc(m.latest.path)}" title="Open ${esc(m.latest.path)}, the newest file a mate produced"`, 'secondary', 'file') : '';
   const actions = !hasAgents ? '' : (m.running ? btn('Stop mates', 'data-cmd="stopTeam" title="Stop every mate. Work in progress is kept and picked up when you start again."', 'secondary', 'stop') : btn('Start mates', 'data-cmd="startTeam" title="Start every mate: schedules and triggers begin, queued work runs"', 'primary', 'play'))
-    + btn('Give a mate a task', 'data-cmd="runAgent" title="Pick a mate and give it a one-off task now"', 'secondary', 'send') + btn('Latest result', 'data-cmd="openLatestResult" title="Open the newest file any mate wrote"', 'secondary', 'file');
-  const last = m.runs.find(r => r.status !== 'running');
-  const tiles = [
-    { k: 'Mates', v: String(m.agents.length), tone: '', sub: `${m.agents.filter(a => a.state === 'running').length} running · ${m.agents.filter(a => a.state === 'waiting').length} waiting` },
-    { k: 'Last run', v: last ? (STATUS[last.status]?.label ?? last.status) : '—', tone: last && last.status !== 'interrupted' ? (STATUS[last.status]?.tone ?? '') : '', sub: last ? `${last.agent} · ${ago(last.started)}` : 'no runs yet' },
-    { k: 'Next run', v: m.next ? when(m.next.at) : '—', tone: '', sub: m.next ? m.next.agent : 'nothing scheduled' }
-  ].map(t => `<div class="tile ${t.tone}"><div class="tile-k">${esc(t.k)}</div><div class="tile-v">${esc(t.v)}</div><div class="muted">${esc(t.sub)}</div></div>`).join('');
-  const needs = m.pending.length ? m.pending.map(gateCard).join('') : empty('check', 'Nothing is waiting for you', 'Questions and approvals from agents show up here.');
+    + btn('Give a mate a task', 'data-cmd="runAgent" title="Pick a mate and give it a one-off task now"', 'secondary', 'send') + latest;
+  // One line per to-do. Handling it happens in that mate's Chat, where the one input box is.
+  const needs = todos ? `<div class="needlist">${[...m.pending.map(g => needRow(g.kind === 'question' ? 'Question' : 'Approval', g.title, g.agent, g.createdAt)), ...blocked.map(b => needRow('Blocked command', clip(b.command, 90), b.agent, b.at))].join('')}</div>` : empty('check', 'Nothing is waiting for you', 'Questions, approvals and blocked commands from mates show up here.');
   const DECIDED: Record<string, string> = { executed: 'Approved, ran', failed: 'Approved, failed', rejected: 'Rejected', answered: 'Answered' };
   const decisions = (m.decisions ?? []).length ? `<details class="decisions"><summary>${icon('chevron', 'chev')}<span>Recent decisions</span><span class="count">${m.decisions!.length}</span><span class="muted ell grow">Last: ${esc(DECIDED[m.decisions![0].status] ?? m.decisions![0].status)} · ${esc(m.decisions![0].title)}</span></summary><ul>${m.decisions!.map(d => `<li><span class="chip ${d.status === 'failed' ? 'bad' : d.status === 'rejected' ? 'mute' : 'ok'}">${esc(DECIDED[d.status] ?? d.status)}</span><span class="grow ell" title="${esc(d.title)}">${esc(d.title)}</span><span class="tag">${esc(d.agent)}</span><span class="muted nowrap">${stamp(d.at, ago(d.at))}</span></li>`).join('')}</ul></details>` : '';
   const tasks = m.tasks ?? [];
   const openTasks = tasks.length ? `<h2>Tasks in progress<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
   const filter = m.runs.length ? `<label class="filter"><span class="muted">Show</span><select data-filter aria-label="Filter runs"><option value="all">All runs (${m.runs.length})</option><option value="problems">Problems (${problems})</option><option value="done">Done</option></select></label>` : '';
-  const runs = m.runs.length ? `<div class="runs">${m.runs.map(runCard).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
+  const runs = m.runs.length ? `<div class="runs">${m.runs.map(r => runCard(r, blocked.filter(b => b.chainId === r.chainId))).join('')}</div><div class="empty hidden" data-filter-empty>No runs match this filter.</div>`
     : empty('clock', 'No runs yet', 'Press Start mates, or use “Give a task” to run a mate now.');
-  const agents = m.agents.length ? m.agents.map(a => agentRow(a, m.copilot === 0)).join('')
+  const agents = m.agents.length ? m.agents.map(a => agentRow(a, m.copilot === 0, m.outputs?.[a.name])).join('')
     : getStartedCard(m.copilot === 0);
-  const stoppedWithWork = !m.running && m.pending.length > 0;
+  const stoppedWithWork = !m.running && todos > 0;
   const stoppedNote = stoppedWithWork ? `<div class="alert warn" role="status">${icon('alert')}<span><b>Nothing will run until you press Start mates.</b></span></div>` : '';
   const item = (cmd: string, title: string, sub: string, kind = '') => `<button class="menuitem ${kind}" data-cmd="${cmd}"><span class="mi-title">${esc(title)}</span><span class="mi-sub">${esc(sub)}</span></button>`;
   const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<details class="toolmenu"><summary class="btn secondary" aria-haspopup="menu"><span>Check &amp; tools</span><span class="caret" aria-hidden="true"></span></summary><div class="menu" role="menu">${item('runDoctor', 'Check mates', 'Confirm every mate can run, and run their pre-checks once')}${item('showHealth', 'Health report', 'How each mate has been doing, and what to improve')}${item('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${item('cleanUp', 'Clean up', 'Delete finished work you no longer need. Asks first')}<div class="mi-foot">Or ask <code>@mate</code> in Chat for anything here.</div></div></details></div>` : '';
@@ -599,8 +659,7 @@ export function renderBody(m: ConsoleModel): string {
   const copilotNote = m.copilot === 0 ? `<div class="alert warn" role="alert">${icon('alert')}<span><b>GitHub Copilot is not signed in.</b> Agents use your Copilot models, so none can run until you sign in to GitHub Copilot in VS Code (Accounts menu, bottom left).</span></div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
   return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}${copilotChip}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(new Date(m.updatedAt).toLocaleTimeString())}</time></span><div class="row">${actions}</div></header>
-    ${note}${hasAgents ? copilotNote : ''}${stoppedNote}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="tiles">${tiles}</div>
-    <div class="cols"><main><h2>Needs you${m.pending.length ? `<span class="count warn">${m.pending.length}</span>` : ''}</h2>${needs}
+    ${note}${hasAgents ? copilotNote : ''}${stoppedNote}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="cols"><main><h2>Needs you${todos ? `<span class="count warn">${todos}</span>` : ''}</h2>${needs}
     ${decisions}${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Mates</h2>${agents}</aside></div>`}`;
 }
 
@@ -625,10 +684,13 @@ body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-siz
 .btn:focus-visible,a:focus-visible,summary:focus-visible,textarea:focus-visible,select:focus-visible,pre:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
 textarea,select{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:2px;padding:6px 8px;font:inherit;min-width:0}textarea{resize:vertical}select{padding:3px 6px}
 .filter{display:inline-flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:0}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--gap);margin:16px 0 8px}
-.tile{padding:10px 12px;border:1px solid var(--vscode-panel-border);border-radius:var(--r);background:var(--vscode-sideBar-background,transparent)}
-.tile-k{font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--vscode-descriptionForeground)}.tile-v{font-size:1.5em;font-weight:600;margin:2px 0}
-.tile.warn{border-color:var(--warn-text)}.tile.warn .tile-v{color:var(--warn-text)}.tile.ok .tile-v{color:var(--ok)}.tile.bad .tile-v{color:var(--bad)}.tile.info .tile-v{color:var(--info)}
+.needlist{display:flex;flex-direction:column;border:1px solid var(--vscode-panel-border);border-left:3px solid var(--warn);border-radius:var(--r);background:var(--vscode-sideBar-background,transparent);margin-bottom:var(--gap)}
+.needrow{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;min-width:0}.needrow+.needrow{border-top:1px solid var(--vscode-panel-border)}.needrow:hover,.needrow:focus-visible{background:var(--vscode-list-hoverBackground)}.needrow:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}.needrow .lead{margin-top:0}
+.card.queued{display:flex;align-items:center;gap:10px;padding:8px 14px;border-left:3px solid var(--warn);opacity:.85}.card.queued .lead{margin-top:0}
+.row.actions{justify-content:flex-end;margin-top:10px}.body.brief{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-height:none;cursor:pointer}.body.brief.open{-webkit-line-clamp:unset}
+.gatefiles{margin-top:10px}.gatefiles>summary{color:var(--vscode-descriptionForeground);padding:2px 0;width:fit-content}.gatefiles>.note{margin:6px 0 0}
+.lastout{font-size:.88em;margin-top:2px}.agent .lastout{margin-top:8px}
+.run>summary .run-extra{flex-basis:100%;display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding-left:26px}.run-extra .deliv{max-width:100%}.run-extra .btn{padding:3px 9px;font-size:.92em}
 .cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}
 @media (max-width:820px){.cols{grid-template-columns:1fr}}
 h2{display:flex;align-items:center;gap:8px;margin:22px 0 10px;font-size:.82em;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--vscode-descriptionForeground)}
@@ -720,6 +782,7 @@ time{font-weight:400}
 .roundbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:34px;height:34px;border-radius:17px;border:1px solid var(--cb);cursor:pointer;font:inherit;padding:0 8px;flex:none}
 .roundbtn.send{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.roundbtn.send:hover{background:var(--vscode-button-hoverBackground)}
 .roundbtn.stop{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}.roundbtn.stop .stoplabel{display:none}.roundbtn.stop[data-armed] .stoplabel{display:inline}
+.roundbtn.ready{box-shadow:0 0 0 2px var(--vscode-focusBorder)}.roundbtn:disabled{opacity:.4;cursor:not-allowed}
 .roundbtn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
 .composer:not(.running) .stop,.composer.running textarea:not(:placeholder-shown) ~ .stop{display:none}
 .composer.running textarea:placeholder-shown ~ .send{display:none}
@@ -728,7 +791,8 @@ time{font-weight:400}
 const SCRIPT = `
 const vs = acquireVsCodeApi(); const app = document.getElementById('app');
 const q = id => '[data-gate="' + CSS.escape(id) + '"]';
-const val = id => (document.querySelector('[data-input="' + CSS.escape(id) + '"]') || {}).value || '';
+// The one text box is the composer at the bottom of the chat: it answers a question or gives the reason for a rejection.
+const composer = () => document.querySelector('textarea[data-chat-input]');
 const busy = new Set();      // approvals whose command is running: a second click must not run it again
 const reviewed = {};         // gate id -> { path: hash } the reader has been shown and accepted
 let filter = 'all';
@@ -780,6 +844,8 @@ function sendChat(agent) {
   const at = /^@([\\w.-]+)\\s+([\\s\\S]+)$/.exec(text);
   let target = agent;
   if (at && known.has(at[1])) { target = at[1]; text = at[2].trim(); }
+  if (target === agent && ta.dataset.approvalFor) return;  // an approval is decided with its buttons; the box only holds a rejection reason
+  if (target === agent && ta.dataset.answerFor) { vs.postMessage({ type:'answer', id: ta.dataset.answerFor, text }); ta.value = ''; autosize(ta); return; }
   vs.postMessage({ type:'chatSend', agent: target, text });
   ta.value = ''; autosize(ta);
   if (target !== agent) vs.postMessage({ type:'view', tab:'chat', agent: target });
@@ -799,18 +865,19 @@ document.addEventListener('keydown', e => {
 document.addEventListener('change', e => { if (e.target.matches('[data-filter]')) { filter = e.target.value; scan(); } });
 document.addEventListener('click', e => {
   if (!e.target.closest('.toolmenu') || e.target.closest('.menuitem')) document.querySelectorAll('details.toolmenu[open]').forEach(d => { d.open = false; });
-  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-send],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel],[data-close-task],[data-allow-agent],[data-jump],[data-insert]'); if (!t) return;
+  const brief = e.target.closest('.body.brief'); if (brief && !e.target.closest('a,button')) brief.classList.toggle('open');
+  const t = e.target.closest('[data-open],[data-open-abs],[data-cmd],[data-pick],[data-approve],[data-reject],[data-ack],[data-copy],[data-tab],[data-agent],[data-chat-send],[data-chat-cancel],[data-close-task],[data-allow-agent],[data-dismiss-agent],[data-jump],[data-insert]'); if (!t) return;
   e.preventDefault(); const d = t.dataset;
   if (d.insert) { const ta = document.querySelector('textarea[data-chat-input]'); if (ta) { ta.value = (ta.value ? ta.value + ' ' : '') + d.insert; ta.focus(); autosize(ta); } }
   else if (d.jump) { const el = document.querySelector(d.jump); if (el) el.scrollIntoView({ block:'start', behavior:'smooth' }); }
-  else if (d.allowAgent) vs.postMessage({ type:'allowCommand', agent:d.allowAgent, command:d.allowCmd });
+  else if (d.allowAgent) vs.postMessage({ type:'allowCommand', agent:d.allowAgent, command:d.allowCmd, rerun: d.rerun === '1' });
+  else if (d.dismissAgent) vs.postMessage({ type:'dismissBlock', agent:d.dismissAgent, command:d.dismissCmd });
   else if (d.open) vs.postMessage({ type:'open', path:d.open });
   else if (d.openAbs) vs.postMessage({ type:'openAbs', path:d.openAbs });
   else if (d.cmd) vs.postMessage({ type:'cmd', name:d.cmd, arg:d.arg });
-  else if (d.pick) { const ta = document.querySelector('[data-input="' + CSS.escape(d.pick) + '"]'); if (ta) { ta.value = d.text; ta.focus(); } document.querySelectorAll(q(d.pick) + ' [data-pick]').forEach(b => b.classList.toggle('picked', b === t)); const sb = document.querySelector('[data-send="' + CSS.escape(d.pick) + '"]'); if (sb) sb.classList.add('ready'); }
-  else if (d.send) { const text = val(d.send).trim(); if (text) vs.postMessage({ type:'answer', id:d.send, text }); }
-  else if (d.approve) { if (busy.has(d.approve) || t.disabled) return; busy.add(d.approve); scan(); vs.postMessage({ type:'approve', id:d.approve, seen:hashes(d.approve) }); }
-  else if (d.reject) vs.postMessage({ type:'reject', id:d.reject, feedback:val(d.reject) });
+  else if (d.pick) { const ta = composer(); if (ta) { ta.value = d.text; ta.focus(); autosize(ta); } document.querySelectorAll(q(d.pick) + ' [data-pick]').forEach(b => b.classList.toggle('picked', b === t)); const sb = document.querySelector('[data-chat-send]'); if (sb) sb.classList.add('ready'); }
+  else if (d.approve) { if (busy.has(d.approve) || t.disabled) return; busy.add(d.approve); const ta = composer(); if (ta && ta.dataset.approvalFor === d.approve) { ta.value = ''; autosize(ta); } scan(); vs.postMessage({ type:'approve', id:d.approve, seen:hashes(d.approve) }); }
+  else if (d.reject) { const ta = composer(); vs.postMessage({ type:'reject', id:d.reject, feedback: ta ? ta.value.trim() : '' }); if (ta) { ta.value = ''; autosize(ta); } }
   else if (d.ack) { reviewed[d.ack] = hashes(d.ack); scan(); }
   else if (d.closeTask) vs.postMessage({ type:'closeTask', id:d.closeTask });
   else if (d.tab) vs.postMessage({ type:'view', tab:d.tab });
