@@ -306,7 +306,7 @@ function gateCard(g: GateView, note = false): string {
   return `<section class="card attention approval" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${g.body ? `<p class="body brief" title="${esc(g.body)}">${esc(g.body)}</p>` : ''}
     <div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${alerts}
     ${fold}${note ? `<div class="note muted">Runs as you, not in a sandbox.</div>` : ''}<div class="row actions" data-actions>${btn('Reject', `data-reject-open="${esc(g.id)}" title="Say no, and optionally why"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div>
-    <div class="rejectbox hidden" data-reject-box><textarea rows="1" data-input="reject:${esc(g.id)}" placeholder="Why? (optional)" aria-label="Why are you rejecting this? (optional)"></textarea><div class="row actions">${btn('Cancel', `data-reject-cancel="${esc(g.id)}"`, 'secondary')}${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary danger', 'x')}</div></div></section>`;
+    <div class="rejectbox hidden" data-reject-box><textarea rows="1" data-input="reject:${esc(g.id)}" placeholder="Why? The mate reads this (optional)" aria-label="Why are you rejecting this? The mate reads it (optional)"></textarea><div class="row actions">${btn('Cancel', `data-reject-cancel="${esc(g.id)}"`, 'ghost')}${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary danger', 'x')}</div></div></section>`;
 }
 
 /** A question or approval that comes after the one being handled: seen in order, decided in order. */
@@ -318,7 +318,7 @@ function blockedCard(b: BlockedView): string {
     ${todoMeta('Blocked command', b.at, `Refused in run ${b.chainId}.`)}</div></div>
     <p class="body brief">Allow this exact command for ${esc(b.agent)} only.</p>
     <div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(b.command)}</pre>${copy(b.command, 'command')}</div>
-    <div class="row actions">${btn('Dismiss', `data-dismiss-agent="${esc(b.agent)}" data-dismiss-cmd="${esc(b.command)}" title="Stop asking about this command"`, 'secondary', 'x')}${btn('Allow', `data-allow-agent="${esc(b.agent)}" data-allow-cmd="${esc(b.command)}" title="Adds this exact command for ${esc(b.agent)} only. Anything else it tries is still checked against the policy."`, 'primary', 'check')}</div></section>`;
+    <div class="row actions">${btn('Dismiss', `data-dismiss-agent="${esc(b.agent)}" data-dismiss-cmd="${esc(b.command)}" title="Stop asking about this command"`, 'ghost')}${btn('Allow', `data-allow-agent="${esc(b.agent)}" data-allow-cmd="${esc(b.command)}" title="Adds this exact command for ${esc(b.agent)} only. Anything else it tries is still checked against the policy."`, 'primary', 'check')}</div></section>`;
 }
 
 /** For each command a deny rule refused: say which rule did it. (One no rule allowed is a to-do card with Allow and Dismiss.) */
@@ -379,10 +379,10 @@ const triggerWords = (t: { kind: string; text: string }) => t.kind === 'schedule
 const getStartedCard = (off = false) => `<div class="start-wrap"><div class="start-head">${icon('bot', 'big')}<div class="empty-title">Set up your first mate</div>
   <div class="muted">A mate does a job for you on its own and only stops to ask when it needs you.</div></div>
   <div class="starters">
-    <div class="starter"><div class="starter-title">Daily report</div><div class="muted">Every weekday at 09:00 it reads yesterday's commits and writes a one-page summary: what changed, and what is risky.</div><div class="muted tiny">Writes <code>.loop/outbox/daily-report/&lt;date&gt;.md</code>. Reads only; needs no setup.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="daily-report"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
-    <div class="starter"><div class="starter-title">Folder watch</div><div class="muted">Every 10 minutes it checks <code>drop/</code> for new files, at no model cost, and summarises each one when it finds some.</div><div class="muted tiny">Shows how a cheap pre-check works. Writes summaries to <code>.loop/outbox/folder-watch/</code>.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="folder-watch"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'secondary', 'play')}</div>
+    <div class="starter"><div class="starter-title">Daily report</div><div class="muted">Every weekday at 09:00 it reads yesterday's commits and writes a one-page summary: what changed, and what is risky.</div><div class="muted tiny">Writes <code>.loop/outbox/daily-report/&lt;date&gt;.md</code>. Reads only; needs no setup.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="daily-report"' + (off ? ' disabled title="Sign in to GitHub Copilot to let mates run."' : ''), 'primary', 'play')}</div>
+    <div class="starter"><div class="starter-title">Folder watch</div><div class="muted">Every 10 minutes it checks <code>drop/</code> for new files, at no model cost, and summarises each one when it finds some.</div><div class="muted tiny">Shows how a cheap pre-check works. Writes summaries to <code>.loop/outbox/folder-watch/</code>.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="folder-watch"' + (off ? ' disabled title="Sign in to GitHub Copilot to let mates run."' : ''), 'secondary', 'play')}</div>
     <div class="starter"><div class="starter-title">Your own</div><div class="muted">Tell the <code>@mate</code> assistant in Chat what you want in plain words. It builds the mate and checks it can run.</div><div class="muted tiny">For example: watch my build every hour and ask me before it re-runs anything.</div>${btn('Describe what you want', 'data-cmd="describeAgent"', 'secondary', 'send')}</div>
-  </div>${off ? '<div class="alert warn" role="alert">' + icon('alert') + '<span>The Add buttons are off because GitHub Copilot is not signed in. Sign in to Copilot in VS Code (Accounts menu, bottom left), then they work.</span></div>' : ''}<div class="muted tiny center">Mates use your GitHub Copilot models. Anything risky waits for your approval.</div></div>`;
+  </div>${off ? '<div class="alert warn" role="alert">' + icon('alert') + '<span>Sign in to GitHub Copilot to let mates run.</span></div>' : ''}<div class="muted tiny center">Mates use your GitHub Copilot models. Anything risky waits for your approval.</div></div>`;
 
 /** `hint` is trusted markup: callers pass only fixed strings. */
 const empty = (ic: string, title: string, hint: string) => `<div class="empty">${icon(ic, 'big')}<div class="empty-title">${esc(title)}</div><div class="muted">${hint}</div></div>`;
@@ -392,7 +392,7 @@ const DELIVERY: Record<string, string> = { start: 'read when the run started', t
 const toneOf = (t: Tone) => (t === 'mute' ? 'mute' : t);
 
 
-const stepLi = (s: ThreadStep) => `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.ok ? 'dot' : 'x')}</span><div class="grow"><div class="step-title"><span class="mono small">${esc(s.title)}</span></div>${s.detail && !/^(\[exit 0\]|ok)$/.test(s.detail) ? `<div class="${s.ok ? 'muted' : 'result-bad'} small wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`;
+const stepLi = (s: ThreadStep) => `<li class="step ${s.ok ? '' : 'bad'}"><span class="node">${icon(s.ok ? 'dot' : 'x')}</span><div class="grow"><div class="step-title"><span class="mono small wrap-text">${esc(s.title.replace(/^\w+ · /, ''))}</span></div>${s.detail && !/^(\[exit 0\]|ok)$/.test(s.detail) ? `<div class="${s.ok ? 'muted' : 'result-bad'} small wrap-text">${esc(s.detail)}</div>` : ''}</div></li>`;
 const badWord = (s: ThreadStep) => (/^REFUSED/.test(s.detail ?? '') ? 'refused' : /^ERROR/.test(s.detail ?? '') ? 'error' : 'failed');
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -404,7 +404,7 @@ function groupLine(g: ThreadStep[]): string {
   for (const s of g) {
     if (s.famKind === 'read') { reads++; } else if (s.famKind === 'list') { lists++; } else { skills.set(s.fam ?? s.phrase, (skills.get(s.fam ?? s.phrase) ?? 0) + 1); }
   }
-  return [...[...skills].map(([k, n]) => `${k} ×${n}`), ...(reads ? [plural(reads, 'file', 'files').replace(/^/, 'read ')] : []), ...(lists ? [`listed ${plural(lists, 'folder', 'folders')}`] : [])].join(' · ');
+  return [...[...skills].map(([k, n]) => `${k} ×${n}`), ...(reads ? [`Read ${plural(reads, 'file', 'files')}`] : []), ...(lists ? [`Listed ${plural(lists, 'folder', 'folders')}`] : [])].join(' · ');
 }
 
 /**
@@ -423,7 +423,7 @@ function stepsBlock(steps: ThreadStep[], ts: string): string {
     const tag = bad.length ? `<span class="bad-count">· ${bad.length} ${esc(word)}</span>` : '';
     const text = groupLine(g);
     const full = g.map(s => s.title).join('\n');
-    const wraps = !g[0].routine && /^(handed|asked)/.test(g[0].phrase);
+    const wraps = !g[0].routine && /^(handed|asked)/i.test(g[0].phrase);
     const head = `<span class="steps-sum ${wraps ? 'wrap-text' : 'ell'}" title="${esc(full)}">${esc(text)}</span>${tag}`;
     const body = g.filter(s => s.ok || good.length).map(stepLi).join('');
     const line = good.length
@@ -434,7 +434,17 @@ function stepsBlock(steps: ThreadStep[], ts: string): string {
   }).join('');
 }
 
-function threadEvent(e: ThreadEvent, agent: string): string {
+/** What the live card's last line says: it is working, how far, for how long. */
+interface LiveInfo { working: boolean; step?: number; started?: string }
+
+function threadEvent(e: ThreadEvent, agent: string, live?: LiveInfo): string {
+  if (e.kind === 'live') {
+    const inner = e.fold.map(f => threadEvent(f, agent)).join('');
+    const label = e.stepCount ? `Show ${plural(e.stepCount, 'step', 'steps')}` : 'Show details';
+    const fold = inner ? `<details class="rfold" data-k="lf-${esc(e.chainId)}"><summary>${icon('chevron', 'chev')}<span class="fold-label">${esc(label)}</span>${e.last ? `<span class="fold-gist">${esc(clip(e.last, 60))}</span>` : ''}</summary><div class="rfold-body">${inner}</div></details>` : '';
+    const spin = live?.working ? `<div class="rline live-line" role="status">${icon('spin', 'spin')}<span>working${live.step ? ` · step ${live.step}` : ''}${live.started ? ` · ${esc(span(live.started, new Date().toISOString()))}` : ''}</span></div>` : '';
+    return `<div class="rcard live" data-result="live"><div class="rtop"><span class="rgoal ell"${e.goal ? ` title="${esc(e.goal)}"` : ''}>${esc(e.goal ?? 'Started from your message')}</span><span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>${(e.approvals ?? []).map(a => `<div class="rline wrap-text">${esc(a)}</div>`).join('')}${fold}${spin}</div>`;
+  }
   if (e.kind === 'human') {
     const seen = e.status === 'pending' ? `waiting for ${esc(agent)} to read it` : esc(DELIVERY[e.via ?? ''] ?? 'read');
     return `<div class="msg human"><div class="bubble"><div class="mtext">${esc(e.text)}</div><div class="mmeta">${stamp(e.ts, whenShort(e.ts))} · ${seen}</div></div></div>`;
@@ -524,15 +534,15 @@ function taskLines(tasks: Task[], name: string): string {
   return tasks.map(t => {
     const next = t.next?.[name];
     const full = `${t.title}${next ? ` — next: ${next}` : ''}`;
-    return `<div class="ch-task" data-task="${esc(t.id)}"><span class="ell" title="${esc(full)}"><span class="muted">Working on:</span> ${esc(clip(t.title, 90))}${next ? ` <span class="muted">— next: ${esc(clip(next, 90))}</span>` : ''}</span><button class="linkbtn" data-close-task="${esc(t.id)}" title="Stop tracking this task. Mates holding it let go of it; nothing is deleted.">Drop</button></div>`;
+    return `<div class="ch-task" data-task="${esc(t.id)}"><span class="ell" title="${esc(full)}"><span class="muted">Working on:</span> ${esc(clip(t.title, 90))}${next ? ` <span class="muted">— next: ${esc(clip(next, 90))}</span>` : ''}</span><button class="linkbtn" data-close-task="${esc(t.id)}" title="Stop tracking this task. Mates holding it let go of it; nothing is deleted.">Drop task</button></div>`;
   }).join('');
 }
 
 /** The few things a person does to a mate, one click from its conversation. */
-function chatActions(sel: ChatAgent, copilotOff: boolean): string {
+function chatActions(sel: ChatAgent, copilotOff: boolean, hideRun = false): string {
   const n = esc(sel.name);
   const btns = [
-    btn('Run now', `data-cmd="runAgent" data-arg="${n}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot first"' : ` title="Give ${n} a task now"`}`, 'secondary', 'send'),
+    hideRun ? '' : btn('Run now', `data-cmd="runAgent" data-arg="${n}"${copilotOff ? ' disabled title="Sign in to GitHub Copilot to let mates run."' : ` title="Give ${n} a task now"`}`, 'secondary', 'send'),
     (sel.triggers ?? []).length || sel.paused ? (sel.paused ? btn('Resume', `data-cmd="resumeAgent" data-arg="${n}" title="Wake ${n} on its schedule and triggers again"`, 'secondary', 'play') : btn('Pause', `data-cmd="pauseAgent" data-arg="${n}" title="Skip ${n}'s scheduled and event wakes. A task you give it still runs."`, 'secondary', 'stop')) : '',
   ].join('');
   return `<div class="ch-actions" role="group" aria-label="Actions for ${n}">${btns}</div>`;
@@ -552,6 +562,7 @@ function renderChat(m: ConsoleModel): string {
       + `${a.needsYou ? `<span class="count warn" title="needs you">${a.needsYou}</span>` : a.pendingMessages ? '<span class="unread" title="your message has not been read yet"></span>' : ''}</button>`;
   }).join('');
   let lastDay = '';
+  const liveRun = m.runs.find(r => r.agent === sel.name && r.status === 'running');
   const events = c.events.map(e => {
     const ts = 'ts' in e ? String((e as { ts?: string }).ts ?? '') : '';
     const d = ts ? new Date(ts) : undefined;
@@ -559,18 +570,21 @@ function renderChat(m: ConsoleModel): string {
     const sep = key && key !== lastDay ? `<div class="daysep"><span>${esc(dayLabel(d!))}</span></div>` : '';
     if (key) { lastDay = key; }
     const tone = e.kind === 'result' ? e.tone : undefined;
-    const av: AvatarState = tone === 'ok' ? 'done' : tone === 'warn' || tone === 'bad' ? 'blocked' : 'idle';
-    return sep + (e.kind === 'result' ? `<div class="turn"><span class="turn-av">${avatar(sel.name, av, 26)}</span>${threadEvent(e, sel.name)}</div>` : threadEvent(e, sel.name));
+    const av: AvatarState = e.kind === 'live' ? (sel.state === 'running' ? 'working' : 'idle') : tone === 'ok' ? 'done' : tone === 'warn' || tone === 'bad' ? 'blocked' : 'idle';
+    return sep + (e.kind === 'result' || e.kind === 'live' ? `<div class="turn"><span class="turn-av">${avatar(sel.name, av, 26)}</span>${threadEvent(e, sel.name, { working: sel.state === 'running', step: liveRun?.step, started: liveRun?.started })}</div>` : threadEvent(e, sel.name));
   }).join('');
-  const liveRun = m.runs.find(r => r.agent === sel.name && r.status === 'running');
-  const working = sel.state === 'running' ? `<div class="turn working" role="status"><span class="turn-av">${avatar(sel.name, 'working', 26)}</span><div class="working-text">${icon('spin', 'spin')}<span><b>${esc(sel.name)}</b> is working: ${esc(sel.line)}${liveRun ? ` <span class="muted">· ${esc(span(liveRun.started, new Date().toISOString()))} · step ${liveRun.step}</span>` : ''}</span></div></div>` : '';
+  const working = sel.state === 'running' && !c.events.some(e => e.kind === 'live') ? `<div class="turn working" role="status"><span class="turn-av">${avatar(sel.name, 'working', 26)}</span><div class="working-text">${icon('spin', 'spin')}<span><b>${esc(sel.name)}</b> is working: ${esc(sel.line)}${liveRun ? ` <span class="muted">· ${esc(span(liveRun.started, new Date().toISOString()))} · step ${liveRun.step}</span>` : ''}</span></div></div>` : '';
   // Everything waiting on the person, in one place at the end of the thread: the oldest question or approval is answered through the
   // composer below (an approval with its buttons); the ones after it wait their turn; blocked commands carry their own Allow and Dismiss.
   const blocked = c.blocked ?? [];
   const todo = c.gates.length + blocked.length;
   const first = c.gates[0];
   const gates = todo ? `<div class="thread-gates"><div class="turn gates-head"><span class="turn-av">${avatar(sel.name, 'waiting', 26)}</span><div class="gh-text"><b>${esc(sel.name)}</b> needs you</div></div>${c.gates.map((g, i) => (i === 0 ? gateCard(g, !!m.firstApproval) : gateQueued(g))).join('')}${blocked.map(blockedCard).join('')}</div>` : '';
-  const empty0 = !c.events.length && !todo ? empty('send', `Nothing yet with ${sel.name}`, 'Message it below. If it is idle, that starts a run.') : '';
+  const firstRun = !c.events.length && !todo && !m.runs.some(r => r.agent === sel.name) && !m.outputs?.[sel.name];
+  const wakes = (sel.triggers ?? []).map(triggerWords);
+  const nextWakeWords = wakes.length ? `Runs ${esc(wakes.join(' · '))}` : 'Runs when you message it';
+  const empty0 = firstRun ? `<div class="empty firstrun"><div class="empty-title">No runs yet. ${nextWakeWords}.</div>${btn('Run now', `data-cmd="runAgent" data-arg="${esc(sel.name)}"${m.copilot === 0 ? ' disabled title="Sign in to GitHub Copilot to let mates run."' : ` title="Give ${esc(sel.name)} a task now"`}`, 'secondary', 'send')}</div>`
+    : !c.events.length && !todo ? empty('send', `Nothing yet with ${sel.name}`, 'Message it below. If it is idle, that starts a run.') : '';
   const running = sel.state === 'running';
   const hint = composerHint(sel.name, sel.state, m.running, first?.kind);
   const word = first?.kind === 'question' ? 'Answer' : 'Message';
@@ -578,7 +592,7 @@ function renderChat(m: ConsoleModel): string {
   return `<div class="chat">
     <nav class="roster" aria-label="Mates">${list}</nav>
     <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
-      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(stateWord(sel))}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}${latestLine(m.outputs?.[sel.name])}</div>${chatActions(sel, m.copilot === 0)}</header>${tasks ? `<div class="ch-tasks">${tasks}</div>` : ''}
+      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(stateWord(sel))}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}${latestLine(m.outputs?.[sel.name])}</div>${chatActions(sel, m.copilot === 0, firstRun)}</header>${tasks ? `<div class="ch-tasks">${tasks}</div>` : ''}
       <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${todo ? `<button class="pinned" data-jump=".thread-gates" title="Scroll to what ${esc(sel.name)} is asking">${icon('bell')}<span><b>${esc(sel.name)}</b> needs you: ${esc(clip(first ? first.title : `blocked: ${blocked[0].command}`, 60))}${todo > 1 ? ` and ${todo - 1} more` : ''}</span><span class="pin-go">Jump</span></button>` : ''}${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${working}${gates}</div>
       <div class="composer ${running ? 'running' : ''}">${hint ? `<div class="muted hint">${esc(hint)}</div>` : ''}
         <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}"${first?.kind === 'question' ? ` data-answer-for="${esc(first.id)}"` : ''} aria-label="${word} ${esc(sel.name)}" placeholder="${word} ${esc(sel.name)}…"></textarea>`
@@ -599,13 +613,13 @@ export function renderBody(m: ConsoleModel): string {
   // A brand-new workspace gets only the way forward: no controls that would do nothing.
   const hasAgents = m.agents.length > 0 || m.runs.length > 0 || todos > 0 || (m.tasks ?? []).length > 0;
   const state = !hasAgents ? ''
-    : todos ? `<button class="state wait" data-agent="${esc(target!.agent)}" data-scroll="1" title="Open ${esc(target!.agent)}, who has been waiting longest">${icon('bell')}${todos} ${todos === 1 ? 'needs' : 'need'} you</button>`
+    : todos ? `<button class="state wait" data-agent="${esc(target!.agent)}" data-scroll="1" title="Open ${esc(target!.agent)}, who has been waiting longest">${icon('bell')}${m.running ? '' : 'Off · '}${todos} ${todos === 1 ? 'needs' : 'need'} you</button>`
     : !m.running ? `<span class="state off">Off</span>`
     : names.length ? `<span class="state on">${icon('spin', 'spin')}${esc(names.join(', '))} working</span>`
     : `<span class="state idle">${icon('check')}All quiet${m.next ? ` · next ${esc(when(m.next.at))}` : ''}</span>`;
   const start = hasAgents && !m.running ? btn('Start mates', 'data-cmd="startTeam" title="Start every mate: schedules and triggers begin, queued work runs"', 'primary', 'play') : '';
-  const menu = hasAgents ? `<details class="toolmenu"><summary class="btn secondary iconbtn" aria-haspopup="menu" aria-label="More" title="More">${icon('more')}</summary><div class="menu" role="menu">${menuItem('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${menuItem('runDoctor', 'Check mates', 'Confirm every mate can run, and run their pre-checks once')}${menuItem('showHealth', 'Health report', 'How each mate has been doing, and what to improve')}${menuItem('cleanUp', 'Clean up finished work', 'Delete finished work you no longer need. Asks first')}${menuItem('setSecret', 'Set a secret', 'Store a token or password mates can use, without showing it to the model')}<div class="menu-sep"></div>${m.running ? menuItem('stopTeam', 'Stop all mates', 'Nothing new runs until you start them again. Work in progress is kept') : menuItem('startTeam', 'Start mates', 'Start every mate: schedules and triggers begin, queued work runs')}</div></details>` : '';
-  const copilotNote = m.copilot === 0 && hasAgents ? `<div class="alert warn" role="alert">${icon('alert')}<span><b>GitHub Copilot is not signed in.</b> Mates use your Copilot models, so none can run until you sign in to GitHub Copilot in VS Code (Accounts menu, bottom left).</span></div>` : '';
+  const menu = hasAgents ? `<details class="toolmenu"><summary class="btn secondary iconbtn" aria-haspopup="menu" aria-label="More" title="More">${icon('more')}</summary><div class="menu" role="menu">${menuItem('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${menuItem('runDoctor', 'Check mates', 'Confirm every mate can run, run their pre-checks once, and see how each has been doing')}${menuItem('cleanUp', 'Clean up finished work', 'Delete finished work you no longer need. Asks first')}${menuItem('setSecret', 'Set a secret', 'Store a token or password mates can use, without showing it to the model')}<div class="menu-sep"></div>${m.running ? menuItem('stopTeam', 'Stop all mates', 'Nothing new runs until you start them again. Work in progress is kept') : menuItem('startTeam', 'Start mates', 'Start every mate: schedules and triggers begin, queued work runs')}</div></details>` : '';
+  const copilotNote = m.copilot === 0 && hasAgents ? `<div class="alert warn" role="alert">${icon('alert')}<span>Sign in to GitHub Copilot to let mates run.</span></div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
   return `<header class="bar"><div class="brand">Harbor Mate</div>${state}<span class="grow"></span>${start}${menu}</header>
     ${note}${copilotNote}${m.chat ? renderChat(m) : ''}`;
@@ -627,7 +641,7 @@ body{margin:0;padding:0 20px 32px;font-family:var(--vscode-font-family);font-siz
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:5px 12px;border:1px solid var(--cb);border-radius:2px;font:inherit;cursor:pointer;white-space:nowrap}
 .btn.primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}.btn.primary:hover:not(:disabled){background:var(--vscode-button-hoverBackground)}
 .btn.secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}.btn.secondary:hover:not(:disabled){background:var(--vscode-button-secondaryHoverBackground)}
-.btn.ghost{background:transparent;color:var(--vscode-descriptionForeground);padding:3px 6px}.btn.ghost:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}
+.btn.ghost{background:transparent;color:var(--vscode-descriptionForeground);padding:3px 6px}.actions .btn.ghost{padding:5px 12px}.btn.ghost:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}
 .btn:disabled{opacity:.5;cursor:not-allowed}.btn.picked{outline:2px solid var(--cab);outline-offset:0}
 .btn:focus-visible,a:focus-visible,summary:focus-visible,textarea:focus-visible,select:focus-visible,pre:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
 textarea,select{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:2px;padding:6px 8px;font:inherit;min-width:0}textarea{resize:vertical}select{padding:3px 6px}
@@ -702,8 +716,8 @@ time{font-weight:400}
 .rtop{display:flex;align-items:center;gap:8px;min-width:0}.rtop .chip{font-size:.82em;padding:0 7px;font-weight:500;flex:none}.rtop .chip.info,.rtop .chip.ok{color:var(--vscode-descriptionForeground)}
 .rgoal{flex:1;min-width:0;color:var(--vscode-descriptionForeground)}.rgoal.ell,.rcard .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rtop .stime{margin-left:auto;font-size:.88em;color:var(--vscode-descriptionForeground)}
 .rquiet{margin-left:38px;padding-left:12px;font-size:.88em;min-width:0}.rprob{margin-top:3px;color:var(--warn-text);font-size:.9em}
-.rfold{margin-top:6px;color:var(--vscode-descriptionForeground);font-size:.95em}.rfold>summary{padding:3px 10px 3px 6px;width:fit-content;max-width:100%;display:flex;gap:8px;align-items:center;border:1px solid var(--vscode-panel-border);border-radius:999px;cursor:pointer}.rfold>summary:hover{background:var(--vscode-list-hoverBackground)}.fold-label{color:var(--vscode-foreground);font-weight:600}.fold-gist{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rfold-body{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px 0;padding-left:0;color:var(--vscode-foreground);font-size:1.08em}
-.rfold-body .steps,.rfold-body .sline,.rfold-body .rcard,.rfold-body .rquiet{margin-left:0;width:auto}.rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
+.rfold{margin-top:6px;color:var(--vscode-descriptionForeground);font-size:.95em}.rfold>summary{padding:3px 10px 3px 6px;width:fit-content;max-width:100%;display:flex;gap:8px;align-items:center;border:1px solid var(--vscode-panel-border);border-radius:999px;cursor:pointer}.rfold>summary:hover{background:var(--vscode-list-hoverBackground)}.fold-label{color:var(--vscode-foreground);font-weight:600;white-space:nowrap;flex:none}.fold-gist{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rfold-body{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px 0;padding-left:0;color:var(--vscode-foreground);font-size:1.08em}
+.rfold-body .steps,.rfold-body .sline,.rfold-body .rcard,.rfold-body .rquiet{margin-left:0;width:auto}.empty.firstrun{margin-bottom:auto;gap:10px}.live-line{display:flex;align-items:center;gap:8px;margin-top:6px}.rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
 .rdelivs{display:flex;flex-direction:column;gap:4px;margin-top:6px}.deliv{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:5px 8px;border-radius:6px;background:var(--vscode-input-background);color:var(--vscode-foreground);text-decoration:none}.deliv:hover{background:var(--vscode-list-hoverBackground)}.deliv svg{margin-top:2px;color:var(--vscode-textLink-foreground);flex:none}
 .dtext{display:flex;flex-direction:column;min-width:0;flex:1}.dline{display:flex;gap:8px;align-items:baseline;min-width:0}.dname{font-weight:600;color:var(--vscode-textLink-foreground);flex:none;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ddir{color:var(--vscode-descriptionForeground);font-size:.88em;min-width:0}.dprev{color:var(--vscode-descriptionForeground);font-size:.92em}
 .rsup{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}.rsup>summary{padding:1px 0;width:fit-content}
@@ -818,7 +832,11 @@ document.addEventListener('click', e => {
   else if (d.rejectCancel) { rejecting.delete(d.rejectCancel); const ta = document.querySelector(q(d.rejectCancel) + ' [data-reject-box] textarea'); if (ta) ta.value = ''; scan(); }
   else if (d.reject) { const ta = document.querySelector(q(d.reject) + ' [data-reject-box] textarea'); rejecting.delete(d.reject); vs.postMessage({ type:'reject', id:d.reject, feedback: ta ? ta.value.trim() : '' }); if (ta) ta.value = ''; }
   else if (d.ack) { reviewed[d.ack] = hashes(d.ack); scan(); }
-  else if (d.closeTask) vs.postMessage({ type:'closeTask', id:d.closeTask });
+  else if (d.closeTask) {
+    // Dropping a task lets every mate holding it go, so it takes two clicks.
+    if (t.dataset.armed) { delete t.dataset.armed; vs.postMessage({ type:'closeTask', id:d.closeTask }); }
+    else { t.dataset.armed = '1'; const old = t.textContent; t.textContent = 'Confirm drop'; setTimeout(() => { delete t.dataset.armed; t.textContent = old; }, 4000); }
+  }
   else if (d.agent) {
     vs.postMessage({ type:'view', agent:d.agent });
     // From the header pill: also take the reader to the card, once that mate's page is drawn (now, if it already is).

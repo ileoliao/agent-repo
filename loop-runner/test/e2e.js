@@ -1868,7 +1868,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     Q.audit(R, 'alpha-chain', { type: 'start', agent: 'alpha', from: 'user', task: 'work' });
     Q.audit(R, 'alpha-chain', { type: 'tool', agent: 'alpha', step: 1, name: 'run_command', input: { command: 'bash probe.sh' }, result: '[exit 0]' });
     const live = G(R, 'alpha', 'alpha', 'alpha');
-    ok(live.avatar === 'working' && live.line === 'bash probe.sh', 'a working agent shows the tool it is on, as its progress line');
+    ok(live.avatar === 'working' && live.line === 'Ran bash probe.sh', 'a working agent shows the tool it is on, as its progress line');
     Q.audit(R, 'alpha-chain', { type: 'end', agent: 'alpha', step: 2, status: 'done', summary: 'Everything checked out', outputs: [] });
     Q.complete(R, { id: 'cg-gate-clean', agent: 'alpha', task: 't', from: 'user', chainId: 'x', hop: 0, createdAt: '' }, 'done', 'x');
     const g0 = Q.getGate(R, 'cg1'); g0.status = 'answered'; Q.saveGate(R, g0);

@@ -84,6 +84,8 @@ export type ThreadEvent =
   | { kind: 'result'; ts: string; chainId: string; status: string; label: string; tone: Tone; /** Why the run ended this way, for the label's hover text. */ why?: string; goal?: string; detail?: string; next?: string; handoff?: { to: string; task: string }; deliverables: { path: string; preview?: string }[]; supporting: string[]; /** One line per question or approval settled during the run: "You approved: Roll back payments-service". */ approvals?: string[];
       /** Everything the run did, folded behind the card: today's detailed view, one click away. */
       fold: ThreadEvent[]; stepCount: number; problems: { refused: number; error: number; failed: number } }
+  /** A run that has started and not ended (working, or parked on a gate): one card, its steps folded, like a finished run. */
+  | { kind: 'live'; ts: string; chainId: string; goal?: string; fold: ThreadEvent[]; stepCount: number; last?: string; approvals?: string[] }
   | { kind: 'answer'; ts: string; title: string; text: string; tone: Tone; decision: 'answered' | 'executed' | 'failed' | 'rejected' };
 
 /**
@@ -171,7 +173,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
     let goal: string | undefined, next: string | undefined, handoff: { to: string; task: string } | undefined, wrote: string[] = [];
     let approvals: string[] = [];
     let errEv: { ev: ThreadEvent; message: string } | undefined;
-    let runStart = 0;
+    let runStart = 0, open = false;
     const resetRun = () => { runBlocks = []; goal = next = handoff = errEv = undefined; wrote = []; approvals = []; };
     for (const e of c.events) {
       const mine = e.agent === agent || (e.type === 'gate' && gateOwner.get(String(e.gateId)) === agent);
@@ -182,7 +184,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
         if (Array.isArray(e.wrote)) { wrote.push(...e.wrote.map(String)); }
         const h = humanize(String(e.name), e.input);
         const gate = !!e.gateId;
-        const step: ThreadStep = { step: Number(e.step) || 0, kind: gate ? 'gate' : 'tool', phrase: gate ? `${e.name === 'ask_human' ? 'asked' : 'asked approval'}: ${clip(brief(e.input), 80)}` : h.phrase, routine: !gate && h.routine, fam: h.fam, famKind: h.famKind, ts: e.ts, title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`,
+        const step: ThreadStep = { step: Number(e.step) || 0, kind: gate ? 'gate' : 'tool', phrase: gate ? `Asked you${e.name === 'ask_human' ? '' : ' to approve'}: ${clip(brief(e.input), 80)}` : h.phrase, routine: !gate && h.routine, fam: h.fam, famKind: h.famKind, ts: e.ts, title: `${e.name}${brief(e.input) ? ` · ${brief(e.input)}` : ''}`,
           detail: clip(firstLine(result), 160) || undefined, ok: !/^(REFUSED|ERROR|Not sent)/.test(result) };
         const refusal = refusalOf(e.name, e.input, result);
         if (refusal) { step.refused = refusal; }
@@ -195,6 +197,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
       flush();
       if (e.type === 'start') {
         resetRun();
+        open = true;
         runStart = events.length;
         const from = String(e.from ?? '');
         goal = from === 'chat' ? undefined : clip(firstLine(String(e.task ?? '')), 140) || undefined;
@@ -209,6 +212,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
         events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'warn', label: 'Needs you' });
       } else if (e.type === 'end') {
         const st = String(e.status);
+        open = false;
         const [label, tone, why] = END_LABEL[st] ?? [st, 'mute' as Tone];
         const outputs = Array.isArray(e.outputs) && e.outputs.length ? e.outputs.map(String) : [...new Set(wrote)];
         const split = splitOutputs(Array.isArray(e.deliverables) ? e.deliverables.map(String) : undefined, outputs);
@@ -236,6 +240,12 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
       }
     }
     flush();
+    if (open) {
+      const fold = events.splice(runStart);
+      const first = fold[0];
+      const all = fold.flatMap(f => (f.kind === 'steps' ? f.steps : []));
+      events.push({ kind: 'live', ts: first?.ts ?? '', chainId: c.chainId, goal, fold, stepCount: all.length, last: all[all.length - 1]?.phrase, approvals: approvals.length ? approvals : undefined });
+    }
   }
   for (const m of listMessages(root, agent)) {
     events.push({ kind: 'human', ts: m.ts, id: m.id, text: m.text, status: m.status, deliveredAt: m.deliveredAt, via: m.via });

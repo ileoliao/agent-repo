@@ -24,11 +24,11 @@ export function humanize(name: string, input: unknown): Humanized {
   const o = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
   const s = (v: unknown) => (typeof v === 'string' ? v : '');
   switch (name) {
-    case 'read_file': return { phrase: `read ${base(s(o.path)) || 'a file'}`, routine: true, fam: 'read', famKind: 'read' };
-    case 'list_dir': return { phrase: `listed ${base(s(o.path) || '.') || '.'}`, routine: true, fam: 'list', famKind: 'list' };
-    case 'write_file': return { phrase: `wrote ${s(o.path)}`.trim(), routine: false };
-    case 'edit_file': return { phrase: `edited ${s(o.path)}`.trim(), routine: false };
-    case 'handoff': return { phrase: `handed to ${s(o.to) || '?'}${s(o.task) ? `: ${clip(firstLine(s(o.task)), 140)}` : ''}`, routine: false };
+    case 'read_file': return { phrase: `Read ${base(s(o.path)) || 'a file'}`, routine: true, fam: 'read', famKind: 'read' };
+    case 'list_dir': return { phrase: `Listed ${base(s(o.path) || '.') || '.'}`, routine: true, fam: 'list', famKind: 'list' };
+    case 'write_file': return { phrase: `Wrote ${s(o.path)}`.trim(), routine: false };
+    case 'edit_file': return { phrase: `Edited ${s(o.path)}`.trim(), routine: false };
+    case 'handoff': return { phrase: `Handed to ${s(o.to) || '?'}${s(o.task) ? `: ${clip(firstLine(s(o.task)), 140)}` : ''}`, routine: false };
     case 'run_command': {
       const cmd = firstLine(s(o.command)).trim();
       const m = SKILL_SCRIPT.exec(cmd);
@@ -41,7 +41,7 @@ export function humanize(name: string, input: unknown): Humanized {
       const toks = cmd.split(/\s+/).filter(t => t && !/^\w+=/.test(t));
       const prog = base(toks[0] ?? '') || 'command';
       const rest = toks.slice(1).join(' ');
-      return { phrase: rest ? `${prog} ${clip(rest, 48)}` : prog, routine: false };
+      return { phrase: `Ran ${rest ? `${prog} ${clip(rest, 48)}` : prog}`, routine: false };
     }
     default: return { phrase: `${name}${brief(input) ? ` · ${clip(brief(input), 48)}` : ''}`, routine: false };
   }

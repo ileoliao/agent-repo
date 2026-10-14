@@ -33,7 +33,6 @@ const COMMANDS: Record<string, string> = {
   getStarted: 'harborMate.getStarted',
   describeAgent: 'harborMate.describeAgent',
   runDoctor: 'harborMate.runDoctor',
-  showHealth: 'harborMate.showHealth',
   cleanUp: 'harborMate.cleanUp',
   setSecret: 'harborMate.setSecret',
   pauseAgent: 'harborMate.pauseAgent',

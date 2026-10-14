@@ -49,6 +49,18 @@ function demo() {
   return R;
 }
 
+/** One scheduled mate and nothing waiting: the quiet day (with a finished run) or the first minute (without). */
+function simple(withRun) {
+  const R = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-simple-'));
+  w(R, '.github/agents/daily-report.agent.md', '---\nname: daily-report\ndescription: Writes the morning report of what changed in the repository.\nloop:\n  schedule: "0 9 * * 1-5"\n  task: Write the report.\n---\nYou write the report.\n');
+  if (withRun) {
+    const ev = [{ type: 'start', agent: 'daily-report', ts: ago(190), step: 0, from: 'schedule', hop: 0, task: 'Write the report.' }, { type: 'tool', agent: 'daily-report', ts: ago(189), step: 1, name: 'write_file', input: { path: '.loop/outbox/daily-report/today.md' }, decision: 'allow', result: 'Wrote .loop/outbox/daily-report/today.md.' }, { type: 'end', agent: 'daily-report', ts: ago(188), step: 1, status: 'done', summary: 'Report written: 12 commits across 3 areas.', outputs: ['.loop/outbox/daily-report/today.md'] }];
+    w(R, `.loop/runs/${day}/q1.jsonl`, ev.map(e => JSON.stringify({ chainId: 'q1', ...e })).join('\n') + '\n');
+    w(R, '.loop/outbox/daily-report/today.md', '# Daily report\n\n- Payments: retry logic reworked\n');
+  }
+  return R;
+}
+
 const THEMES = {
   dark: { '--vscode-foreground': '#cccccc', '--vscode-descriptionForeground': '#9d9d9d', '--vscode-editor-background': '#1f1f1f', '--vscode-sideBar-background': '#181818', '--vscode-panel-border': '#2b2b2b', '--vscode-focusBorder': '#0078d4', '--vscode-list-hoverBackground': '#2a2d2e', '--vscode-list-activeSelectionBackground': '#04395e', '--vscode-input-background': '#313131', '--vscode-input-foreground': '#cccccc', '--vscode-input-border': '#3c3c3c', '--vscode-textLink-foreground': '#4daafc', '--vscode-button-background': '#0078d4', '--vscode-button-foreground': '#ffffff', '--vscode-button-hoverBackground': '#026ec1', '--vscode-button-secondaryBackground': '#313131', '--vscode-button-secondaryForeground': '#cccccc', '--vscode-badge-background': '#616161', '--vscode-badge-foreground': '#ffffff', '--vscode-textCodeBlock-background': '#2b2b2b', '--vscode-testing-iconPassed': '#73c991', '--vscode-errorForeground': '#f85149', '--vscode-editorWarning-foreground': '#cca700', '--vscode-charts-red': '#f14c4c', '--vscode-toolbar-hoverBackground': '#383a3d', '--vscode-font-family': '-apple-system, "Segoe UI", sans-serif', '--vscode-font-size': '13px', '--vscode-editor-font-family': 'Menlo, monospace' },
   light: { '--vscode-foreground': '#3b3b3b', '--vscode-descriptionForeground': '#717171', '--vscode-editor-background': '#ffffff', '--vscode-sideBar-background': '#f8f8f8', '--vscode-panel-border': '#e5e5e5', '--vscode-focusBorder': '#005fb8', '--vscode-list-hoverBackground': '#f2f2f2', '--vscode-list-activeSelectionBackground': '#e8e8e8', '--vscode-input-background': '#ffffff', '--vscode-input-foreground': '#3b3b3b', '--vscode-input-border': '#cecece', '--vscode-textLink-foreground': '#005fb8', '--vscode-button-background': '#005fb8', '--vscode-button-foreground': '#ffffff', '--vscode-button-hoverBackground': '#0258a8', '--vscode-button-secondaryBackground': '#e5e5e5', '--vscode-button-secondaryForeground': '#3b3b3b', '--vscode-badge-background': '#cccccc', '--vscode-badge-foreground': '#3b3b3b', '--vscode-textCodeBlock-background': '#f0f0f0', '--vscode-testing-iconPassed': '#388a34', '--vscode-errorForeground': '#f85149', '--vscode-editorWarning-foreground': '#bf8803', '--vscode-charts-red': '#e51400', '--vscode-toolbar-hoverBackground': '#e0e0e0', '--vscode-font-family': '-apple-system, "Segoe UI", sans-serif', '--vscode-font-size': '13px', '--vscode-editor-font-family': 'Menlo, monospace' }
@@ -57,6 +69,7 @@ const THEMES = {
 (async () => {
   const R = demo();
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-empty-'));
+  const quiet = simple(true), firstMate = simple(false);
   const open = sel => page => page.evaluate(q => document.querySelectorAll(q).forEach(d => { d.open = true; }), sel);
   const click = sel => page => page.click(sel);
   const scenes = [
@@ -68,6 +81,8 @@ const THEMES = {
     ['menu-open', R, { running: true, active: undefined, agent: 'release-watch' }, open('details.toolmenu')],
     ['chat-running', R, { running: true, active: 'daily-report', agent: 'daily-report' }],
     ['fold-open', R, { running: true, active: 'daily-report', agent: 'daily-report' }, open('.thread details')],
+    ['all-quiet', quiet, { running: true, active: undefined }],
+    ['first-mate', firstMate, { running: true, active: undefined }],
     ['stopped', R, { running: false }],
     ['copilot-off', empty, { running: false }],
     ['empty-workspace', empty, { running: false }]
@@ -83,7 +98,7 @@ const THEMES = {
       html = html.replace('<head>', `<head><style>:root{${Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')}} body{background:${vars['--vscode-editor-background']}}</style><script>window.acquireVsCodeApi=()=>({postMessage(){}});</script>`);
       await page.setContent(html);
       await page.evaluate(() => { const t = document.querySelector('.thread'); if (t) { t.scrollTop = t.scrollHeight; } if (typeof updatePinned === 'function') { updatePinned(); } });
-      if (act) { await act(page); }
+      if (act) { await act(page); await page.waitForTimeout(300); }
       const f = path.join(outDir, `${name}.${theme}.png`);
       await page.screenshot({ path: f, fullPage: true });
       shots.push(f);

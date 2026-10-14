@@ -127,6 +127,10 @@
         {
           "command": "harborMate.resumeAgent",
           "when": "false"
+        },
+        {
+          "command": "harborMate.showHealth",
+          "when": "false"
         }
       ]
     },

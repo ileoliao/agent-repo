@@ -30,9 +30,10 @@ console.log('the header');
   ok(/class="btn primary" data-cmd="startTeam"/.test(off) && (off.match(/class="btn primary"/g) || []).length === 1 && /class="state off">Off</.test(off), 'while off: one primary Start mates button, and the pill says Off');
   ok(!/Nothing will run until you press Start/i.test(renderBody({ ...base, running: false, pending: [gate('question')] })), 'the yellow "Nothing will run" banner is gone');
   const items = running.match(/class="menuitem"[^>]*>([^<]*)</g).map(x => x.replace(/.*>([^<]*)</, '$1'));
-  ok(items.join() === 'Add a mate,Check mates,Health report,Clean up finished work,Set a secret,Stop all mates', 'the ⋯ menu: add, check, health, clean up, secret, and Stop all mates');
+  ok(items.join() === 'Add a mate,Check mates,Clean up finished work,Set a secret,Stop all mates', 'the ⋯ menu: add, check, clean up, secret, and Stop all mates (health is part of Check mates)');
   ok(/data-cmd="stopTeam"/.test(running) && !/data-cmd="startTeam"/.test(running) && /data-cmd="startTeam"[^>]*>Start mates</.test(off), 'the last item is Stop all mates while running and Start mates while off');
-  for (const c of ['getStarted', 'runDoctor', 'showHealth', 'cleanUp', 'setSecret']) { ok(new RegExp(`data-cmd="${c}"`).test(running), `${c} is in the menu`); }
+  ok(!/showHealth/.test(running), 'there is no separate Health report item');
+  for (const c of ['getStarted', 'runDoctor', 'cleanUp', 'setSecret']) { ok(new RegExp(`data-cmd="${c}"`).test(running), `${c} is in the menu`); }
   ok(!/Check &amp; tools/.test(running) && /aria-label="More"/.test(running), 'the old "Check & tools" dropdown is replaced by an icon menu');
   ok(!/<header[^>]*>[^]*(Run now|Pause)/.test(running), 'mate actions are not in the header');
 }
@@ -70,16 +71,16 @@ console.log('first run');
   ok(/Set up your first mate/.test(fresh) && /data-arg="daily-report"/.test(fresh) && /data-arg="folder-watch"/.test(fresh) && /data-cmd="describeAgent"/.test(fresh), 'a new workspace offers the starters, and describing one');
   ok(!/<ol/.test(fresh) && !/appears at the top/.test(fresh) && !/data-cmd="startTeam"/.test(fresh) && !/class="toolmenu"/.test(fresh), 'no numbered steps, no Start button, no menu');
   ok(/Mates use your GitHub Copilot models\. Anything risky waits for your approval\./.test(fresh), 'the one-line note at the bottom');
-  ok(/disabled/.test(renderBody({ ...base, running: false, agents: [], copilot: 0, chat: empty })) && /The Add buttons are off because GitHub Copilot is not signed in/.test(renderBody({ ...base, running: false, agents: [], copilot: 0, chat: empty })), 'starters are disabled when Copilot is signed out, and say why');
-  ok((renderBody({ ...base, running: false, agents: [], copilot: 0, chat: empty }).match(/not signed in/g) || []).length === 1, 'and say it once');
+  ok(/disabled/.test(renderBody({ ...base, running: false, agents: [], copilot: 0, chat: empty })) && /Sign in to GitHub Copilot to let mates run/.test(renderBody({ ...base, running: false, agents: [], copilot: 0, chat: empty })), 'starters are disabled when Copilot is signed out, and say why');
+  ok((renderBody({ ...base, running: false, agents: [], copilot: 0, chat: empty }).match(/Sign in to GitHub Copilot to let mates run\.<\/span>/g) || []).length === 1, 'and say it once');
 }
 
 console.log('copilot');
 {
   ok(!/Copilot/.test(renderBody({ ...base, copilot: 3 })) && !/Copilot/.test(renderBody({ ...base })), 'a ready or unknown Copilot says nothing');
   const off = renderBody({ ...base, copilot: 0 });
-  ok(/GitHub Copilot is not signed in/.test(off) && /none can run until you sign in/.test(off) && !/class="chip warn"/.test(bar(off)), 'no Copilot models: one banner says mates cannot run, and the header has no second note');
-  ok(/disabled title="Sign in to GitHub Copilot first"/.test(off), 'Run now is disabled while Copilot is signed out');
+  ok(/Sign in to GitHub Copilot to let mates run\./.test(off) && !/class="chip warn"/.test(bar(off)), 'no Copilot models: one banner says mates cannot run, and the header has no second note');
+  ok(/disabled title="Sign in to GitHub Copilot to let mates run\."/.test(off), 'Run now is disabled while Copilot is signed out');
 }
 
 console.log('the composer');
@@ -95,7 +96,7 @@ console.log('the composer');
   ok(!/class="muted hint"/.test(chat('idle')) && /class="muted hint">a reads this at its next step\./.test(chat('running')), 'the hint is gone when idle and says something useful when it works');
   ok(/class="muted hint">a reads this once you have decided/.test(chat('waiting', [gate('approval')])) && !/class="muted hint"/.test(chat('waiting', [gate('question')])), 'an approval waiting says when the message is read; a question needs no hint');
   ok(/The mates are off\. This is saved/.test(renderBody({ ...base, running: false })) && /a has work queued and reads this when it starts\./.test(chat('queued')), 'the hint still says when the mates are off or the work is queued');
-  ok(/Message it below/.test(renderBody(base)) && !/If it is working/.test(renderBody(base)), 'an empty conversation says so in one line');
+  ok(/Message it below/.test(renderBody({ ...base, runs: [run('done')] })) && /No runs yet\. Runs only when you give it a task|No runs yet\. Runs when you message it/.test(renderBody(base)), 'an empty conversation says so in one line; a mate that never ran says No runs yet');
 }
 
 console.log('cards say who needs you');
@@ -106,14 +107,14 @@ console.log('cards say who needs you');
   const blockedOnly = renderBody({ ...base, chat: { ...chatOf([row({ needsYou: 1 })]), blocked: [{ id: 'b1', agent: 'a', command: 'harbor status', chainId: 'c', at: now }] } });
   ok(/<b>a<\/b> needs you/.test(blockedOnly) && /Blocked from running a command/.test(blockedOnly), 'a blocked command is the same kind of to-do');
   const ap = gated([gate('approval', { command: 'echo hi' })]);
-  ok(/data-reject-open="g"/.test(ap) && /data-reject="g"/.test(ap) && /Why\? \(optional\)/.test(ap) && /data-reject-cancel="g"/.test(ap), 'an approval card carries its own reject reason field, with Reject and Cancel');
+  ok(/data-reject-open="g"/.test(ap) && /data-reject="g"/.test(ap) && /Why\? The mate reads this \(optional\)/.test(ap) && /data-reject-cancel="g"/.test(ap), 'an approval card carries its own reject reason field, with Reject and Cancel');
   ok(!/Overview/.test(ap), 'and mentions no second page');
 }
 
 console.log('mates in the roster and header');
 {
   const rows = [row({ name: 'a', triggers: [{ kind: 'schedule', text: '0 9 * * 1-5' }, { kind: 'webhook', text: 'deploy' }], next: new Date(Date.now() + 86400e3).toISOString() }), row({ name: 'b', file: undefined })];
-  const head = renderBody({ ...base, chat: chatOf(rows, 'a') });
+  const head = renderBody({ ...base, runs: [run('done')], chat: chatOf(rows, 'a') });
   ok(/Runs weekdays at 09:00 · on webhook “deploy”/.test(head) && /· next /.test(head), 'the header says what wakes the mate, and when next');
   ok(/class="ch-actions"[^]*data-cmd="runAgent" data-arg="a"[^]*data-cmd="pauseAgent" data-arg="a"/.test(head) && /class="link"[^>]*data-open="\.github\/agents\/a\.agent\.md"[^>]*>Edit file/.test(head), 'Run now and Pause are buttons; Edit file is a link in the facts line');
   const paused = renderBody({ ...base, chat: chatOf([row({ paused: true, triggers: [{ kind: 'schedule', text: '0 9 * * *' }] })]) });
@@ -166,6 +167,26 @@ console.log('the one status bar item');
   Q.saveGate(R, { id: 'p1', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now });
   Q.saveGate(R, { id: 'p2', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'x', files: [], resume: true, status: 'executed', createdAt: now });
   ok(needsYouCount(R) === 1, 'the count comes straight from the gates on disk (settled ones do not count)');
+}
+
+console.log('round three: live run, quiet actions, off, first run');
+{
+  const live = (extra = {}) => renderBody({ ...base, runs: [{ ...run('running'), step: 3 }], chat: chatOf([row({ state: 'running', avatar: 'working', line: 'Read app.js' })], 'a', [{ kind: 'live', ts: now, chainId: 'c1', goal: 'Write the report.', stepCount: 2, last: 'Read app.js', fold: [{ kind: 'steps', ts: now, steps: [{ step: 1, kind: 'tool', title: 'run_command · git log', phrase: 'Ran git log', routine: false, ok: true }, { step: 2, kind: 'tool', title: 'read_file · app.js', phrase: 'Read app.js', routine: false, ok: true }] }], ...extra }]) });
+  const d = new (require('jsdom').JSDOM)(`<body>${live()}</body>`).window.document;
+  ok(d.querySelectorAll('.rcard.live').length === 1 && !d.querySelector('.turn.working') && d.querySelector('.rcard.live .rgoal').textContent === 'Write the report.', 'a live run is one card with its task line, and no separate "is working" row');
+  ok(d.querySelector('.rcard.live details.rfold') && !d.querySelector('.rcard.live details.rfold').open && /Show 2 steps/.test(d.querySelector('.rfold summary').textContent) && /Read app\.js/.test(d.querySelector('.fold-gist').textContent), 'its steps are one collapsed fold that shows the last step');
+  ok(/working · step 3 · /.test(d.querySelector('.rcard.live .live-line').textContent), 'and it ends with "working · step N · time"');
+  ok(/Ran git log/.test(d.querySelector('.rfold-body').textContent) && !/run_command|read_file/.test(d.querySelector('.rfold-body').textContent.replace(/\s+/g, ' ')), 'steps use human verbs, not tool names');
+  ok(!/live-line/.test(renderBody({ ...base, chat: chatOf([row({ state: 'waiting', avatar: 'waiting', needsYou: 1 })], 'a', [{ kind: 'live', ts: now, chainId: 'c1', fold: [], stepCount: 0 }]) })), 'a run parked on a gate has no spinner line');
+  const TU = require(`${OUT}/textutil.js`);
+  ok(TU.humanize('write_file', { path: 'x.md' }).phrase === 'Wrote x.md' && TU.humanize('edit_file', { path: 'x.md' }).phrase === 'Edited x.md' && TU.humanize('list_dir', { path: 'a/b' }).phrase === 'Listed b' && TU.humanize('handoff', { to: 'bob' }).phrase === 'Handed to bob', 'wrote, edited, listed, handed');
+  const blocked = renderBody({ ...base, chat: { ...chatOf([row({ needsYou: 1 })]), blocked: [{ id: 'b1', agent: 'a', command: 'x', chainId: 'c', at: now }] } });
+  ok(/class="btn ghost"[^>]*data-dismiss-agent|class="btn ghost" data-dismiss-agent/.test(blocked) && /class="btn primary" data-allow-agent/.test(blocked), 'in a blocked-command card Dismiss is a quiet text button and Allow is the button');
+  const pill = h => (bar(h).match(/<(button|span) class="state[^"]*"[^>]*>[^]*?<\/\1>/) || [''])[0];
+  ok(/Off · 1 needs you/.test(pill(renderBody({ ...base, running: false, pending: [gate('question')] }))) && /data-agent="a"/.test(pill(renderBody({ ...base, running: false, pending: [gate('question')] }))), 'with the mates off and something waiting the pill says so and still jumps');
+  ok(/All quiet · next/.test(pill(renderBody({ ...base, next: { agent: 'a', at: new Date(Date.now() + 7200e3).toISOString() } }))), 'all quiet renders');
+  const first = renderBody({ ...base, chat: chatOf([row({ triggers: [{ kind: 'schedule', text: '0 9 * * 1-5' }] })]) });
+  ok(/No runs yet\. Runs weekdays at 09:00\./.test(first) && (first.match(/data-cmd="runAgent"/g) || []).length === 1, 'a mate that never ran says when it runs, with one Run now button (not two)');
 }
 
 console.log('plain schedules');

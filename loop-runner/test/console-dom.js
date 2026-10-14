@@ -41,7 +41,7 @@ ok(!!d.querySelector('.card[data-gate] [data-reject-box] textarea') && d.querySe
 const box = () => d.querySelector('[data-chat-input]');
 ok(box().dataset.approvalFor === undefined && box().placeholder === 'Message a…' && !/Reason if you reject/.test(d.body.innerHTML) && !d.querySelector('[data-chat-send]').disabled, 'the one box at the bottom only messages the mate, whatever is waiting');
 d.querySelector('[data-reject-open]').click();
-ok(!d.querySelector('[data-reject-box]').classList.contains('hidden') && d.querySelector('[data-actions]').classList.contains('hidden') && /Why\? \(optional\)/.test(d.querySelector('[data-reject-box] textarea').placeholder), 'Reject opens a small "Why? (optional)" field with Reject and Cancel');
+ok(!d.querySelector('[data-reject-box]').classList.contains('hidden') && d.querySelector('[data-actions]').classList.contains('hidden') && /Why\? The mate reads this \(optional\)/.test(d.querySelector('[data-reject-box] textarea').placeholder), 'Reject opens a small "Why? The mate reads this (optional)" field with Reject and Cancel');
 ok(!sent.some(m => m.type === 'reject'), 'and nothing is sent yet');
 d.querySelector('[data-reject-box] textarea').value = 'my reason';
 post(renderBody({ ...base, pending: [gate('h2', 'v2 CHANGED')] }));
@@ -77,9 +77,13 @@ ok(!threw, 'an id with a quote does not throw');
   const line = d.querySelector('.ch-tasks [data-task]');
   ok(line && !line.querySelector('b') && !line.querySelector('i') && /Working on: <b>Watch backlog<\/b> — next: wait for <i>b<\/i>/.test(line.textContent), 'the selected mate\'s open task is one compact line in its header, escaped, with its next step');
   ok(d.querySelectorAll('[data-task]').length === 1, 'and only the tasks that mate holds');
-  ok(/^Drop$/.test(line.querySelector('[data-close-task]').textContent.trim()), 'with a small Drop button');
-  line.querySelector('[data-close-task]').click();
-  ok(sent.at(-1).type === 'closeTask' && sent.at(-1).id === 't"1', 'Drop sends the task id');
+  const drop = line.querySelector('[data-close-task]');
+  ok(/^Drop task$/.test(drop.textContent.trim()), 'with a small Drop task button');
+  const before = sent.length;
+  drop.click();
+  ok(sent.length === before && /^Confirm drop$/.test(drop.textContent.trim()), 'the first click only asks to confirm');
+  drop.click();
+  ok(sent.at(-1).type === 'closeTask' && sent.at(-1).id === 't"1', 'the second click sends the task id');
   post(renderBody({ ...base }));
   ok(!d.querySelector('[data-task]'), 'no tasks, no line (and a model without the field still renders)');
 }
@@ -205,8 +209,8 @@ ok(!threw, 'an id with a quote does not throw');
   const { humanize } = require(OUT + '/textutil.js');
   const h = (name, input) => humanize(name, input);
   ok(h('run_command', { command: 'python3 .github/skills/loop-memory/scripts/mem.py check --key a' }).phrase === 'loop-memory · check', 'a skill script reads as skill · subcommand');
-  ok(h('run_command', { command: 'python3 .github/skills/loop-memory/scripts/mem.py track --key a' }).routine && h('run_command', { command: 'git -C repos/x log' }).phrase === 'git -C repos/x log' && !h('run_command', { command: 'git status' }).routine, 'other commands show the program and a clip, and are not routine');
-  ok(h('read_file', { path: 'a/b/c.md' }).phrase === 'read c.md' && h('list_dir', { path: 'a/b' }).routine, 'reads and listings are routine');
+  ok(h('run_command', { command: 'python3 .github/skills/loop-memory/scripts/mem.py track --key a' }).routine && h('run_command', { command: 'git -C repos/x log' }).phrase === 'Ran git -C repos/x log' && !h('run_command', { command: 'git status' }).routine, 'other commands show the program and a clip, and are not routine');
+  ok(h('read_file', { path: 'a/b/c.md' }).phrase === 'Read c.md' && h('list_dir', { path: 'a/b' }).routine, 'reads and listings are routine');
   const st = (title, input, name, detail, ok2 = true) => ({ step: 1, kind: 'tool', title: `${name} · ${title}`, ...h(name, input), detail, ok: ok2 });
   const mem = c => st(`python3 .github/skills/loop-memory/scripts/mem.py ${c} --key k`, { command: `python3 .github/skills/loop-memory/scripts/mem.py ${c} --key k` }, 'run_command', '[exit 0]');
   const steps = [mem('recall'), mem('check'), mem('track'), mem('note'), st('a.md', { path: 'a.md' }, 'read_file', 'text'), st('b.md', { path: 'b.md' }, 'read_file', 'text'),
@@ -218,11 +222,11 @@ ok(!threw, 'an id with a quote does not throw');
   const dm = new JSDOM(`<body>${html}</body>`).window.document;
   const lines = [...dm.querySelectorAll('.steps')].map(x => x.textContent.replace(/\s+/g, ' ').trim());
   ok(lines.some(t => /^loop-memory ×4/.test(t)), 'consecutive skill calls fold into one line: ' + lines[0]);
-  ok(/read 2 files/.test(lines[0]) && !/python3|mem\.py/.test(dm.querySelector('details.steps > summary').textContent), 'reads fold in, and no raw command in the folded line');
+  ok(/Read 2 files/.test(lines[0]) && !/python3|mem\.py/.test(dm.querySelector('details.steps > summary').textContent), 'reads fold in, and no raw command in the folded line');
   ok(/1 refused/.test(lines[0]) || lines.some(t => /refused/.test(t)), 'the group line counts refused calls');
   ok(/REFUSED: not allowed/.test(dm.querySelector('.badcall').textContent) && /ERROR: /.test(dm.querySelectorAll('.badcall')[1].textContent), 'REFUSED and ERROR results stay visible without opening anything');
   ok(!dm.querySelector('.badcall b') && !dm.querySelector('.badcall i') && !dm.querySelector('.steps u') && !dm.querySelector('.steps-sum x'), 'tool text is escaped');
-  ok(/handed to techlead: Find the <u>root cause<\/u>/.test(dm.querySelector('.steps:last-of-type, .steps:last-child').textContent) || lines.some(t => /handed to techlead: Find the <u>root cause<\/u>/.test(t)), 'a handoff shows whom and the task on one line');
+  ok(/Handed to techlead: Find the <u>root cause<\/u>/.test(dm.querySelector('.steps:last-of-type, .steps:last-child').textContent) || lines.some(t => /Handed to techlead: Find the <u>root cause<\/u>/.test(t)), 'a handoff shows whom and the task on one line');
   ok(dm.querySelector('details.steps').open === false && /mem\.py recall/.test(dm.querySelector('details.steps').innerHTML), 'the full command is one click away');
   ok(/bash post\.sh &quot;&lt;q&gt;&quot;|bash post\.sh "<q>"/.test(dm.querySelector('.cmd').textContent) || dm.querySelector('.cmd').textContent === 'bash post.sh "<q>"', 'a gate still shows the exact command');
   ok(dm.querySelector('[data-hash-for="out/<f>.md"]') && /out\/<f>\.md/.test(dm.querySelector('.file').textContent), 'and the files, escaped');
@@ -273,5 +277,17 @@ ok(!threw, 'an id with a quote does not throw');
   { const r2 = TH.buildThread(R, 'a').events.find(x => x.kind === 'result' && x.chainId === 'ch2');
     ok(r2.deliverables[0].path === 'out/r.md' && r2.deliverables[0].preview === 'The <i>report</i>' && r2.supporting.join() === 'out/n.log', 'a declared deliverable gets the first heading as its preview'); }
   ok(r && r.goal === 'Watch things' && r.next === 'N' && r.handoff.to === 'b' && r.supporting[0] === 'out/r.md' && r.deliverables.length === 0 && evs.filter(x => x.kind !== 'human').length === 1 && r.fold.length >= 2 && r.stepCount === 2, 'the thread builds one card for an ended run, with its process folded in');
+}
+{
+  const fs = require('fs'), os = require('os'), Q = require(OUT + '/queue.js'), TH = require(OUT + '/thread.js');
+  const R = fs.mkdtempSync(path.join(os.tmpdir(), 'live-'));
+  Q.audit(R, 'lv', { type: 'start', agent: 'a', from: 'schedule', task: 'Write the report.' });
+  Q.audit(R, 'lv', { type: 'tool', agent: 'a', step: 1, name: 'run_command', input: { command: 'git log --stat' }, result: '[exit 0]' });
+  Q.audit(R, 'lv', { type: 'tool', agent: 'a', step: 2, name: 'read_file', input: { path: 'src/app.js' }, result: 'x' });
+  const ev = TH.buildThread(R, 'a').events;
+  const lv = ev.find(x => x.kind === 'live');
+  ok(ev.length === 1 && lv && lv.goal === 'Write the report.' && lv.stepCount === 2 && lv.last === 'Read app.js' && !ev.some(x => x.kind === 'steps' || x.kind === 'status'), 'a run that has not ended is one live event with its steps folded inside');
+  Q.audit(R, 'lv', { type: 'end', agent: 'a', step: 2, status: 'done', summary: 'ok', outputs: [] });
+  ok(!TH.buildThread(R, 'a').events.some(x => x.kind === 'live'), 'and when it ends it becomes the result card');
 }
 console.log(`${n} console page checks passed`);

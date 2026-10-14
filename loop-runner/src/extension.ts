@@ -665,6 +665,8 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!res.ok) { vscode.window.showWarningMessage(`Harbor Mate: ${res.error}`); return; }
       const errs = await svc.reloadAll();
       refresh();
+      // The console opens on the new mate, whichever way it was added.
+      consolePanel?.show(res.agent);
       const report = await runDoctor(r, { agent: res.agent, runProbes: true, secrets: await svc.secrets() });
       const ready = report.ready.includes(res.agent);
       // Adding a mate is a human click, which is also the trigger Copilot's consent needs: a ready mate starts the mates when they are off.
@@ -688,7 +690,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       let models = 0;
       try { models = (await vscode.lm.selectChatModels({})).length; } catch { /* not signed in */ }
       const copilot = models ? `✅ **Copilot** is ready: ${models} model${models > 1 ? 's' : ''} available.` : '❌ **Copilot** has no models available. Sign in to GitHub Copilot in VS Code: mates cannot run without it.';
-      await showMarkdown('Harbor Mate · Doctor', `${copilot}\n\n${md}`);
+      // One report: the setup check first, then how each mate has been doing when there is any history to judge.
+      const hasHistory = recentRuns(root(), 1).length > 0;
+      await showMarkdown('Harbor Mate · Check Mates', `${copilot}\n\n${md}${hasHistory ? `\n\n---\n\n${healthMarkdown(healthReport(root()))}` : ''}`);
     }),
     vscode.commands.registerCommand('harborMate.showHealth', async () => { await showMarkdown('Harbor Mate · Mate Health', healthMarkdown(healthReport(root()))); }),
     vscode.commands.registerCommand('harborMate.cleanUp', async () => {
