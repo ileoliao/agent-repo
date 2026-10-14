@@ -36,15 +36,10 @@ console.log('a blocked command is a to-do, and counts everywhere');
   ok(m.blocked.length === 1 && m.blocked[0].agent === 'beta' && m.blocked[0].command === CMD, 'the refused command of the newest blocked run is a to-do');
   const html = renderBody(m);
   const d = dom(html);
-  ok(/1 waiting on you/.test(d.querySelector('.state.wait').textContent), 'the status pill counts it');
-  ok(d.querySelector('.tab[data-tab="chat"] .count').textContent === '1', 'so does the Chat tab badge');
+  ok(/1 needs you/.test(d.querySelector('.state.wait').textContent) && d.querySelector('.state.wait').dataset.agent === 'beta' && d.querySelector('.state.wait').dataset.scroll === '1', 'the status pill counts it, and is a button to that mate and its card');
   ok(d.querySelector('.roster-row[data-agent="beta"] .count').textContent === '1' && !d.querySelector('.roster-row[data-agent="alpha"] .count'), 'and the badge on that mate in the list');
   const card = d.querySelector('[data-blocked]');
   ok(card && /beta/.test(card.textContent) && card.querySelector('pre.cmd').textContent === CMD && card.querySelector('[data-allow-agent="beta"][data-allow-cmd="harbor status --json"]') && card.querySelector('[data-dismiss-agent="beta"]'), 'its card shows the mate, the exact command, and Allow and Dismiss');
-  const ov = dom(renderBody(model(R, { tab: 'overview' })));
-  const row = ov.querySelector('.needlist .needrow');
-  ok(ov.querySelectorAll('.needrow').length === 1 && row.dataset.agent === 'beta' && /harbor status/.test(row.textContent) && /beta was blocked/.test(row.textContent), 'the Overview lists it as one compact row that opens that mate\'s Chat');
-  ok(!ov.querySelector('[data-blocked]') && !ov.querySelector('[data-approve]') && !ov.querySelector('.tile') && /1 waiting on you/.test(ov.querySelector('.state.wait').textContent), 'with no full cards and no stat tiles on the Overview');
 }
 
 console.log('allowed or dismissed: not a to-do any more');
@@ -52,11 +47,10 @@ console.log('allowed or dismissed: not a to-do any more');
   const R = world();
   for (const c of planAllowCommand(R, 'beta', CMD).changes) { applyChange(R, c); }
   ok(model(R).blocked.length === 0 && !/data-blocked/.test(renderBody(model(R))), 'once allowed, it is gone from the to-dos');
-  ok(!/Allow and rerun/.test(renderBody(model(R, { tab: 'overview' }))), 'and its run no longer offers Allow and rerun');
-  const R2 = world();
+    const R2 = world();
   dismissBlock(R2, 'beta', CMD);
   ok(model(R2).blocked.length === 0 && JSON.parse(fs.readFileSync(path.join(R2, '.loop/ui-state.json'), 'utf8')).dismissed.length === 1, 'a dismissed command stays gone, and that is saved with the other console state');
-  ok(!/Allow and rerun/.test(renderBody(model(R2, { tab: 'overview' }))) && !/waiting on you/.test(renderBody(model(R2))), 'a dismissed one is no count and no button');
+  ok(!/need you|needs you<\/button>/.test(renderBody(model(R2))) && !/data-blocked/.test(renderBody(model(R2))), 'a dismissed one is no count and no card');
   // a later run of that mate that did not end blocked: the old refusal is history
   const R3 = world();
   Q.audit(R3, 'cb2', { type: 'start', agent: 'beta', from: 'schedule', task: 'Check' });
@@ -71,20 +65,6 @@ console.log('allowed or dismissed: not a to-do any more');
   ok(model(R4).blocked.length === 0, 'a command a deny rule blocks is not offered for a click');
 }
 
-console.log('Recent runs: one entry for a blocked command');
-{
-  const R = world();
-  const ov = dom(renderBody(model(R, { tab: 'overview' })));
-  const b = ov.querySelector('details.run summary [data-agent="beta"]');
-  ok(b && /Decide in Chat/.test(b.textContent) && !ov.querySelector('[data-rerun]') && !ov.querySelector('details.run summary [data-allow-agent]'), 'a run blocked by a command points to the card in Chat, with no second Allow on its row');
-  ok(!/tell it what it needs/.test(ov.querySelector('details.run').textContent), 'and no longer says to tell it what it needs');
-  Q.audit(R, 'cx', { type: 'start', agent: 'alpha', from: 'schedule', task: 'x' });
-  Q.audit(R, 'cx', { type: 'end', agent: 'alpha', step: 1, status: 'blocked', summary: 'needs a secret', outputs: [] });
-  const ov2 = dom(renderBody(model(R, { tab: 'overview' })));
-  const rows = [...ov2.querySelectorAll('details.run')];
-  ok(rows.length === 2 && rows.filter(r => /Decide in Chat/.test(r.querySelector('summary').textContent)).length === 1, 'a Blocked run for any other reason keeps its old row');
-}
-
 console.log('an agent with several goals');
 {
   const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-goals-'));
@@ -96,19 +76,43 @@ console.log('an agent with several goals');
   ok(/3 goals/.test(facts.querySelector('summary').textContent) && !/Runs /.test(facts.textContent), 'the chat header counts the goals instead of listing every schedule');
   ok(items.length === 3 && /Write the morning report/.test(items[0].textContent) && /weekdays at 09:00/.test(items[0].textContent) && /Triage new issues/.test(items[2].textContent) && /webhook/.test(items[2].textContent), 'and unfolding says which goal runs when');
   ok(/Runs every day at 09:00/.test(chatOf('solo').textContent) && !chatOf('solo').querySelector('.goalfold'), 'one goal keeps the plain line');
-  const card = [...dom(renderBody(model(R, { tab: 'overview' }))).querySelectorAll('.agent')].find(c => /multi/.test(c.textContent));
-  ok(card.querySelectorAll('.goals .trig').length === 3 && /Watch release health/.test(card.textContent), 'the Overview card lists one line per goal');
 }
 
-console.log('where the console opens');
+console.log('where the console opens, and how the roster is ordered');
 {
   const R = world();
-  ok(model(R).chat.selected === 'beta' && model(R).tab === 'chat', 'with a to-do, the Chat opens on the mate behind it');
+  ok(model(R).chat.selected === 'beta' && model(R).tab === undefined, 'with a to-do, the console opens on the mate behind it');
   ok(model(R, { agent: 'alpha' }).chat.selected === 'alpha', 'a mate the person picked is kept, even while another has a to-do');
   const quiet = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-attn-')); for (const a of ['alpha', 'beta']) { w(quiet, `.github/agents/${a}.agent.md`, agentFile(a)); }
-  ok(model(quiet).chat.selected === 'alpha', 'with nothing waiting it opens as before');
+  ok(model(quiet).chat.selected === 'alpha' && model(quiet).chat.agents.map(a => a.name).join() === 'alpha,beta', 'with nothing to go on it opens on the first mate, in name order');
   Q.saveGate(quiet, { id: 'gq', kind: 'question', agent: 'beta', itemId: 'i', chainId: 'c', title: 'Which?', body: 'b', options: ['x'], files: [], resume: true, status: 'pending', createdAt: new Date().toISOString() });
   ok(model(quiet).chat.selected === 'beta', 'a question counts the same way');
+  // the most recently active one, when nothing waits and nothing runs
+  const recent = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-attn-')); for (const a of ['alpha', 'beta', 'gamma']) { w(recent, `.github/agents/${a}.agent.md`, agentFile(a)); }
+  const endRun = (chain, agent, minutesAgo) => { Q.audit(recent, chain, { type: 'start', agent, from: 'schedule', task: 'x', ts: new Date(Date.now() - (minutesAgo + 1) * 60000).toISOString() }); Q.audit(recent, chain, { type: 'end', agent, step: 1, status: 'done', summary: 'ok', outputs: [], ts: new Date(Date.now() - minutesAgo * 60000).toISOString() }); };
+  endRun('r1', 'alpha', 300); endRun('r2', 'gamma', 10); endRun('r3', 'beta', 120);
+  ok(model(recent).chat.agents.map(a => a.name).join() === 'gamma,beta,alpha' && model(recent).chat.selected === 'gamma', 'with nothing waiting or working, the rest are by latest activity and the newest is opened');
+  // working goes before idle; needing you goes before working, the longest wait first
+  const rows = model(recent, { active: ['beta'] }).chat;
+  ok(rows.agents[0].name === 'beta' && rows.selected === 'beta', 'a working mate is first, and opened, when nothing waits');
+  const stamp = min => new Date(Date.now() - min * 60000).toISOString();
+  Q.saveGate(recent, { id: 'old', kind: 'question', agent: 'alpha', itemId: 'i', chainId: 'c', title: 'Old one', body: 'b', files: [], resume: true, status: 'pending', createdAt: stamp(90) });
+  Q.saveGate(recent, { id: 'new', kind: 'approval', agent: 'gamma', itemId: 'i', chainId: 'c', title: 'New one', body: 'b', command: 'x', files: [], resume: true, status: 'pending', createdAt: stamp(5) });
+  const m2 = model(recent, { active: ['beta'] });
+  ok(m2.chat.agents.map(a => a.name).join() === 'alpha,gamma,beta' && m2.chat.selected === 'alpha', 'mates that need you come first (waiting longest on top), then working ones, then the rest');
+  ok(m2.pending.map(g => g.id).join() === 'old,new' && dom(renderBody(m2)).querySelector('.state.wait').dataset.agent === 'alpha' && /2 need you/.test(dom(renderBody(m2)).querySelector('.state.wait').textContent), 'the header pill goes to the mate with the oldest wait');
+  ok(model(recent, { agent: 'gamma' }).chat.selected === 'gamma' && model(recent, { agent: 'nobody' }).chat.selected === 'alpha', 'a choice is kept; an unknown one falls back to the opening rule');
+  Q.saveGate(recent, { id: 'old2', kind: 'question', agent: 'alpha', itemId: 'i', chainId: 'c', title: 'Second for alpha', body: 'b', files: [], resume: true, status: 'pending', createdAt: stamp(60) });
+  ok(model(recent).chat.gates.map(g => g.id).join() === 'old,old2', 'a mate\'s waiting items are in the order they were asked');
+}
+
+console.log('tasks in the mate header');
+{
+  const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-attn-')); for (const a of ['alpha', 'beta']) { w(R, `.github/agents/${a}.agent.md`, agentFile(a)); }
+  w(R, '.loop/tasks/t1.json', JSON.stringify({ id: 't1', title: 'Investigate payments error-rate spike', state: 'open', holders: ['alpha'], next: { alpha: 'Wait for the rollback decision' }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), log: [] }));
+  const head = name => dom(renderBody(model(R, { agent: name }))).querySelector('.chat-head');
+  ok(/Working on: Investigate payments error-rate spike — next: Wait for the rollback decision/.test(head('alpha').querySelector('.ch-task').textContent) && head('alpha').querySelector('.ch-task [data-close-task="t1"]'), 'the mate holding a task shows one line for it, with the next step and a Drop button');
+  ok(!head('beta').querySelector('.ch-task'), 'a mate without an open task shows nothing');
 }
 
 console.log('the approval card fits one screen');
@@ -118,9 +122,9 @@ console.log('the approval card fits one screen');
   Q.saveGate(R, { id: 'ap1', kind: 'approval', agent: 'beta', itemId: 'i', chainId: 'c', title: 'Publish the report', body: 'Posts the report to the channel.', command: 'bash post.sh', files: ['.loop/outbox/d.md'], resume: true, status: 'pending', createdAt: new Date().toISOString() });
   const card = () => dom(renderBody(model(R, { agent: 'beta' }))).querySelector('[data-gate="ap1"]');
   const c = card();
-  const order = [...c.querySelectorAll('.card-title, .body, pre.cmd, [data-reject], [data-approve], details.gatefiles')].map(x => x.matches('.card-title') ? 'title' : x.matches('.body') ? 'body' : x.matches('pre.cmd') ? 'cmd' : x.matches('[data-reject]') ? 'reject' : x.matches('[data-approve]') ? 'approve' : 'files');
+  const order = [...c.querySelectorAll('.card-title, .body, pre.cmd, [data-reject-open], [data-approve], details.gatefiles')].map(x => x.matches('.card-title') ? 'title' : x.matches('.body') ? 'body' : x.matches('pre.cmd') ? 'cmd' : x.matches('[data-reject-open]') ? 'reject' : x.matches('[data-approve]') ? 'approve' : 'files');
   ok(order.join() === 'title,body,cmd,files,reject,approve', 'title, short note, exact command, the one line naming the files, then both buttons');
-  ok(!c.querySelector('textarea') && c.querySelector('[data-copy="bash post.sh"]') && /beta/.test(c.querySelector('.meta').textContent), 'no text box, a copy button for the command, and the mate\'s name');
+  ok(c.querySelectorAll('textarea').length === 1 && c.querySelector('[data-reject-box] textarea') && c.querySelector('[data-reject-box]').classList.contains('hidden') && c.querySelector('[data-copy="bash post.sh"]') && /beta/.test(c.querySelector('.meta').textContent), 'the only text field is the hidden reject reason; a copy button for the command, and the mate\'s name');
   const fold = c.querySelector('details.gatefiles');
   ok(!fold.open && /Also covers: d\.md/.test(fold.querySelector('summary').textContent) && !/Nothing but this exact command/.test(c.textContent) && fold.querySelector('[data-hash-for=".loop/outbox/d.md"]') && fold.querySelector('[data-open=".loop/outbox/d.md"]') && /covers the files shown/.test(fold.textContent), 'the files are named in one line and folded, with their hash kept, and say what approval covers');
   ok(/Runs as you, not in a sandbox/.test(c.textContent) && !/Runs as you/.test(fold.textContent), 'the first approval carries the one-time note about running as you, outside the fold');
@@ -128,7 +132,7 @@ console.log('the approval card fits one screen');
   ok(model(R).firstApproval === false && !/Runs as you/.test(card().textContent), 'once an approval was decided the note is not shown again');
   Q.saveGate(R, { id: 'ap2', kind: 'approval', agent: 'beta', itemId: 'i', chainId: 'c', title: 'Second', body: 'b', command: 'x', files: [], resume: true, status: 'pending', createdAt: new Date(Date.now() - 60000).toISOString() });
   const d2 = dom(renderBody(model(R, { agent: 'beta' })));
-  ok(d2.querySelector('[data-gate="ap1"]') && !d2.querySelector('[data-gate="ap2"]') && d2.querySelector('[data-queued="ap2"]') && !d2.querySelector('[data-gate="ap1"] details.gatefiles[open]'), 'with two (newest first, as the lists show them), the first is the card and the second waits behind it');
+  ok(d2.querySelector('[data-gate="ap2"]') && !d2.querySelector('[data-gate="ap1"]') && d2.querySelector('[data-queued="ap1"]') && !d2.querySelector('[data-gate="ap2"] details.gatefiles[open]'), 'with two, the one asked first is the card and the later one waits behind it');
 }
 
 console.log('results first');
@@ -137,16 +141,11 @@ console.log('results first');
   w(R, '.loop/outbox/alpha/today.md', '# Daily report\nx');
   Q.audit(R, 'ca', { type: 'start', agent: 'alpha', from: 'schedule', task: 'Report' });
   Q.audit(R, 'ca', { type: 'end', agent: 'alpha', step: 2, status: 'done', summary: 'Report written', outputs: ['.loop/outbox/alpha/today.md', 'src/x.ts'] });
-  const m = model(R, { tab: 'overview' });
+  const m = model(R);
   ok(m.outputs.alpha.path === '.loop/outbox/alpha/today.md' && !m.outputs.beta && m.latest.agent === 'alpha', 'the model knows each mate\'s latest output and the newest of all');
-  const d = dom(renderBody(m));
-  const run = [...d.querySelectorAll('details.run')].find(r => /alpha/.test(r.querySelector('.run-agent').textContent));
-  const link = run.querySelector('summary a.deliv[data-open=".loop/outbox/alpha/today.md"]');
-  ok(link && link.querySelector('.dname').textContent === 'today.md' && /alpha/.test(link.querySelector('.ddir').textContent), 'a finished run lists its file under its summary: name, folder, one click to open');
-  const mate = [...d.querySelectorAll('.agent')].find(a => /alpha/.test(a.querySelector('.agent-name').textContent));
-  ok(/Latest output: today\.md/.test(mate.textContent) && mate.querySelector('.lastout [data-open=".loop/outbox/alpha/today.md"]') && !/Latest output/.test([...d.querySelectorAll('.agent')].find(a => /beta/.test(a.querySelector('.agent-name').textContent)).textContent), 'a mate card says its latest output, and says nothing for a mate with none');
-  ok(!/Latest:/.test(d.querySelector('.bar').textContent) && !d.querySelector('.bar [data-open]'), 'the top bar carries no Latest button: the file is on the mate card');
-  ok(!/Latest:/.test(dom(renderBody(model(world(), { tab: 'overview' }))).querySelector('.bar').textContent), 'with no output yet the button is hidden');
+  const bar = dom(renderBody(m)).querySelector('.bar');
+  ok(!/Latest/.test(bar.textContent) && !bar.querySelector('[data-open]'), 'the top bar carries no Latest button: the file is in the mate\'s header');
+  ok(!/Latest output/.test(dom(renderBody(model(R, { agent: 'beta' }))).querySelector('.chat-head').textContent), 'a mate with no output says nothing about one');
   const chat = dom(renderBody(model(R, { agent: 'alpha' })));
   ok(/Latest output: today\.md/.test(chat.querySelector('.chat-head').textContent) && chat.querySelector('.rcard .rdelivs [data-open=".loop/outbox/alpha/today.md"]'), 'the conversation head and the run block in it show the file too');
   Q.audit(R, 'cs', { type: 'start', agent: 'alpha', from: 'schedule', task: 'Code' });

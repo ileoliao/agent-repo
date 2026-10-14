@@ -81,14 +81,18 @@ export type ThreadEvent =
   | { kind: 'steps'; ts: string; steps: ThreadStep[] }
   | { kind: 'status'; ts: string; label: string; tone: Tone; detail?: string; chainId: string; outputs?: string[] }
   /** How a run ended, as one card: the key result. `detail` is the full finish summary. */
-  | { kind: 'result'; ts: string; chainId: string; status: string; label: string; tone: Tone; goal?: string; detail?: string; next?: string; handoff?: { to: string; task: string }; deliverables: { path: string; preview?: string }[]; supporting: string[]; approvals?: string[];
+  | { kind: 'result'; ts: string; chainId: string; status: string; label: string; tone: Tone; /** Why the run ended this way, for the label's hover text. */ why?: string; goal?: string; detail?: string; next?: string; handoff?: { to: string; task: string }; deliverables: { path: string; preview?: string }[]; supporting: string[]; /** One line per question or approval settled during the run: "You approved: Roll back payments-service". */ approvals?: string[];
       /** Everything the run did, folded behind the card: today's detailed view, one click away. */
       fold: ThreadEvent[]; stepCount: number; problems: { refused: number; error: number; failed: number } }
-  | { kind: 'answer'; ts: string; title: string; text: string; tone: Tone };
+  | { kind: 'answer'; ts: string; title: string; text: string; tone: Tone; decision: 'answered' | 'executed' | 'failed' | 'rejected' };
 
-const END_LABEL: Record<string, [string, Tone]> = {
-  done: ['Finished', 'ok'], open: ['Not finished: continues later', 'info'], blocked: ['Blocked', 'warn'], nothing_to_do: ['Checked, nothing found', 'mute'], max_steps: ['Reached its step limit', 'warn'],
-  stalled: ['Stopped: going in circles or out of time', 'bad'], cancelled: ['Cancelled', 'mute'], error: ['Failed', 'bad']
+/**
+ * One vocabulary for how a run ended: Done, Nothing new, Blocked, Failed (error, step limit, stalled), Stopped (cancelled, interrupted).
+ * `open` is not an ending: the task goes on later. The third item is the longer reason, shown as hover text.
+ */
+export const END_LABEL: Record<string, [string, Tone, string?]> = {
+  done: ['Done', 'ok'], open: ['Continues later', 'info'], blocked: ['Blocked', 'warn', 'It could not go on without something from you.'], nothing_to_do: ['Nothing new', 'mute', 'Checked, nothing found.'],
+  max_steps: ['Failed', 'warn', 'It reached its step limit.'], stalled: ['Failed', 'bad', 'It went in circles or ran out of time.'], cancelled: ['Stopped', 'mute'], interrupted: ['Stopped', 'mute', 'Stopped mid-run.'], error: ['Failed', 'bad']
 };
 
 
@@ -131,12 +135,24 @@ function gateAnswer(root: string, e: any): Extract<ThreadEvent, { kind: 'answer'
   const g = getGate(root, String(e.gateId));
   const title = g?.title ?? 'a request';
   const out = String(e.outcome ?? '');
+  const feedback = /Feedback: ([^\n]+)/.exec(out)?.[1] ?? '';
   switch (e.status) {
-    case 'answered': return { kind: 'answer', ts: e.ts, title, text: out.replace(/^The human answered:\s*/, ''), tone: 'info' };
-    case 'executed': return { kind: 'answer', ts: e.ts, title, text: 'Approved, and the command ran.', tone: 'ok' };
-    case 'failed': return { kind: 'answer', ts: e.ts, title, text: 'Approved, but the command failed.', tone: 'bad' };
-    case 'rejected': return { kind: 'answer', ts: e.ts, title, text: 'Rejected.' + (/Feedback: ([^\n]+)/.exec(out) ? ` ${/Feedback: ([^\n]+)/.exec(out)![1]}` : ''), tone: 'warn' };
+    case 'answered': return { kind: 'answer', ts: e.ts, title, text: out.replace(/^The human answered:\s*/, ''), tone: 'info', decision: 'answered' };
+    case 'executed': return { kind: 'answer', ts: e.ts, title, text: 'The command ran.', tone: 'ok', decision: 'executed' };
+    case 'failed': return { kind: 'answer', ts: e.ts, title, text: 'The command failed.', tone: 'bad', decision: 'failed' };
+    case 'rejected': return { kind: 'answer', ts: e.ts, title, text: feedback, tone: 'warn', decision: 'rejected' };
     default: return undefined;
+  }
+}
+
+/** The one-line record of a settled question or approval, for the run's card. */
+function decisionLine(a: Extract<ThreadEvent, { kind: 'answer' }>): string {
+  const t = clip(a.title, 100);
+  switch (a.decision) {
+    case 'answered': return `You answered: ${t}${a.text ? ` — ${clip(firstLine(a.text), 80)}` : ''}`;
+    case 'executed': return `You approved: ${t}`;
+    case 'failed': return `You approved: ${t} (the command failed)`;
+    default: return `You rejected: ${t}${a.text ? ` — ${clip(firstLine(a.text), 80)}` : ''}`;
   }
 }
 
@@ -153,7 +169,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
     // What the card for this run's end needs, gathered between its start and its end.
     let runBlocks: Extract<ThreadEvent, { kind: 'steps' }>[] = [];
     let goal: string | undefined, next: string | undefined, handoff: { to: string; task: string } | undefined, wrote: string[] = [];
-    let approvals: { ev: ThreadEvent; text: string }[] = [];
+    let approvals: string[] = [];
     let errEv: { ev: ThreadEvent; message: string } | undefined;
     let runStart = 0;
     const resetRun = () => { runBlocks = []; goal = next = handoff = errEv = undefined; wrote = []; approvals = []; };
@@ -190,10 +206,10 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
       } else if (e.type === 'model') {
         if (typeof e.text === 'string' && e.text.trim()) { events.push({ kind: 'agent', ts: e.ts, text: clip(e.text.trim(), 1500), step: Number(e.step) || 0 }); }
       } else if (e.type === 'park') {
-        events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'warn', label: 'Waiting for you' });
+        events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'warn', label: 'Needs you' });
       } else if (e.type === 'end') {
         const st = String(e.status);
-        const [label, tone] = END_LABEL[st] ?? [st, 'mute' as Tone];
+        const [label, tone, why] = END_LABEL[st] ?? [st, 'mute' as Tone];
         const outputs = Array.isArray(e.outputs) && e.outputs.length ? e.outputs.map(String) : [...new Set(wrote)];
         const split = splitOutputs(Array.isArray(e.deliverables) ? e.deliverables.map(String) : undefined, outputs);
         const summary = e.summary ? clip(String(e.summary), 1200) : undefined;
@@ -204,19 +220,19 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
         const count = (re: RegExp) => bad.filter(x => re.test(x.detail ?? '')).length;
         const problems = { refused: count(/^REFUSED/), error: count(/^ERROR/), failed: 0 };
         problems.failed = bad.length - problems.refused - problems.error;
-        events.push({ kind: 'result', ts: e.ts, chainId: c.chainId, status: st, label, tone, goal,
-          detail: [summary, msg].filter(Boolean).join('\n') || undefined, next: st === 'open' ? next : undefined, handoff, deliverables: split.deliverables.map(d => ({ path: d, preview: previewOf(root, d) })), supporting: split.supporting, approvals: approvals.length ? approvals.map(a => a.text) : undefined,
+        events.push({ kind: 'result', ts: e.ts, chainId: c.chainId, status: st, label, tone, why, goal,
+          detail: [summary, msg].filter(Boolean).join('\n') || undefined, next: st === 'open' ? next : undefined, handoff, deliverables: split.deliverables.map(d => ({ path: d, preview: previewOf(root, d) })), supporting: split.supporting, approvals: approvals.length ? approvals : undefined,
           fold, stepCount: fold.reduce((n2, f) => n2 + (f.kind === 'steps' ? f.steps.length : 0), 0), problems });
         resetRun();
       } else if (e.type === 'error') {
-        const ev: ThreadEvent = { kind: 'status', ts: e.ts, chainId: c.chainId, tone: e.cancelled ? 'mute' : 'bad', label: e.cancelled ? 'Cancelled' : 'Error', detail: clip(String(e.message ?? ''), 300) };
+        const ev: ThreadEvent = { kind: 'status', ts: e.ts, chainId: c.chainId, tone: e.cancelled ? 'mute' : 'bad', label: e.cancelled ? 'Stopped' : 'Failed', detail: clip(String(e.message ?? ''), 300) };
         events.push(ev);
         errEv = { ev, message: clip(String(e.message ?? ''), 300) };
       } else if (e.type === 'retry') {
         events.push({ kind: 'status', ts: e.ts, chainId: c.chainId, tone: 'warn', label: `Will be retried (${e.reason})` });
       } else if (e.type === 'gate') {
         const a = gateAnswer(root, e);
-        if (a) { events.push(a); if (e.status === 'executed' || e.status === 'failed') { approvals.push({ ev: a, text: `${a.title}: ${a.text}` }); } }
+        if (a) { events.push(a); approvals.push(decisionLine(a)); }
       }
     }
     flush();
@@ -291,7 +307,7 @@ export function glance(root: string, agent: string, description: string, active?
   } else if (cs.state === 'waiting') {
     avatar = 'waiting';
     const g = listGates(root).find(x => x.agent === agent && x.status === 'pending');
-    line = g ? `Needs you: ${clip(g.title, 70)}` : 'Waiting for you';
+    line = g ? `Needs you: ${clip(g.title, 70)}` : 'Needs you';
     at = g?.createdAt;
   } else if (cs.state === 'queued') {
     const q = queuedItems(root, agent)[0];

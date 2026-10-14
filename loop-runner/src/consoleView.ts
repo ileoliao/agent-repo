@@ -30,23 +30,23 @@ const COMMANDS: Record<string, string> = {
   startTeam: 'harborMate.startTeam',
   stopTeam: 'harborMate.stopTeam',
   runAgent: 'harborMate.runAgent',
-  openLatestResult: 'harborMate.openLatestResult',
   getStarted: 'harborMate.getStarted',
   describeAgent: 'harborMate.describeAgent',
   runDoctor: 'harborMate.runDoctor',
   showHealth: 'harborMate.showHealth',
   cleanUp: 'harborMate.cleanUp',
+  setSecret: 'harborMate.setSecret',
   pauseAgent: 'harborMate.pauseAgent',
   resumeAgent: 'harborMate.resumeAgent'
 };
 
-/** Webview console: one page with what needs you, the agents, and what each run did. */
+/** Webview console: one page, the roster of mates beside the conversation with the selected one. */
 export class ConsolePanel {
   private panel?: vscode.WebviewPanel;
   /** Gates whose approved command is running now: a second click must not run it again. */
   private inFlight = new Set<string>();
-  /** Which page is showing and which agent's conversation; set by the page, kept here so a refresh does not reset it. */
-  private view: { tab: 'chat' | 'overview'; agent?: string } = { tab: 'chat' };
+  /** Which mate's conversation is showing; set by the page, kept here so a refresh does not reset it. */
+  private view: { agent?: string } = {};
   private lastHtml = '';
 
   constructor(private a: ConsoleActions) {}
@@ -59,16 +59,17 @@ export class ConsolePanel {
     return undefined;
   }
 
-  show(): void {
+  /** Open the console, on one mate's conversation when `agent` is given (a notification's Open button). */
+  show(agent?: string): void {
+    if (agent) { this.view = { agent }; }
     if (this.panel) { this.panel.reveal(); this.refresh(true); return; }
-    const panel = vscode.window.createWebviewPanel('harborMate.console', 'Harbor Mate Console', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
+    // A freshly opened console starts where the longest wait is (see `consoleModel`), unless a mate was asked for.
+    if (!agent) { this.view = {}; }
+    const panel = vscode.window.createWebviewPanel('harborMate.console', 'Harbor Mate', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
     this.panel = panel;
     this.lastHtml = '';
     panel.onDidDispose(() => { this.panel = undefined; this.lastHtml = ''; });
     panel.onDidChangeViewState(() => { if (panel.visible) { this.refresh(true); } });
-    // Opening with something waiting lands on the Chat of the mate behind the first to-do (the model picks it when no mate is chosen).
-    // Anything the person switches to afterwards is kept by `view`, so a refresh never takes it away.
-    if (this.todos(this.model()) > 0) { this.view = { tab: 'chat' }; }
     const model = this.model();
     panel.webview.html = renderPage(model, crypto.randomBytes(16).toString('hex'), panel.webview.cspSource);
     this.title(this.todos(model));
@@ -92,19 +93,22 @@ export class ConsolePanel {
   private todos(m: ConsoleModel): number { return m.pending.length + (m.blocked ?? []).length; }
 
   private title(pending: number): void {
-    if (this.panel) { this.panel.title = pending ? `Harbor Mate Console (${pending})` : 'Harbor Mate Console'; }
+    if (this.panel) { this.panel.title = pending ? `Harbor Mate (${pending})` : 'Harbor Mate'; }
   }
 
   private model(): ConsoleModel {
     const r = this.a.root();
     if (!r) {
-      return { tab: this.view.tab, running: false, next: undefined, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
+      return { running: false, next: undefined, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
         note: { tone: 'info', text: 'Open a folder in VS Code to use Harbor Mate.' } };
     }
     try {
-      return { ...consoleModel(r, { ...this.a.state(), tab: this.view.tab, agent: this.view.agent, defaultPolicy: this.a.defaultPolicy?.() }), copilot: this.a.copilotModels?.() };
+      const model = consoleModel(r, { ...this.a.state(), agent: this.view.agent, defaultPolicy: this.a.defaultPolicy?.() });
+      // The choice made by the opening rule sticks: a mate that starts needing you later does not pull the page away (the header pill does that, on a click).
+      if (!this.view.agent && model.chat?.selected) { this.view = { agent: model.chat.selected }; }
+      return { ...model, copilot: this.a.copilotModels?.() };
     } catch (e: any) {
-      return { tab: this.view.tab, running: this.a.state().running, active: this.a.state().active, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
+      return { running: this.a.state().running, active: this.a.state().active, pending: [], agents: [], runs: [], updatedAt: new Date().toISOString(),
         note: { tone: 'bad', text: `Could not read .loop data: ${e?.message ?? e}. Showing nothing rather than something stale.` } };
     }
   }
@@ -139,7 +143,7 @@ export class ConsolePanel {
         }
         case 'reject': this.a.reject(String(m.id), String(m.feedback ?? '')); setUiFlag(r, 'approvalNoteSeen'); break;
         case 'view':
-          this.view = { tab: m.tab === 'overview' ? 'overview' : 'chat', agent: typeof m.agent === 'string' && m.agent ? m.agent : this.view.agent };
+          this.view = { agent: typeof m.agent === 'string' && m.agent ? m.agent : this.view.agent };
           break;
         case 'allowCommand': {
           const agent = String(m.agent ?? ''), command = String(m.command ?? '');
