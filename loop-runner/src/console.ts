@@ -169,6 +169,13 @@ export function sortRoster<T extends { name: string; state: ChatState; needsYou:
     || a.name.localeCompare(b.name));
 }
 
+/** How many things wait on the human: open questions and approvals plus undismissed blocked commands. The header pill and the status bar both use this. */
+export function needsYouCount(root: string, defaultPolicy?: string): number {
+  const pending = listGates(root).filter(g => g.status === 'pending').length;
+  const runs: ConsoleRun[] = recentRuns(root, 40).slice(0, 10).map(r => ({ ...r, steps: stepsOf(r.file) }));
+  return pending + blockedOf(root, runs, defaultPolicy).length;
+}
+
 export function consoleModel(root: string, state: { running: boolean; active?: Active; agent?: string; defaultPolicy?: string; /** Ignored: the Overview page is gone, and an old saved value must not matter. */ tab?: unknown }, now = new Date(), runLimit = 10): ConsoleModel {
   const agents = agentRows(root, state.active, now);
   const nw = nextWake(agents);
@@ -268,7 +275,7 @@ const btn = (label: string, attrs: string, kind = '', ic = '') => `<button class
 const copy = (text: string, label: string) => `<button class="btn ghost" data-copy="${esc(text)}" aria-label="Copy ${esc(label)}" title="Copy ${esc(label)}">${icon('copy')}</button>`;
 
 /** Mate name, kind and age: the line every to-do card (question, approval, blocked command) opens with. */
-const todoMeta = (agent: string, kind: string, at: string, tip = '') => `<div class="meta"><span class="tag">${esc(agent)}</span><span${tip ? ` title="${esc(tip)}"` : ''}>${esc(kind)}</span><span>${stamp(at, ago(at))}</span></div>`;
+const todoMeta = (kind: string, at: string, tip = '') => `<div class="meta"><span${tip ? ` title="${esc(tip)}"` : ''}>${esc(kind)}</span><span>${stamp(at, ago(at))}</span></div>`;
 
 /**
  * A question or an approval, as a card. The composer at the bottom of the chat answers a question;
@@ -277,7 +284,7 @@ const todoMeta = (agent: string, kind: string, at: string, tip = '') => `<div cl
 function gateCard(g: GateView, note = false): string {
   const isQ = g.kind === 'question';
   const head = `<div class="card-head">${icon(isQ ? 'help' : 'bell', 'lead warn')}<div class="grow"><div class="card-title">${esc(g.title)}</div>
-    ${todoMeta(g.agent, isQ ? 'Question' : 'Approval', g.createdAt, `Asked in run ${g.chainId}.`)}</div></div>`;
+    ${todoMeta(isQ ? 'Question' : 'Approval', g.createdAt, `Asked in run ${g.chainId}.`)}</div></div>`;
   const previews = g.previews ?? [];
   const missing = previews.filter(p => p.sha256 === 'missing').map(p => p.path);
   const files = previews.map(p => `<details class="file" open data-k="f-${esc(g.id)}-${esc(p.path)}"><summary>${icon('chevron', 'chev')}${icon('file')}<span class="mono grow">${esc(p.path)}</span>${p.truncated ? '<span class="muted">first part shown</span>' : ''}</summary>
@@ -298,9 +305,8 @@ function gateCard(g: GateView, note = false): string {
     <div class="note">${truncated ? 'Approval covers the whole of each file; open a long one to read it all.' : 'Approval covers the files shown.'}</div>${files}</details>` : '';
   return `<section class="card attention approval" data-gate="${esc(g.id)}" aria-label="Approval requested by ${esc(g.agent)}">${head}${g.body ? `<p class="body brief" title="${esc(g.body)}">${esc(g.body)}</p>` : ''}
     <div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(g.command ?? '')}</pre>${copy(g.command ?? '', 'command')}</div>${alerts}
-    ${fold}<div class="row actions" data-actions>${btn('Reject', `data-reject-open="${esc(g.id)}" title="Say no, and optionally why"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div>
-    <div class="rejectbox hidden" data-reject-box><textarea rows="1" data-input="reject:${esc(g.id)}" placeholder="Why? (optional)" aria-label="Why are you rejecting this? (optional)"></textarea><div class="row actions">${btn('Cancel', `data-reject-cancel="${esc(g.id)}"`, 'secondary')}${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary danger', 'x')}</div></div>
-    ${note ? `<div class="note">Runs as you, not in a sandbox.</div>` : ''}</section>`;
+    ${fold}${note ? `<div class="note muted">Runs as you, not in a sandbox.</div>` : ''}<div class="row actions" data-actions>${btn('Reject', `data-reject-open="${esc(g.id)}" title="Say no, and optionally why"`, 'secondary danger', 'x')}${btn('Approve and run', `data-approve="${esc(g.id)}"${missing.length ? ' disabled' : ''}`, 'primary', 'check')}</div>
+    <div class="rejectbox hidden" data-reject-box><textarea rows="1" data-input="reject:${esc(g.id)}" placeholder="Why? (optional)" aria-label="Why are you rejecting this? (optional)"></textarea><div class="row actions">${btn('Cancel', `data-reject-cancel="${esc(g.id)}"`, 'secondary')}${btn('Reject', `data-reject="${esc(g.id)}"`, 'secondary danger', 'x')}</div></div></section>`;
 }
 
 /** A question or approval that comes after the one being handled: seen in order, decided in order. */
@@ -308,8 +314,8 @@ const gateQueued = (g: GateView) => `<div class="card queued" data-queued="${esc
 
 /** A refused command that no rule allowed: shaped like an approval, with Allow and Dismiss. */
 function blockedCard(b: BlockedView): string {
-  return `<section class="card attention blocked" data-blocked="${esc(b.id)}" aria-label="Blocked command from ${esc(b.agent)}"><div class="card-head">${icon('alert', 'lead warn')}<div class="grow"><div class="card-title">${esc(b.agent)} was blocked from running a command</div>
-    ${todoMeta(b.agent, 'Blocked command', b.at, `Refused in run ${b.chainId}.`)}</div></div>
+  return `<section class="card attention blocked" data-blocked="${esc(b.id)}" aria-label="Blocked command from ${esc(b.agent)}"><div class="card-head">${icon('alert', 'lead warn')}<div class="grow"><div class="card-title">Blocked from running a command</div>
+    ${todoMeta('Blocked command', b.at, `Refused in run ${b.chainId}.`)}</div></div>
     <p class="body brief">Allow this exact command for ${esc(b.agent)} only.</p>
     <div class="cmdrow"><pre class="code cmd" tabindex="0">${esc(b.command)}</pre>${copy(b.command, 'command')}</div>
     <div class="row actions">${btn('Dismiss', `data-dismiss-agent="${esc(b.agent)}" data-dismiss-cmd="${esc(b.command)}" title="Stop asking about this command"`, 'secondary', 'x')}${btn('Allow', `data-allow-agent="${esc(b.agent)}" data-allow-cmd="${esc(b.command)}" title="Adds this exact command for ${esc(b.agent)} only. Anything else it tries is still checked against the policy."`, 'primary', 'check')}</div></section>`;
@@ -518,7 +524,7 @@ function taskLines(tasks: Task[], name: string): string {
   return tasks.map(t => {
     const next = t.next?.[name];
     const full = `${t.title}${next ? ` — next: ${next}` : ''}`;
-    return `<div class="ch-task" data-task="${esc(t.id)}"><span title="${esc(full)}"><span class="muted">Working on:</span> ${esc(clip(t.title, 90))}${next ? ` <span class="muted">— next: ${esc(clip(next, 90))}</span>` : ''}</span><button class="linkbtn" data-close-task="${esc(t.id)}" title="Stop tracking this task. Mates holding it let go of it; nothing is deleted.">Drop</button></div>`;
+    return `<div class="ch-task" data-task="${esc(t.id)}"><span class="ell" title="${esc(full)}"><span class="muted">Working on:</span> ${esc(clip(t.title, 90))}${next ? ` <span class="muted">— next: ${esc(clip(next, 90))}</span>` : ''}</span><button class="linkbtn" data-close-task="${esc(t.id)}" title="Stop tracking this task. Mates holding it let go of it; nothing is deleted.">Drop</button></div>`;
   }).join('');
 }
 
@@ -572,7 +578,7 @@ function renderChat(m: ConsoleModel): string {
   return `<div class="chat">
     <nav class="roster" aria-label="Mates">${list}</nav>
     <section class="chat-main" aria-label="Conversation with ${esc(sel.name)}">
-      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(stateWord(sel))}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}${tasks}${latestLine(m.outputs?.[sel.name])}</div>${chatActions(sel, m.copilot === 0)}</header>
+      <header class="chat-head">${avatar(sel.name, sel.avatar, 34)}<div class="grow"><div class="ch-name">${esc(sel.name)}</div><div class="muted ch-sub" title="${esc(sel.line)}">${esc(stateWord(sel))}${sel.state === 'running' ? ` · ${esc(sel.line)}` : ''}</div>${chatFacts(sel)}${latestLine(m.outputs?.[sel.name])}</div>${chatActions(sel, m.copilot === 0)}</header>${tasks ? `<div class="ch-tasks">${tasks}</div>` : ''}
       <div class="thread" data-thread="${esc(sel.name)}" tabindex="0" aria-live="polite">${todo ? `<button class="pinned" data-jump=".thread-gates" title="Scroll to what ${esc(sel.name)} is asking">${icon('bell')}<span><b>${esc(sel.name)}</b> needs you: ${esc(clip(first ? first.title : `blocked: ${blocked[0].command}`, 60))}${todo > 1 ? ` and ${todo - 1} more` : ''}</span><span class="pin-go">Jump</span></button>` : ''}${c.hidden ? `<div class="muted center">${c.hidden} earlier event${c.hidden === 1 ? '' : 's'} not shown</div>` : ''}${events}${empty0}${working}${gates}</div>
       <div class="composer ${running ? 'running' : ''}">${hint ? `<div class="muted hint">${esc(hint)}</div>` : ''}
         <div class="inputbar"><textarea rows="1" data-input="chat:${esc(sel.name)}" data-chat-input="${esc(sel.name)}"${first?.kind === 'question' ? ` data-answer-for="${esc(first.id)}"` : ''} aria-label="${word} ${esc(sel.name)}" placeholder="${word} ${esc(sel.name)}…"></textarea>`
@@ -696,8 +702,8 @@ time{font-weight:400}
 .rtop{display:flex;align-items:center;gap:8px;min-width:0}.rtop .chip{font-size:.82em;padding:0 7px;font-weight:500;flex:none}.rtop .chip.info,.rtop .chip.ok{color:var(--vscode-descriptionForeground)}
 .rgoal{flex:1;min-width:0;color:var(--vscode-descriptionForeground)}.rgoal.ell,.rcard .ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rtop .stime{margin-left:auto;font-size:.88em;color:var(--vscode-descriptionForeground)}
 .rquiet{margin-left:38px;padding-left:12px;font-size:.88em;min-width:0}.rprob{margin-top:3px;color:var(--warn-text);font-size:.9em}
-.rfold{margin-top:6px;color:var(--vscode-descriptionForeground);font-size:.95em}.rfold>summary{padding:3px 10px 3px 6px;width:fit-content;max-width:100%;display:flex;gap:8px;align-items:center;border:1px solid var(--vscode-panel-border);border-radius:999px;cursor:pointer}.rfold>summary:hover{background:var(--vscode-list-hoverBackground)}.fold-label{color:var(--vscode-foreground);font-weight:600}.fold-gist{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rfold-body{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px -50px;padding-left:0;color:var(--vscode-foreground);font-size:1.08em}
-.rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
+.rfold{margin-top:6px;color:var(--vscode-descriptionForeground);font-size:.95em}.rfold>summary{padding:3px 10px 3px 6px;width:fit-content;max-width:100%;display:flex;gap:8px;align-items:center;border:1px solid var(--vscode-panel-border);border-radius:999px;cursor:pointer}.rfold>summary:hover{background:var(--vscode-list-hoverBackground)}.fold-label{color:var(--vscode-foreground);font-weight:600}.fold-gist{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rfold-body{display:flex;flex-direction:column;gap:12px;margin:8px 0 4px 0;padding-left:0;color:var(--vscode-foreground);font-size:1.08em}
+.rfold-body .steps,.rfold-body .sline,.rfold-body .rcard,.rfold-body .rquiet{margin-left:0;width:auto}.rsum{margin-top:4px;white-space:pre-wrap}.rline{margin-top:3px;color:var(--vscode-descriptionForeground)}.rline .rk{color:var(--vscode-foreground)}
 .rdelivs{display:flex;flex-direction:column;gap:4px;margin-top:6px}.deliv{display:flex;align-items:flex-start;gap:8px;min-width:0;padding:5px 8px;border-radius:6px;background:var(--vscode-input-background);color:var(--vscode-foreground);text-decoration:none}.deliv:hover{background:var(--vscode-list-hoverBackground)}.deliv svg{margin-top:2px;color:var(--vscode-textLink-foreground);flex:none}
 .dtext{display:flex;flex-direction:column;min-width:0;flex:1}.dline{display:flex;gap:8px;align-items:baseline;min-width:0}.dname{font-weight:600;color:var(--vscode-textLink-foreground);flex:none;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ddir{color:var(--vscode-descriptionForeground);font-size:.88em;min-width:0}.dprev{color:var(--vscode-descriptionForeground);font-size:.92em}
 .rsup{margin-top:4px;color:var(--vscode-descriptionForeground);font-size:.9em}.rsup>summary{padding:1px 0;width:fit-content}
@@ -705,7 +711,7 @@ time{font-weight:400}
 .sline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-left:38px;font-size:.88em;color:var(--vscode-descriptionForeground)}
 .sline .chip.info{color:var(--vscode-descriptionForeground)}.sline .chip{font-size:.82em;padding:0 7px;font-weight:500}.sline .sdetail{color:var(--vscode-foreground);min-width:0;flex:1 1 200px}.sline .stime{margin-left:auto;font-size:.9em}
 .thread-gates{width:100%;margin-top:6px}.thread-gates .card{margin-bottom:8px}
-.ch-task{display:flex;gap:10px;align-items:baseline;font-size:.88em;margin-top:2px;min-width:0}.ch-task>span{flex:1;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}.linkbtn{all:unset;box-sizing:border-box;cursor:pointer;flex:none;color:var(--vscode-textLink-foreground);font-size:.95em}.linkbtn:hover{text-decoration:underline}.linkbtn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}.rejectbox{display:flex;flex-direction:column;gap:6px;margin-top:10px}.rejectbox textarea{width:100%;resize:vertical}.rejectbox .actions{margin-top:0}
+.ch-tasks{padding:6px 16px;border-bottom:1px solid var(--vscode-panel-border);display:flex;flex-direction:column;gap:2px}.ch-task{display:flex;gap:12px;align-items:baseline;font-size:.88em;min-width:0}.ch-task>.ell{flex:1;min-width:0}.linkbtn{all:unset;box-sizing:border-box;cursor:pointer;flex:none;color:var(--vscode-textLink-foreground);font-size:.95em}.linkbtn:hover{text-decoration:underline}.linkbtn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}.rejectbox{display:flex;flex-direction:column;gap:6px;margin-top:10px}.rejectbox textarea{width:100%;resize:vertical}.rejectbox .actions{margin-top:0}
 .composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.9em;margin:6px 6px 0}.row.wrap{margin-bottom:8px}
 .inputbar{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:24px;background:var(--vscode-input-background);padding:6px 8px 6px 16px}
 .inputbar:focus-within{border-color:var(--vscode-focusBorder)}

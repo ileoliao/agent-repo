@@ -74,7 +74,7 @@ ok(!threw, 'an id with a quote does not throw');
   const task = { id: 't"1', title: '<b>Watch backlog</b>', state: 'open', holders: ['a', 'b'], next: { a: 'wait for <i>b</i>' }, createdAt: now, updatedAt: now, log: [] };
   const other = { ...task, id: 't2', title: 'Only for b', holders: ['b'] };
   post(renderBody({ ...base, tasks: [task, other] }));
-  const line = d.querySelector('.chat-head [data-task]');
+  const line = d.querySelector('.ch-tasks [data-task]');
   ok(line && !line.querySelector('b') && !line.querySelector('i') && /Working on: <b>Watch backlog<\/b> — next: wait for <i>b<\/i>/.test(line.textContent), 'the selected mate\'s open task is one compact line in its header, escaped, with its next step');
   ok(d.querySelectorAll('[data-task]').length === 1, 'and only the tasks that mate holds');
   ok(/^Drop$/.test(line.querySelector('[data-close-task]').textContent.trim()), 'with a small Drop button');

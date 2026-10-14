@@ -18,7 +18,8 @@ import { ConsolePanel } from './consoleView';
 import { END_LABEL, chatState, conversationContext, markDelivered, pendingMessages, postHumanMessage, routeFor } from './thread';
 import { registerLoopChat } from './chat';
 import { recentRuns } from './runs';
-import { agentRows, nextWake, pendingCount, statusBar } from './status';
+import { agentRows, nextWake, statusBar } from './status';
+import { needsYouCount } from './console';
 
 const hhmm = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 import { createSimModel, simEnabled, simNow, simPauseMs, simTrace } from './sim-model';
@@ -554,7 +555,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   const refresh = () => {
     consolePanel?.refresh();
     const r = svc.root();
-    const n = pendingCount(r);
+    const n = r ? needsYouCount(r, svc.cfg().get<string>('policyFile', '.loop/policy.json')) : 0;
     const nw = r ? nextWake(agentRows(r, svc.activeAgents)) : undefined;
     const current = r && svc.activeAgent ? recentRuns(r, 5).find(x => x.status === 'running' && x.agent === svc.activeAgent) : undefined;
     const b = statusBar({ running: svc.running, pending: n, active: svc.activeAgents, step: current?.step, next: nw ? hhmm(nw.at) : undefined });
@@ -752,7 +753,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     if (folder) {
       fs.mkdirSync(path.join(folder, '.loop'), { recursive: true });
       fs.writeFileSync(path.join(folder, '.loop', 'sim-activation.json'), JSON.stringify({
-        bar: bar.text, pending: pendingCount(svc.root()), running: svc.running, willAutoStart
+        bar: bar.text, pending: svc.root() ? needsYouCount(svc.root()!) : 0, running: svc.running, willAutoStart
       }, null, 2));
     }
     void runSim().catch(async (e: any) => {

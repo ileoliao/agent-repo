@@ -5,7 +5,7 @@ const path = require('path');
 const assert = require('assert');
 const { JSDOM } = require('jsdom');
 const OUT = path.join(__dirname, '..', 'out');
-const { consoleModel, renderBody } = require(`${OUT}/console.js`);
+const { consoleModel, renderBody, needsYouCount } = require(`${OUT}/console.js`);
 const Q = require(`${OUT}/queue.js`);
 const { planAllowCommand } = require(`${OUT}/policyEdit.js`);
 const { applyChange } = require(`${OUT}/manage.js`);
@@ -39,7 +39,18 @@ console.log('a blocked command is a to-do, and counts everywhere');
   ok(/1 needs you/.test(d.querySelector('.state.wait').textContent) && d.querySelector('.state.wait').dataset.agent === 'beta' && d.querySelector('.state.wait').dataset.scroll === '1', 'the status pill counts it, and is a button to that mate and its card');
   ok(d.querySelector('.roster-row[data-agent="beta"] .count').textContent === '1' && !d.querySelector('.roster-row[data-agent="alpha"] .count'), 'and the badge on that mate in the list');
   const card = d.querySelector('[data-blocked]');
-  ok(card && /beta/.test(card.textContent) && card.querySelector('pre.cmd').textContent === CMD && card.querySelector('[data-allow-agent="beta"][data-allow-cmd="harbor status --json"]') && card.querySelector('[data-dismiss-agent="beta"]'), 'its card shows the mate, the exact command, and Allow and Dismiss');
+  ok(card && /^Blocked from running a command/.test(card.querySelector('.card-title').textContent) && !card.querySelector('.meta .tag') && card.querySelector('pre.cmd').textContent === CMD && card.querySelector('[data-allow-agent="beta"][data-allow-cmd="harbor status --json"]') && card.querySelector('[data-dismiss-agent="beta"]'), 'its card shows the mate, the exact command, and Allow and Dismiss');
+}
+
+console.log('one number: the status bar and the pill agree');
+{
+  const R = world();
+  Q.saveGate(R, { id: 'n1', kind: 'question', agent: 'alpha', itemId: 'i', chainId: 'c', title: 'Q', body: 'b', files: [], resume: true, status: 'pending', createdAt: new Date().toISOString() });
+  const m = model(R);
+  const pill = dom(renderBody(m)).querySelector('.state.wait').textContent;
+  ok(needsYouCount(R) === 2 && new RegExp('^\\s*2 need you').test(pill.trim()), 'a question plus a blocked command: both say 2');
+  dismissBlock(R, 'beta', CMD);
+  ok(needsYouCount(R) === 1 && /1 needs you/.test(dom(renderBody(model(R))).querySelector('.state.wait').textContent), 'a dismissed command leaves both');
 }
 
 console.log('allowed or dismissed: not a to-do any more');
@@ -110,7 +121,7 @@ console.log('tasks in the mate header');
 {
   const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-attn-')); for (const a of ['alpha', 'beta']) { w(R, `.github/agents/${a}.agent.md`, agentFile(a)); }
   w(R, '.loop/tasks/t1.json', JSON.stringify({ id: 't1', title: 'Investigate payments error-rate spike', state: 'open', holders: ['alpha'], next: { alpha: 'Wait for the rollback decision' }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), log: [] }));
-  const head = name => dom(renderBody(model(R, { agent: name }))).querySelector('.chat-head');
+  const head = name => dom(renderBody(model(R, { agent: name }))).querySelector('.chat-main');
   ok(/Working on: Investigate payments error-rate spike — next: Wait for the rollback decision/.test(head('alpha').querySelector('.ch-task').textContent) && head('alpha').querySelector('.ch-task [data-close-task="t1"]'), 'the mate holding a task shows one line for it, with the next step and a Drop button');
   ok(!head('beta').querySelector('.ch-task'), 'a mate without an open task shows nothing');
 }
@@ -122,9 +133,9 @@ console.log('the approval card fits one screen');
   Q.saveGate(R, { id: 'ap1', kind: 'approval', agent: 'beta', itemId: 'i', chainId: 'c', title: 'Publish the report', body: 'Posts the report to the channel.', command: 'bash post.sh', files: ['.loop/outbox/d.md'], resume: true, status: 'pending', createdAt: new Date().toISOString() });
   const card = () => dom(renderBody(model(R, { agent: 'beta' }))).querySelector('[data-gate="ap1"]');
   const c = card();
-  const order = [...c.querySelectorAll('.card-title, .body, pre.cmd, [data-reject-open], [data-approve], details.gatefiles')].map(x => x.matches('.card-title') ? 'title' : x.matches('.body') ? 'body' : x.matches('pre.cmd') ? 'cmd' : x.matches('[data-reject-open]') ? 'reject' : x.matches('[data-approve]') ? 'approve' : 'files');
-  ok(order.join() === 'title,body,cmd,files,reject,approve', 'title, short note, exact command, the one line naming the files, then both buttons');
-  ok(c.querySelectorAll('textarea').length === 1 && c.querySelector('[data-reject-box] textarea') && c.querySelector('[data-reject-box]').classList.contains('hidden') && c.querySelector('[data-copy="bash post.sh"]') && /beta/.test(c.querySelector('.meta').textContent), 'the only text field is the hidden reject reason; a copy button for the command, and the mate\'s name');
+  const order = [...c.querySelectorAll('.card-title, .body, pre.cmd, [data-reject-open], [data-approve], details.gatefiles, .note.muted')].map(x => x.matches('.card-title') ? 'title' : x.matches('.body') ? 'body' : x.matches('pre.cmd') ? 'cmd' : x.matches('[data-reject-open]') ? 'reject' : x.matches('[data-approve]') ? 'approve' : x.matches('.note.muted') ? 'note' : 'files');
+  ok(order.join() === 'title,body,cmd,files,note,reject,approve', 'title, short note, exact command, the files line, the runs-as-you line, and the buttons last');
+  ok(c.querySelectorAll('textarea').length === 1 && c.querySelector('[data-reject-box] textarea') && c.querySelector('[data-reject-box]').classList.contains('hidden') && c.querySelector('[data-copy="bash post.sh"]') && !c.querySelector('.meta .tag') && /Approval/.test(c.querySelector('.meta').textContent), 'the only text field is the hidden reject reason; a copy button for the command; kind and time, but not the mate\'s name again');
   const fold = c.querySelector('details.gatefiles');
   ok(!fold.open && /Also covers: d\.md/.test(fold.querySelector('summary').textContent) && !/Nothing but this exact command/.test(c.textContent) && fold.querySelector('[data-hash-for=".loop/outbox/d.md"]') && fold.querySelector('[data-open=".loop/outbox/d.md"]') && /covers the files shown/.test(fold.textContent), 'the files are named in one line and folded, with their hash kept, and say what approval covers');
   ok(/Runs as you, not in a sandbox/.test(c.textContent) && !/Runs as you/.test(fold.textContent), 'the first approval carries the one-time note about running as you, outside the fold');

@@ -104,7 +104,7 @@ console.log('cards say who needs you');
   ok(/class="turn gates-head"[^]*<b>a<\/b> needs you</.test(gated([gate('approval')])) && /<b>a<\/b> needs you</.test(gated([gate('question')])) && /<b>a<\/b> needs you</.test(gated([gate('question', { id: 'x' }), gate('approval', { id: 'y' })])), 'one header for all: "a needs you", never "needs 2 decisions" or "has a question for you"');
   ok(/class="pinned" data-jump="\.thread-gates"[^]*<b>a<\/b> needs you: t/.test(gated([gate('approval')])) && !/class="pinned"/.test(renderBody(base)), 'with something waiting, a bar pinned to the top of the thread jumps to it');
   const blockedOnly = renderBody({ ...base, chat: { ...chatOf([row({ needsYou: 1 })]), blocked: [{ id: 'b1', agent: 'a', command: 'harbor status', chainId: 'c', at: now }] } });
-  ok(/<b>a<\/b> needs you/.test(blockedOnly) && /was blocked from running a command/.test(blockedOnly), 'a blocked command is the same kind of to-do');
+  ok(/<b>a<\/b> needs you/.test(blockedOnly) && /Blocked from running a command/.test(blockedOnly), 'a blocked command is the same kind of to-do');
   const ap = gated([gate('approval', { command: 'echo hi' })]);
   ok(/data-reject-open="g"/.test(ap) && /data-reject="g"/.test(ap) && /Why\? \(optional\)/.test(ap) && /data-reject-cancel="g"/.test(ap), 'an approval card carries its own reject reason field, with Reject and Cancel');
   ok(!/Overview/.test(ap), 'and mentions no second page');
@@ -150,7 +150,7 @@ console.log('refusals and the thread');
 
 console.log('the one status bar item');
 {
-  const { statusBar, pendingCount } = require(`${OUT}/status.js`);
+  const { statusBar } = require(`${OUT}/status.js`), { needsYouCount } = require(`${OUT}/console.js`);
   const t = o => statusBar({ running: true, pending: 0, active: [], ...o }).text;
   ok(t({ pending: 3 }) === '$(bell-dot) 3 need you' && t({ pending: 1 }) === '$(bell-dot) 1 needs you', 'something waiting: the bell and how many');
   ok(t({ pending: 2, active: ['daily-report'], step: 4 }) === '$(bell-dot) 2 need you · daily-report working', 'and the mate that is working, if one is');
@@ -165,7 +165,7 @@ console.log('the one status bar item');
   const R = fs.mkdtempSync(path.join(os.tmpdir(), 'bar-'));
   Q.saveGate(R, { id: 'p1', kind: 'question', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', files: [], resume: true, status: 'pending', createdAt: now });
   Q.saveGate(R, { id: 'p2', kind: 'approval', agent: 'a', itemId: 'i', chainId: 'c', title: 't', body: 'b', command: 'x', files: [], resume: true, status: 'executed', createdAt: now });
-  ok(pendingCount(R) === 1 && pendingCount(undefined) === 0, 'the count comes straight from the gates on disk');
+  ok(needsYouCount(R) === 1, 'the count comes straight from the gates on disk (settled ones do not count)');
 }
 
 console.log('plain schedules');

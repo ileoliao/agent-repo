@@ -72,11 +72,6 @@ export function nextWake(rows: AgentRow[]): { agent: string; at: Date } | undefi
   return rows.filter(r => r.next).map(r => ({ agent: r.name, at: r.next! })).sort((a, b) => a.at.getTime() - b.at.getTime())[0];
 }
 
-/** Questions and approvals waiting for the human, counted straight from the gates on disk. */
-export function pendingCount(root: string | undefined): number {
-  return root ? listGates(root).filter(g => g.status === 'pending').length : 0;
-}
-
 export interface BarState {
   running: boolean;
   /** Questions and approvals waiting on the human. */
