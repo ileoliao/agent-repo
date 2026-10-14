@@ -18,13 +18,13 @@
 
 ## 2. 启动
 
-1. 运行 `Harbor Mate: Reload & Validate Team`，应输出 `Team reloaded OK`
+1. 运行 `Harbor Mate: Reload & Validate Mates`，应输出 `Team reloaded OK`
 2. 运行 `Harbor Mate: Set Secret`，名称填 `SMOKE_TOKEN`，值随便填，比如 `abc12345`
-3. 运行 `Harbor Mate: Start Team`
+3. 运行 `Harbor Mate: Start Mates`
    - 首次会在这一步弹出 Copilot 模型授权，选允许（扩展会向每个还没授权的模型发一个极小的请求来触发它）。必须由人点这个命令，扩展激活时不会自己弹授权
    - 冒烟 agent 没指定模型，会用 Copilot 列表里的第一个，顺序不固定，可能不是你想要的。Start 之前先在设置里填 `harborMate.modelFamily`（用 `List Available Models` 看 family）
-   - 状态栏出现 `Loop`
-   - 之后关掉 VS Code 再打开这个文件夹，团队会自动接着跑，并先处理队列里没做完的项。点 `Stop Team` 会取消这次自动启动
+   - 状态栏出现 `Mates · next …`
+   - 之后关掉 VS Code 再打开这个文件夹，mate 会自动接着跑，并先处理队列里没做完的项。点 `Stop Mates` 会取消这次自动启动
 
 ## 3. 触发
 
@@ -35,20 +35,20 @@
 
 ## 4. 提问 → 续跑
 
-- 右下角弹出通知 "smoke asks: …"，状态栏出现铃铛
-- 打开资源管理器里的 **Harbor Mate Inbox**，点问题旁的回复按钮，选 `green`
+- 右下角弹出通知 "smoke needs you: …"，状态栏出现铃铛（`1 needs you`）
+- 点通知的 Open（或状态栏），控制台直接停在 smoke 的对话里；点问题卡片上的建议答案 `green`，再点发送
 - agent 从原地继续，把颜色写进草稿
 
 ## 5. 审批 → 执行 → 续跑
 
-- 收件箱出现审批 "Send …"，点开能看到草稿 `.loop/outbox/smoke/reply.md`
+- 对话里出现审批 "Send …"，展开 “Also covers” 能看到草稿 `.loop/outbox/smoke/reply.md`
 - **先手动改一下草稿**，随便加一行
-- 点 ✓，弹窗里显示确切命令，选 Run
+- 卡片上显示确切命令，点 Approve and run
 - 输出面板应看到：
   - `SMOKE_TOKEN present: True`
   - `value as seen in output: ***`，说明凭证已注入且被脱敏
   - 草稿内容里**包含你刚加的那一行**
-- 想测拒绝流程：点 ✗ 并填写反馈，agent 会按反馈修改后重新申请
+- 想测拒绝流程：点 Reject，在 “Why?” 里写反馈再确认，mate 会按反馈修改后重新申请
 
 ## 6. 结束
 
@@ -60,8 +60,8 @@
 |---|---|
 | Reload 报 skill 找不到 | 打开的文件夹不对，必须是 `examples/smoke` 本身 |
 | 弹出 "wakeIf check is failing" | `python3`、`python`、`py` 都不可用，或 `node` 不在 PATH 里 |
-| `Copilot returned no models` | Copilot 还没登录好或网络没通（列表为空时会先等最多 2 分钟）。等 Copilot 就绪后重新运行 Start Team；改 `modelFamily` 没用 |
+| `Copilot returned no models` | Copilot 还没登录好或网络没通（列表为空时会先等最多 2 分钟）。等 Copilot 就绪后重新运行 Start Mates；改 `modelFamily` 没用 |
 | `no Copilot model matches` | 列表不为空但没有匹配的模型：核对 `loop.model`，或在 `harborMate.modelFamily` 里填一个 List Available Models 列出的 family |
-| 一直没反应 | 运行 `Harbor Mate: Show Team Status`，确认 running 为 true；cron 每分钟才检查一次 |
+| 一直没反应 | 看状态栏是不是 `Mates off`（是就点控制台里的 Start mates）；cron 每分钟才检查一次 |
 
 全部走通后，再按根目录的 README 接入真实的角色和 Skill。

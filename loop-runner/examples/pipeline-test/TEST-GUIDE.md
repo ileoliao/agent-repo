@@ -39,9 +39,9 @@ code --install-extension harbor-mate-1.0.0.vsix --force
 
 ## 场景 1:审批 + 拒绝改稿 + 草稿被改 + 提问(reviewer)
 
-1. 控制台 **Give a task** → 选 `reviewer`,任务随便写,例如 `go`。
-2. 等几秒,**Needs you** 出现一张审批卡:能看到**将执行的完整命令**和草稿 `draft.md` 的内容(`release notes v1`)。顶部面板标题会变成 `Harbor Mate Console (1)`。
-3. **拒绝**:在输入框写 `请把版本号改成 v2`,点 **Reject**。
+1. 命令面板运行 `Harbor Mate: Give a Mate a Task` → 选 `reviewer`,任务随便写,例如 `go`。
+2. 等几秒,状态栏变成 `1 needs you`,控制台里 `reviewer` 排到名册最上面,对话末尾有一张审批卡:能看到**将执行的完整命令**和草稿 `draft.md` 的内容(`release notes v1`)。面板标题会变成 `Harbor Mate (1)`。
+3. **拒绝**:点 **Reject**,在 “Why? (optional)” 里写 `请把版本号改成 v2`,再点 **Reject** 确认。
    - 预期:reviewer 重写草稿,再次出现一张新的审批卡,草稿内容变成含 v2 的文字。
 4. **草稿被改**:先别点批准。在编辑器里打开 `.loop/outbox/review/draft.md`,随便改一个字并保存。
    - 预期(最多 5 秒):卡片出现提示「The draft changed after you opened this card…」,**Approve and run 变灰**。点 **I have reviewed the new version** 后才能批准。
@@ -49,10 +49,10 @@ code --install-extension harbor-mate-1.0.0.vsix --force
 5. 点 **Approve and run**。按钮会变成 Running…,不能重复点。
    - 预期:执行 `publish.sh`,`.loop/outbox/review/published.md` 出现。
 6. 控制台出现一个**问题**:`Which channel should I announce in?`,有 `#releases`、`#ops` 两个建议答案。
-   - 点一个建议答案(会填进输入框),再点 **Send answer**。也可以改用 `@mate`,见场景 4。
+   - 点一个建议答案(会填进底部输入框),再点发送。也可以改用 `@mate`,见场景 4。
 7. 预期结果:reviewer 继续,写出 `.loop/outbox/review/announce.md`,运行显示 **Done**。
-   - 在 **Recent runs** 展开这次运行:能看到每一步,和 **Files written**(`draft.md`、`published.md`、`announce.md`)。
-   - 点顶部 **Latest result** 应该打开这次最新的产出。
+   - 对话里这次运行折成一张结果卡:产出文件(`draft.md`、`published.md`、`announce.md`)在最前面,点 **Show … steps** 展开每一步。
+   - 对话标题下的 **Latest output** 链接应该打开这次最新的产出。
 
 ## 场景 2:定时唤醒(watcher)
 
@@ -89,7 +89,7 @@ code --install-extension harbor-mate-1.0.0.vsix --force
 
 1. `@mate 记住:所有 agent 的总结都用中文` → 提案 → Apply。
    - 写入 `.loop/memory/_all.md`,可以直接打开看和改。
-2. 再给 `brancher` 派一个任务,看运行摘要(控制台 Recent runs 里展开)。
+2. 再给 `brancher` 派一个任务,看运行摘要(在 `brancher` 的对话里,结果卡上)。
    - 预期:总结倾向于中文。注意 gpt-4o-mini 不一定每次都遵守;提示词里一定带了这条(可以在 `.loop/runs/<日期>/<chain>.jsonl` 的 start 事件之前的 checkpoint 看不到,但行为会变)。
 3. `@mate 忘掉关于中文的那条` → 提案 → Apply,文件被删除。
 4. 已经在跑或暂停的运行不会看到新备忘,**下一次运行**才生效。
@@ -99,7 +99,7 @@ code --install-extension harbor-mate-1.0.0.vsix --force
 - 点 **Stop team**:状态变 `Team stopped`;`@mate 启动团队` 也能恢复(需 Apply)。
 - 在 brancher 运行时点 Stop:运行显示 **Interrupted** 或取消,再 Start 会接着做。
 - 防重复:审批卡点 Approve 后立刻再点一次 —— 只会跑一次。
-- 过滤:Recent runs 右上角选 **Problems** 只看失败的。
+- 失败的运行在对话里是红色的 **Failed** 结果卡,名册里该 mate 的头像也是红圈。
 
 ---
 

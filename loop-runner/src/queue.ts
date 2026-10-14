@@ -7,7 +7,7 @@ import * as path from 'path';
  *   .loop/queue/<agent>/<id>.json      runnable work
  *   .loop/queue/_waiting/<id>.json     parked on a human gate
  *   .loop/queue/_done/<id>.json        finished work
- *   .loop/gates/<id>.json              questions and approvals for the human (the inbox)
+ *   .loop/gates/<id>.json              questions and approvals for the human (shown in the console)
  *   .loop/checkpoints/<itemId>.json    conversation snapshot for resuming a parked item
  *   .loop/runs/<date>/<chainId>.jsonl  audit
  */

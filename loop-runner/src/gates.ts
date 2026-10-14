@@ -99,7 +99,7 @@ const HEADLINE: Record<LoopEvent['kind'], string> = {
 
 /** The JSON a given chat service expects. Slack and Teams read `text`, Discord reads `content`; anything else gets the event itself. */
 export function webhookBody(url: string, ev: LoopEvent, secrets: Record<string, string> = {}): unknown {
-  const text = redact(`Harbor Mate: ${ev.agent} ${HEADLINE[ev.kind] ?? ev.kind}\n${ev.title}${ev.detail ? `\n${ev.detail.slice(0, 600)}` : ''}${ev.gateId ? `\nOpen the Harbor Mate inbox in VS Code to answer.` : ''}`, secrets);
+  const text = redact(`Harbor Mate: ${ev.agent} ${HEADLINE[ev.kind] ?? ev.kind}\n${ev.title}${ev.detail ? `\n${ev.detail.slice(0, 600)}` : ''}${ev.gateId ? `\nOpen Harbor Mate in VS Code to answer.` : ''}`, secrets);
   let host = '';
   try { host = new URL(url).hostname; } catch { /* rejected by the caller */ }
   if (/(^|\.)discord(app)?\.com$/.test(host)) { return { content: text }; }

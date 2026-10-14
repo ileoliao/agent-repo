@@ -57,28 +57,33 @@ const THEMES = {
 (async () => {
   const R = demo();
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-empty-'));
+  const open = sel => page => page.evaluate(q => document.querySelectorAll(q).forEach(d => { d.open = true; }), sel);
+  const click = sel => page => page.click(sel);
   const scenes = [
-    ['chat-needs-you', R, { running: true, active: undefined, tab: 'chat', agent: 'release-watch' }],
-    ['chat-question', R, { running: true, active: undefined, tab: 'chat', agent: 'triage' }],
-    ['overview', R, { running: true, active: undefined, tab: 'overview' }],
-    ['tools-open', R, { running: true, active: undefined, tab: 'chat', agent: 'release-watch' }, 'details.toolmenu'],
-    ['chat-running', R, { running: true, active: 'daily-report', tab: 'chat', agent: 'daily-report' }],
-    ['stopped', R, { running: false, tab: 'overview' }],
-    ['copilot-off', empty, { running: false, tab: 'chat' }],
-    ['empty-workspace', empty, { running: false, tab: 'chat' }]
+    // [name, workspace, state, what to do on the page before the shot]
+    ['default', R, { running: true, active: undefined }],
+    ['chat-needs-you', R, { running: true, active: undefined, agent: 'release-watch' }],
+    ['reject-open', R, { running: true, active: undefined, agent: 'release-watch' }, click('[data-reject-open]')],
+    ['chat-question', R, { running: true, active: undefined, agent: 'triage' }],
+    ['menu-open', R, { running: true, active: undefined, agent: 'release-watch' }, open('details.toolmenu')],
+    ['chat-running', R, { running: true, active: 'daily-report', agent: 'daily-report' }],
+    ['fold-open', R, { running: true, active: 'daily-report', agent: 'daily-report' }, open('.thread details')],
+    ['stopped', R, { running: false }],
+    ['copilot-off', empty, { running: false }],
+    ['empty-workspace', empty, { running: false }]
   ];
   const browser = await chromium.launch();
   const shots = [];
   for (const [theme, vars] of Object.entries(THEMES)) {
     const ctx = await browser.newContext({ viewport: { width: 900, height: 1400 } });
-    for (const [name, root, st, openSel] of scenes) {
+    for (const [name, root, st, act] of scenes) {
       const page = await ctx.newPage();
       const model = { ...consoleModel(root, st, now), copilot: name === 'copilot-off' ? 0 : 3 };
       let html = renderPage(model, 'n', 'x').replace(/<meta http[^>]*>/, '').replace('<script nonce="n">', '<script>');
       html = html.replace('<head>', `<head><style>:root{${Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')}} body{background:${vars['--vscode-editor-background']}}</style><script>window.acquireVsCodeApi=()=>({postMessage(){}});</script>`);
       await page.setContent(html);
       await page.evaluate(() => { const t = document.querySelector('.thread'); if (t) { t.scrollTop = t.scrollHeight; } if (typeof updatePinned === 'function') { updatePinned(); } });
-      if (openSel) { await page.evaluate(sel => { document.querySelector(sel).open = true; }, openSel); }
+      if (act) { await act(page); }
       const f = path.join(outDir, `${name}.${theme}.png`);
       await page.screenshot({ path: f, fullPage: true });
       shots.push(f);

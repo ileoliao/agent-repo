@@ -374,7 +374,7 @@ const getStartedCard = (off = false) => `<div class="start-wrap"><div class="sta
   <div class="muted">A mate does a job for you on its own and only stops to ask when it needs you.</div></div>
   <div class="starters">
     <div class="starter"><div class="starter-title">Daily report</div><div class="muted">Every weekday at 09:00 it reads yesterday's commits and writes a one-page summary: what changed, and what is risky.</div><div class="muted tiny">Writes <code>.loop/outbox/daily-report/&lt;date&gt;.md</code>. Reads only; needs no setup.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="daily-report"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
-    <div class="starter"><div class="starter-title">Folder watch</div><div class="muted">Every 10 minutes it checks <code>drop/</code> for new files, at no model cost, and summarises each one when it finds some.</div><div class="muted tiny">Shows how a cheap pre-check works. Writes summaries to <code>.loop/outbox/folder-watch/</code>.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="folder-watch"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'primary', 'play')}</div>
+    <div class="starter"><div class="starter-title">Folder watch</div><div class="muted">Every 10 minutes it checks <code>drop/</code> for new files, at no model cost, and summarises each one when it finds some.</div><div class="muted tiny">Shows how a cheap pre-check works. Writes summaries to <code>.loop/outbox/folder-watch/</code>.</div>${btn('Add this', 'data-cmd="getStarted" data-arg="folder-watch"' + (off ? ' disabled title="Sign in to GitHub Copilot first"' : ''), 'secondary', 'play')}</div>
     <div class="starter"><div class="starter-title">Your own</div><div class="muted">Tell the <code>@mate</code> assistant in Chat what you want in plain words. It builds the mate and checks it can run.</div><div class="muted tiny">For example: watch my build every hour and ask me before it re-runs anything.</div>${btn('Describe what you want', 'data-cmd="describeAgent"', 'secondary', 'send')}</div>
   </div>${off ? '<div class="alert warn" role="alert">' + icon('alert') + '<span>The Add buttons are off because GitHub Copilot is not signed in. Sign in to Copilot in VS Code (Accounts menu, bottom left), then they work.</span></div>' : ''}<div class="muted tiny center">Mates use your GitHub Copilot models. Anything risky waits for your approval.</div></div>`;
 
@@ -518,7 +518,7 @@ function taskLines(tasks: Task[], name: string): string {
   return tasks.map(t => {
     const next = t.next?.[name];
     const full = `${t.title}${next ? ` — next: ${next}` : ''}`;
-    return `<div class="ch-task" data-task="${esc(t.id)}"><span class="ell" title="${esc(full)}"><span class="muted">Working on:</span> ${esc(clip(t.title, 90))}${next ? ` <span class="muted">— next: ${esc(clip(next, 90))}</span>` : ''}</span><button class="linkbtn" data-close-task="${esc(t.id)}" title="Stop tracking this task. Mates holding it let go of it; nothing is deleted.">Drop</button></div>`;
+    return `<div class="ch-task" data-task="${esc(t.id)}"><span title="${esc(full)}"><span class="muted">Working on:</span> ${esc(clip(t.title, 90))}${next ? ` <span class="muted">— next: ${esc(clip(next, 90))}</span>` : ''}</span><button class="linkbtn" data-close-task="${esc(t.id)}" title="Stop tracking this task. Mates holding it let go of it; nothing is deleted.">Drop</button></div>`;
   }).join('');
 }
 
@@ -676,7 +676,7 @@ a{color:var(--vscode-textLink-foreground)}
 .chat-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--vscode-panel-border)}.ch-name{font-weight:600;font-size:1.05em}.ch-sub{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .thread{flex:1;min-height:0;overflow-y:auto;padding:16px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 16px);mask-image:linear-gradient(to bottom,transparent 0,#000 16px);display:flex;flex-direction:column;gap:12px}.center{text-align:center}
 /* A short conversation sits against the input box, so what you are asked and where you answer are never a screen apart. */
-.thread>:first-child{margin-top:auto}
+.thread::before{content:"";margin-top:auto}
 .goalfold{display:inline-block;vertical-align:top}.goalfold>summary{display:inline;cursor:pointer;list-style:none}.goalfold>summary::-webkit-details-marker{display:none}.goalfold>summary::after{content:" ▾"}.goalfold[open]>summary::after{content:" ▴"}
 .goalfold ul{list-style:none;margin:6px 0 2px;padding:0;display:flex;flex-direction:column;gap:3px}.goalfold li{display:flex;gap:10px;justify-content:space-between;max-width:520px}
 .msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.bot{justify-content:flex-start;align-items:flex-start}
@@ -705,7 +705,7 @@ time{font-weight:400}
 .sline{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-left:38px;font-size:.88em;color:var(--vscode-descriptionForeground)}
 .sline .chip.info{color:var(--vscode-descriptionForeground)}.sline .chip{font-size:.82em;padding:0 7px;font-weight:500}.sline .sdetail{color:var(--vscode-foreground);min-width:0;flex:1 1 200px}.sline .stime{margin-left:auto;font-size:.9em}
 .thread-gates{width:100%;margin-top:6px}.thread-gates .card{margin-bottom:8px}
-.ch-task{display:flex;gap:10px;align-items:baseline;font-size:.88em;margin-top:2px;min-width:0}.ch-task .ell{flex:1;min-width:0}.linkbtn{all:unset;box-sizing:border-box;cursor:pointer;flex:none;color:var(--vscode-textLink-foreground);font-size:.95em}.linkbtn:hover{text-decoration:underline}.linkbtn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}.rejectbox{display:flex;flex-direction:column;gap:6px;margin-top:10px}.rejectbox textarea{width:100%;resize:vertical}.rejectbox .actions{margin-top:0}
+.ch-task{display:flex;gap:10px;align-items:baseline;font-size:.88em;margin-top:2px;min-width:0}.ch-task>span{flex:1;min-width:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}.linkbtn{all:unset;box-sizing:border-box;cursor:pointer;flex:none;color:var(--vscode-textLink-foreground);font-size:.95em}.linkbtn:hover{text-decoration:underline}.linkbtn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}.rejectbox{display:flex;flex-direction:column;gap:6px;margin-top:10px}.rejectbox textarea{width:100%;resize:vertical}.rejectbox .actions{margin-top:0}
 .composer{padding:10px 16px 12px}.composer .hint{font-size:.85em;margin:0 6px 6px}.tiny{font-size:.9em;margin:6px 6px 0}.row.wrap{margin-bottom:8px}
 .inputbar{display:flex;align-items:flex-end;gap:8px;border:1px solid var(--vscode-input-border,var(--vscode-panel-border));border-radius:24px;background:var(--vscode-input-background);padding:6px 8px 6px 16px}
 .inputbar:focus-within{border-color:var(--vscode-focusBorder)}

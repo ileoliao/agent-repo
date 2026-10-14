@@ -215,7 +215,7 @@ export function listQueue(root: string): QueueRow[] {
 
 /**
  * Cancel a queued or parked item: it moves to the finished list as `cancelled`, and any question or approval it was
- * parked on is closed so the inbox does not keep asking. A running item is cancelled through the runner instead.
+ * parked on is closed so the console does not keep asking. A running item is cancelled through the runner instead.
  */
 export function cancelQueued(root: string, id: string, now = new Date()): string {
   const row = listQueue(root).find(r => r.id === id);
