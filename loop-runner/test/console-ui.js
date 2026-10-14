@@ -34,7 +34,7 @@ ok(/nothing will run until you press start mates/i.test(stopped) && (stopped.mat
 ok(/data-cmd="runDoctor"/.test(renderBody(base)) && /data-cmd="showHealth"/.test(renderBody(base)) && /data-cmd="cleanUp"/.test(renderBody(base)), 'tools are reachable from the console');
 
 console.log('copilot, why-in-the-row, the thread');
-ok(/Copilot ready/.test(renderBody({ ...base, copilot: 3 })) && !/not signed in/.test(renderBody({ ...base, copilot: 3 })), 'a ready Copilot shows a quiet chip');
+ok(!/Copilot/.test(renderBody({ ...base, copilot: 3 })), 'a ready Copilot says nothing');
 const off = renderBody({ ...base, copilot: 0 });
 ok(/Copilot not signed in/.test(off) && /none can run until you sign in/.test(off), 'no Copilot models: a chip and a banner say agents cannot run');
 ok(!/Copilot/.test(renderBody({ ...base })), 'unknown Copilot state shows nothing');
@@ -105,7 +105,8 @@ ok(/Check &amp; tools/.test(head), 'the menu name says that checking is in there
 ok(!/tab-sub/.test(head) && /data-tab="chat"[^>]*title="Talk to a mate/.test(head) && /data-tab="overview"[^>]*title="Everything at a glance/.test(head), 'the tabs are just their names; what each is for is in the hover text');
 const card2 = renderBody({ ...base, agents: [{ ...agent, file: '.github/agents/a.agent.md', triggers: [{ kind: 'schedule', text: '0 9 * * *' }] }] });
 ok(/data-agent="a"[^>]*>[^]*Chat/.test(card2) && /class="agent-name"[^>]*data-open="\.github\/agents\/a\.agent\.md"/.test(card2) && !/iconbtn/.test(card2), 'an overview card links to that mate\'s chat, opens its file from the name, and has no unlabelled buttons');
-ok(/Give a mate a task/.test(renderBody(base)) && /Stop all mates/.test(renderBody(base)) && !/Latest/.test(renderBody(base)), 'the top buttons say whom they affect, stopping everyone sits in the menu, and a Latest button appears only once a mate has produced something');
+const bar = h => (h.match(/<header class="bar">[^]*?<\/header>/) || [''])[0];
+ok(!/<button/.test(bar(renderBody(base))) && /Stop all mates/.test(renderBody(base)) && /Start mates/.test(bar(renderBody({ ...base, running: false }))), 'no buttons in the top bar while running; Start mates appears there only when stopped; stopping everyone sits in the menu');
 ok(/class="chips-row"[^]*ask for status/.test(head) && !/ask for status/.test(renderBody({ ...base, tab: 'chat', chat: { agents: rowsFor({ state: 'running' }), selected: 'a', events: [], hidden: 0, gates: [] } })), 'an idle mate gets a ready-made question to try, a running one does not');
 ok(/appears at the top once you have a mate/.test(renderBody({ ...base, running: false, agents: [], runs: [], tab: 'chat', chat: { agents: [], events: [], hidden: 0, gates: [] } })), 'the disabled Start says why');
 console.log('the everyday thread');

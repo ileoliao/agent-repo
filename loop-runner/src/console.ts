@@ -255,7 +255,7 @@ const STATUS_HINT: Record<string, string> = {
   error: 'Something failed. Open the steps; “Check mates” finds setup problems.',
   stalled: 'It went in circles or ran out of time. Try a narrower task.',
   max_steps: 'It hit its step limit. Narrow the task, or raise the limit.',
-  interrupted: 'VS Code closed or the mates were stopped mid-run. Start the mates to pick it up.',
+  interrupted: 'Stopped mid-run.',
   retry: 'A temporary limit stopped it. It retries by itself.'
 };
 /** Statuses the "Problems" filter shows. */
@@ -371,8 +371,8 @@ function runCard(r: ConsoleRun, blocked: BlockedView[] = []): string {
   const dur = r.status === 'running' ? span(r.started, new Date().toISOString()) : span(r.started, r.updated);
   const live = r.status === 'running';
   return `<details class="run" ${live ? 'open' : ''} data-k="r-${esc(r.chainId)}" data-status="${esc(r.status)}"><summary>${icon('chevron', 'chev')}${chip(r.status)}<span class="run-agent">${esc(r.agent)}</span>
-    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''} · ${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && hint ? `<span class="run-why">${esc(hint)}</span>` : ''}${extra ? `<span class="run-extra">${extra}</span>` : ''}</summary>
-    <div class="run-body">${refusalsOf(r)}${hint ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(hint)}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
+    <span class="grow run-sum" title="${esc(r.summary)}">${esc(clip(r.summary, 110))}</span><span class="muted nowrap">${stamp(r.started, ago(r.started))}</span>${PROBLEMS.has(r.status) && hint ? `<span class="run-why">${esc(hint)}</span>` : ''}${extra ? `<span class="run-extra">${extra}</span>` : ''}</summary>
+    <div class="run-body"><div class="muted tiny">${r.step} step${r.step === 1 ? '' : 's'}${dur ? ` · ${esc(dur)}` : ''}</div>${refusalsOf(r)}${hint ? `<div class="hintbox ${PROBLEMS.has(r.status) ? 'warn' : ''}">${icon('help')}<span>${esc(hint)}</span></div>` : ''}${r.summary ? `<p class="body">${esc(r.summary)}</p>` : ''}${outs ? `<div class="label">Files written</div><div class="row wrap">${outs}</div>` : ''}
     <div class="label">What happened</div><ol class="timeline">${shown || '<li class="muted">No steps recorded.</li>'}</ol>
     <div class="row wrap"><a class="link muted" href="#" data-open-abs="${esc(r.file)}">Open raw log</a><span class="muted">·</span><span class="muted mono">${esc(r.chainId)}</span>${copy(r.chainId, 'run id')}</div></div></details>`;
 }
@@ -419,7 +419,7 @@ function agentRow(a: AgentRow, copilotOff = false, out?: LatestOutput): string {
     : (a.triggers ?? []).length ? `<dt>Runs</dt><dd class="trigs">${(a.triggers ?? []).map((t, i) => `<span class="trig">${icon(icoFor(t.kind))}${esc(trig[i])}</span>`).join('')}</dd>` : '<dt>Runs</dt><dd class="muted">on demand</dd>';
   const pauseBtn = a.paused ? btn('Resume', `data-cmd="resumeAgent" data-arg="${esc(a.name)}" title="Let ${esc(a.name)} wake on its schedule and triggers again"`, 'secondary', 'play') : (a.triggers ?? []).length ? btn('Pause', `data-cmd="pauseAgent" data-arg="${esc(a.name)}" title="Skip ${esc(a.name)}'s scheduled and event wakes. A task you give it still runs."`, 'secondary', 'stop') : '';
   return `<div class="agent ${a.paused ? 'paused' : ''}"><div class="agent-top">${avatar(a.name, a.paused ? 'idle' : a.state === 'running' ? 'working' : a.state === 'waiting' ? 'waiting' : 'idle', 26)}<a class="agent-name" href="#" data-open="${esc(a.file)}" title="Edit ${esc(a.file)}: its instructions, schedule and skills">${esc(a.name)}</a>
-    <span class="chip ${tone}">${icon(a.paused ? 'stop' : a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
+    ${!a.paused && a.state === 'idle' ? '' : `<span class="chip ${tone}">${icon(a.paused ? 'stop' : a.state === 'running' ? 'spin' : 'bell')}<span>${label}</span></span>`}</div>
     <dl class="kv">${runs}
     ${a.paused || a.next ? `<dt>Next</dt><dd>${a.paused ? '<span class="muted">paused</span>' : stamp(a.next!.toISOString(), when(a.next!.toISOString()))}</dd>` : ''}
     ${lw ? `<dt>Last check</dt><dd>${last}</dd>` : ''}${a.model ? `<dt>Model</dt><dd class="mono">${esc(a.model)}</dd>` : ''}</dl>${latestLine(out)}
@@ -523,7 +523,7 @@ function threadEvent(e: ThreadEvent, agent: string): string {
       + (files ? `<div class="rdelivs">${files}</div>` : '') + sup + (probs ? `<div class="rprob">${esc(probs)}</div>` : '') + refusals + fold + '</div>';
   }
   const outs = (e.outputs ?? []).map(o => `<a class="filechip" href="#" data-open="${esc(o)}">${icon('file')}${esc(o)}</a>`).join('');
-  return `<div class="sline"><span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>${e.detail ? `<span class="sdetail wrap-text">${esc(e.detail)}</span>` : ''}${outs}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`;
+  return `<div class="sline">${e.label === 'Scheduled run started' ? '' : `<span class="chip ${toneOf(e.tone)}">${esc(e.label)}</span>`}${e.detail ? `<span class="sdetail wrap-text">${esc(e.detail)}</span>` : ''}${outs}<span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`;
 }
 
 function composerHint(name: string, state: ChatState, running: boolean): string {
@@ -607,7 +607,7 @@ function renderChat(m: ConsoleModel): string {
   const blocked = c.blocked ?? [];
   const todo = c.gates.length + blocked.length;
   const first = c.gates[0];
-  const todoWord = todo === 1 ? (first ? (first.kind === 'approval' ? 'asks for your approval' : 'has a question for you') : 'was blocked from running a command') : `needs ${todo} decisions from you`;
+  const todoWord = todo === 1 ? (first ? (first.kind === 'approval' ? 'asks for your approval' : 'has a question for you') : 'was blocked from running a command') : `needs ${todo} decisions`;
   const gates = todo ? `<div class="thread-gates"><div class="turn gates-head"><span class="turn-av">${avatar(sel.name, 'waiting', 26)}</span><div class="gh-text"><b>${esc(sel.name)}</b> ${todoWord}</div></div>${c.gates.map((g, i) => (i === 0 ? gateCard(g, !!m.firstApproval) : gateQueued(g))).join('')}${blocked.map(blockedCard).join('')}</div>` : '';
   const empty0 = !c.events.length && !todo ? empty('send', `Nothing yet with ${sel.name}`, 'Say what you want below. If it is idle, this starts a run; if it is working, it will read it at its next step.') : '';
   const running = sel.state === 'running';
@@ -645,13 +645,11 @@ export function renderBody(m: ConsoleModel): string {
     : `<span class="state idle">${icon('check')}All good${m.next ? nextRun : ' · nothing scheduled'}</span>`;
   // A brand-new workspace gets only the way forward: no tabs, no team controls that would do nothing.
   const hasAgents = m.agents.length > 0 || m.runs.length > 0 || todos > 0 || (m.tasks ?? []).length > 0;
-  const latest = m.latest ? btn(`Latest: ${clip(m.latest.agent, 24)} · ${clip(baseName(m.latest.path), 32)}`, `data-open="${esc(m.latest.path)}" title="Open ${esc(m.latest.path)}, the newest file a mate produced"`, 'secondary', 'file') : '';
-  const actions = !hasAgents ? '' : (m.running ? '' : btn('Start mates', 'data-cmd="startTeam" title="Start every mate: schedules and triggers begin, queued work runs"', 'primary', 'play'))
-    + btn('Give a mate a task', 'data-cmd="runAgent" title="Pick a mate and give it a one-off task now"', 'secondary', 'send') + latest;
+  const actions = !hasAgents || m.running ? '' : btn('Start mates', 'data-cmd="startTeam" title="Start every mate: schedules and triggers begin, queued work runs"', 'primary', 'play');
   // One line per to-do. Handling it happens in that mate's Chat, where the one input box is.
   const needs = todos ? `<div class="needlist">${[...m.pending.map(g => needRow(g.kind === 'question' ? 'Question' : 'Approval', g.title, g.agent, g.createdAt)), ...blocked.map(b => needRow('Blocked', `${b.agent} was blocked: ${clip(b.command, 70)}`, b.agent, b.at))].join('')}</div>` : empty('check', 'Nothing is waiting for you', 'Questions, approvals and blocked commands from mates show up here.');
   const DECIDED: Record<string, string> = { executed: 'Approved, ran', failed: 'Approved, failed', rejected: 'Rejected', answered: 'Answered' };
-  const decisions = (m.decisions ?? []).length ? `<details class="decisions"><summary>${icon('chevron', 'chev')}<span>Recent decisions</span><span class="count">${m.decisions!.length}</span><span class="muted ell grow">Last: ${esc(DECIDED[m.decisions![0].status] ?? m.decisions![0].status)} · ${esc(m.decisions![0].title)}</span></summary><ul>${m.decisions!.map(d => `<li><span class="chip ${d.status === 'failed' ? 'bad' : d.status === 'rejected' ? 'mute' : 'ok'}">${esc(DECIDED[d.status] ?? d.status)}</span><span class="grow ell" title="${esc(d.title)}">${esc(d.title)}</span><span class="tag">${esc(d.agent)}</span><span class="muted nowrap">${stamp(d.at, ago(d.at))}</span></li>`).join('')}</ul></details>` : '';
+  const decisions = (m.decisions ?? []).length ? `<details class="decisions"><summary>${icon('chevron', 'chev')}<span>Recent decisions</span><span class="count">${m.decisions!.length}</span></summary><ul>${m.decisions!.map(d => `<li><span class="chip ${d.status === 'failed' ? 'bad' : d.status === 'rejected' ? 'mute' : 'ok'}">${esc(DECIDED[d.status] ?? d.status)}</span><span class="grow ell" title="${esc(d.title)}">${esc(d.title)}</span><span class="tag">${esc(d.agent)}</span><span class="muted nowrap">${stamp(d.at, ago(d.at))}</span></li>`).join('')}</ul></details>` : '';
   const tasks = m.tasks ?? [];
   const openTasks = tasks.length ? `<h2>Tasks in progress<span class="count">${tasks.length}</span></h2>${tasks.map(taskCard).join('')}` : '';
   const problems = m.runs.filter(r => PROBLEMS.has(r.status)).length;
@@ -664,10 +662,10 @@ export function renderBody(m: ConsoleModel): string {
   const stoppedNote = stoppedWithWork ? `<div class="alert warn" role="status">${icon('alert')}<span><b>Nothing will run until you press Start mates.</b></span></div>` : '';
   const item = (cmd: string, title: string, sub: string, kind = '') => `<button class="menuitem ${kind}" data-cmd="${cmd}"><span class="mi-title">${esc(title)}</span><span class="mi-sub">${esc(sub)}</span></button>`;
   const tools = hasAgents ? `<div class="tabrow">${renderTabs(m)}<details class="toolmenu"><summary class="btn secondary" aria-haspopup="menu"><span>Check &amp; tools</span><span class="caret" aria-hidden="true"></span></summary><div class="menu" role="menu">${m.running ? item('stopTeam', 'Stop all mates', 'Nothing new runs until you press Start mates. Work in progress is kept') : ''}${item('runDoctor', 'Check mates', 'Confirm every mate can run, and run their pre-checks once')}${item('showHealth', 'Health report', 'How each mate has been doing, and what to improve')}${item('getStarted', 'Add a mate', 'Start from a ready-made mate, or describe one')}${item('cleanUp', 'Clean up', 'Delete finished work you no longer need. Asks first')}<div class="mi-foot">Or ask <code>@mate</code> in Chat for anything here.</div></div></details></div>` : '';
-  const copilotChip = m.copilot === undefined ? '' : m.copilot > 0 ? `<span class="chip ok" title="${m.copilot} Copilot model${m.copilot > 1 ? 's' : ''} available">${icon('check')}<span>Copilot ready</span></span>` : `<span class="chip warn">${icon('alert')}<span>Copilot not signed in</span></span>`;
+  const copilotChip = m.copilot === undefined || m.copilot > 0 ? '' : `<span class="chip warn">${icon('alert')}<span>Copilot not signed in</span></span>`;
   const copilotNote = m.copilot === 0 ? `<div class="alert warn" role="alert">${icon('alert')}<span><b>GitHub Copilot is not signed in.</b> Agents use your Copilot models, so none can run until you sign in to GitHub Copilot in VS Code (Accounts menu, bottom left).</span></div>` : '';
   const note = m.note ? `<div class="alert ${m.note.tone}" role="alert">${icon(m.note.tone === 'bad' ? 'x' : 'alert')}<span>${esc(m.note.text)}</span></div>` : '';
-  return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}${copilotChip}<span class="grow"></span><span class="muted updated">Updated <time data-updated datetime="${esc(m.updatedAt)}">${esc(time(m.updatedAt))}</time></span><div class="row">${actions}</div></header>
+  return `<header class="bar"><div class="brand">Harbor Mate Console</div>${state}${copilotChip}<span class="grow"></span>${actions ? `<div class="row">${actions}</div>` : ''}</header>
     ${note}${hasAgents ? copilotNote : ''}${stoppedNote}${tools}${m.tab === 'chat' && m.chat ? renderChat(m) : `<div class="cols"><main><h2>Needs you${todos ? `<span class="count warn">${todos}</span>` : ''}</h2>${needs}
     ${decisions}${openTasks}<h2>Recent runs<span class="grow"></span>${filter}</h2>${runs}</main><aside><h2>Mates</h2>${agents}</aside></div>`}`;
 }

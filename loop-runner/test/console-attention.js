@@ -145,7 +145,7 @@ console.log('results first');
   ok(link && link.querySelector('.dname').textContent === 'today.md' && /alpha/.test(link.querySelector('.ddir').textContent), 'a finished run lists its file under its summary: name, folder, one click to open');
   const mate = [...d.querySelectorAll('.agent')].find(a => /alpha/.test(a.querySelector('.agent-name').textContent));
   ok(/Latest output: today\.md/.test(mate.textContent) && mate.querySelector('.lastout [data-open=".loop/outbox/alpha/today.md"]') && !/Latest output/.test([...d.querySelectorAll('.agent')].find(a => /beta/.test(a.querySelector('.agent-name').textContent)).textContent), 'a mate card says its latest output, and says nothing for a mate with none');
-  ok(/Latest: alpha · today\.md/.test(d.querySelector('.bar').textContent) && d.querySelector('.bar [data-open=".loop/outbox/alpha/today.md"]'), 'the top button says where the file comes from');
+  ok(!/Latest:/.test(d.querySelector('.bar').textContent) && !d.querySelector('.bar [data-open]'), 'the top bar carries no Latest button: the file is on the mate card');
   ok(!/Latest:/.test(dom(renderBody(model(world(), { tab: 'overview' }))).querySelector('.bar').textContent), 'with no output yet the button is hidden');
   const chat = dom(renderBody(model(R, { agent: 'alpha' })));
   ok(/Latest output: today\.md/.test(chat.querySelector('.chat-head').textContent) && chat.querySelector('.rcard .rdelivs [data-open=".loop/outbox/alpha/today.md"]'), 'the conversation head and the run block in it show the file too');
