@@ -751,6 +751,8 @@ a{color:var(--vscode-textLink-foreground)}
 .chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--vscode-editor-background)}
 .chat-head{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--vscode-panel-border)}.ch-name{font-weight:600;font-size:1.05em}.ch-sub{font-size:.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .thread{flex:1;min-height:0;overflow-y:auto;padding:16px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 16px);mask-image:linear-gradient(to bottom,transparent 0,#000 16px);display:flex;flex-direction:column;gap:12px}.center{text-align:center}
+/* A short conversation sits against the input box, so what you are asked and where you answer are never a screen apart. */
+.thread>:first-child{margin-top:auto}
 .msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.bot{justify-content:flex-start;align-items:flex-start}
 .bubble{max-width:78%;padding:8px 14px;border-radius:18px;overflow-wrap:anywhere}
 .human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-bottom-right-radius:5px}
