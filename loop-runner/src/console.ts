@@ -46,7 +46,7 @@ export interface BlockedView { id: string; agent: string; command: string; chain
 export interface LatestOutput { agent: string; path: string; at: string }
 
 export interface ChatModel {
-  agents: { name: string; description: string; file?: string; triggers?: AgentRow['triggers']; paused?: boolean; state: ChatState; avatar: AvatarState; line: string; at?: string; pendingMessages: number; needsYou: number }[];
+  agents: { name: string; description: string; file?: string; triggers?: AgentRow['triggers']; goals?: AgentRow['goals']; paused?: boolean; state: ChatState; avatar: AvatarState; line: string; at?: string; pendingMessages: number; needsYou: number }[];
   selected?: string;
   events: ThreadEvent[];
   /** Earlier events that are not shown. */
@@ -167,7 +167,7 @@ export function consoleModel(root: string, state: { running: boolean; active?: A
   const latest = Object.values(outputs).sort((a, b) => b.at.localeCompare(a.at))[0];
   let chat: ChatModel | undefined;
   if (tab === 'chat') {
-    const rows = agents.map(a => { const g = glance(root, a.name, a.description, state.active, now); return { name: a.name, description: a.description, file: a.file, triggers: a.triggers, paused: a.paused, ...g, needsYou: g.needsYou + blocked.filter(b => b.agent === a.name).length }; });
+    const rows = agents.map(a => { const g = glance(root, a.name, a.description, state.active, now); return { name: a.name, description: a.description, file: a.file, triggers: a.triggers, goals: a.goals, paused: a.paused, ...g, needsYou: g.needsYou + blocked.filter(b => b.agent === a.name).length }; });
     // With no choice made, land on the mate behind the first to-do.
     const first = pending[0]?.agent ?? blocked[0]?.agent;
     const selected = rows.find(r => r.name === state.agent)?.name ?? rows.find(r => r.name === first)?.name ?? rows.find(r => r.needsYou)?.name ?? rows.find(r => r.state === 'running')?.name ?? rows[0]?.name;
@@ -402,6 +402,8 @@ export function plainCron(c: string): string {
   return c;
 }
 
+const triggerWords = (t: { kind: string; text: string }) => t.kind === 'schedule' ? plainCron(t.text) : t.kind === 'webhook' ? `on webhook “${t.text}”` : `on new files in ${t.text}`;
+
 function agentRow(a: AgentRow, copilotOff = false, out?: LatestOutput): string {
   const label = a.paused ? 'Paused' : a.state === 'running' ? 'Running' : a.state === 'waiting' ? 'Waiting on you' : 'Idle';
   const tone = a.paused ? 'mute' : a.state === 'running' ? 'info' : a.state === 'waiting' ? 'warn' : 'mute';
@@ -411,7 +413,10 @@ function agentRow(a: AgentRow, copilotOff = false, out?: LatestOutput): string {
     : `${lw.wake ? 'found work' : 'nothing to do'} <span class="muted">${stamp(lw.at, ago(lw.at))}</span>`;
   const trig = (a.triggers ?? []).map(t => t.kind === 'schedule' ? plainCron(t.text) : t.kind === 'webhook' ? `on webhook “${t.text}”` : `on new files in ${t.text}`);
   const icoFor = (k: string) => (k === 'schedule' ? 'clock' : k === 'webhook' ? 'send' : 'file');
-  const runs = (a.triggers ?? []).length ? `<dt>Runs</dt><dd class="trigs">${(a.triggers ?? []).map((t, i) => `<span class="trig">${icon(icoFor(t.kind))}${esc(trig[i])}</span>`).join('')}</dd>` : '<dt>Runs</dt><dd class="muted">on demand</dd>';
+  const withTriggers = (a.goals ?? []).filter(g => g.triggers.length);
+  const runs = withTriggers.length > 1
+    ? `<dt>Goals</dt><dd class="trigs goals">${withTriggers.map(g => `<span class="trig" title="${esc(g.text)}"><b class="ell">${esc(clip(g.text, 34))}</b><span class="muted">${esc(g.triggers.map(triggerWords).join(' · '))}</span></span>`).join('')}</dd>`
+    : (a.triggers ?? []).length ? `<dt>Runs</dt><dd class="trigs">${(a.triggers ?? []).map((t, i) => `<span class="trig">${icon(icoFor(t.kind))}${esc(trig[i])}</span>`).join('')}</dd>` : '<dt>Runs</dt><dd class="muted">on demand</dd>';
   const pauseBtn = a.paused ? btn('Resume', `data-cmd="resumeAgent" data-arg="${esc(a.name)}" title="Let ${esc(a.name)} wake on its schedule and triggers again"`, 'secondary', 'play') : (a.triggers ?? []).length ? btn('Pause', `data-cmd="pauseAgent" data-arg="${esc(a.name)}" title="Skip ${esc(a.name)}'s scheduled and event wakes. A task you give it still runs."`, 'secondary', 'stop') : '';
   return `<div class="agent ${a.paused ? 'paused' : ''}"><div class="agent-top">${avatar(a.name, a.paused ? 'idle' : a.state === 'running' ? 'working' : a.state === 'waiting' ? 'waiting' : 'idle', 26)}<a class="agent-name" href="#" data-open="${esc(a.file)}" title="Edit ${esc(a.file)}: its instructions, schedule and skills">${esc(a.name)}</a>
     <span class="chip ${tone}">${icon(a.paused ? 'stop' : a.state === 'running' ? 'spin' : a.state === 'waiting' ? 'bell' : 'dot')}<span>${label}</span></span></div>
@@ -558,8 +563,13 @@ function dayLabel(d: Date, now = new Date()): string {
 
 /** What wakes this mate, in words: it is the first thing a person wants to know about it. */
 function chatFacts(sel: ChatModel['agents'][number]): string {
-  const t = (sel.triggers ?? []).map(x => x.kind === 'schedule' ? plainCron(x.text) : x.kind === 'webhook' ? `webhook “${x.text}”` : `new files in ${x.text}`);
-  return `<div class="muted ch-facts">${sel.paused ? '<b>Paused</b> · ' : ''}${t.length ? `Runs ${esc(t.join(' · '))}` : 'Runs only when you give it a task'}${sel.file ? ` · <a class="link" href="#" data-open="${esc(sel.file)}" title="Open ${esc(sel.file)}: its instructions, schedule and skills">Edit file</a>` : ''}</div>`;
+  const t = (sel.triggers ?? []).map(triggerWords);
+  const withTriggers = (sel.goals ?? []).filter(g => g.triggers.length);
+  // Several goals each have their own clock, so a flat list of schedules would not say which is which: count them and unfold.
+  const runs = withTriggers.length > 1
+    ? `<details class="goalfold"><summary>${withTriggers.length} goals</summary><ul>${withTriggers.map(g => `<li><span class="ell" title="${esc(g.text)}">${esc(clip(g.text, 60))}</span><span class="muted nowrap">${esc(g.triggers.map(triggerWords).join(' · '))}</span></li>`).join('')}</ul></details>`
+    : t.length ? `Runs ${esc(t.join(' · '))}` : 'Runs only when you give it a task';
+  return `<div class="muted ch-facts">${sel.paused ? '<b>Paused</b> · ' : ''}${runs}${sel.file ? ` · <a class="link" href="#" data-open="${esc(sel.file)}" title="Open ${esc(sel.file)}: its instructions, schedule and skills">Edit file</a>` : ''}</div>`;
 }
 
 /** The few things a person does to a mate, one click from its conversation. */
@@ -750,6 +760,8 @@ a{color:var(--vscode-textLink-foreground)}
 .thread{flex:1;min-height:0;overflow-y:auto;padding:16px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 16px);mask-image:linear-gradient(to bottom,transparent 0,#000 16px);display:flex;flex-direction:column;gap:12px}.center{text-align:center}
 /* A short conversation sits against the input box, so what you are asked and where you answer are never a screen apart. */
 .thread>:first-child{margin-top:auto}
+.goalfold{display:inline-block;vertical-align:top}.goalfold>summary{display:inline;cursor:pointer;list-style:none}.goalfold>summary::-webkit-details-marker{display:none}.goalfold>summary::after{content:" ▾"}.goalfold[open]>summary::after{content:" ▴"}
+.goalfold ul{list-style:none;margin:6px 0 2px;padding:0;display:flex;flex-direction:column;gap:3px}.goalfold li{display:flex;gap:10px;justify-content:space-between;max-width:520px}.trigs.goals{display:flex;flex-direction:column;gap:6px}.trigs.goals .trig{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:0;min-width:0}
 .msg{display:flex;gap:10px;max-width:100%}.msg.human{justify-content:flex-end}.msg.bot{justify-content:flex-start;align-items:flex-start}
 .bubble{max-width:78%;padding:8px 14px;border-radius:18px;overflow-wrap:anywhere}
 .human .bubble{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-bottom-right-radius:5px}

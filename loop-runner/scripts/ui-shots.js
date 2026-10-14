@@ -22,7 +22,7 @@ function demo() {
   const R = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-demo-'));
   const agent = (n, d, loop) => w(R, `.github/agents/${n}.agent.md`, `---\nname: ${n}\ndescription: ${d}\nloop:\n${loop}---\nYou do this work carefully. Ask the human with ask_human when a call depends on risk. Finish with done or blocked.\n`);
   agent('daily-report', 'Writes the morning report of what changed in the repository.', '  schedule: "0 9 * * 1-5"\n  task: Write the report.\n');
-  agent('release-watch', 'Watches release health and raises problems early.', '  schedule: "*/30 * * * *"\n  task: Check release health.\n');
+  agent('release-watch', 'Watches release health and raises problems early.', '  goals:\n    - id: health\n      text: Check release health.\n      schedule: "*/30 * * * *"\n    - id: summary\n      text: Post the weekday release summary.\n      schedule: "30 17 * * 1-5"\n      task: Post the summary.\n');
   agent('triage', 'Sorts new issues and proposes owners.', '  goals:\n    - id: new-issue\n      text: Triage new issues.\n      on: "webhook:issue"\n');
   const run = (chain, name, startMin, status, steps, summary, outputs = []) => {
     const ev = [{ type: 'start', agent: name, ts: ago(startMin), step: 0, from: 'schedule', hop: 0, task: TASKS[name] ?? 'Do the work.' }];

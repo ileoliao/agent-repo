@@ -85,6 +85,21 @@ console.log('Recent runs: one entry for a blocked command');
   ok(rows.length === 2 && rows.filter(r => /Decide in Chat/.test(r.querySelector('summary').textContent)).length === 1, 'a Blocked run for any other reason keeps its old row');
 }
 
+console.log('an agent with several goals');
+{
+  const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-goals-'));
+  w(R, '.github/agents/multi.agent.md', '---\nname: multi\ndescription: looks after several things\nloop:\n  goals:\n    - id: report\n      text: Write the morning report\n      schedule: "0 9 * * 1-5"\n      task: Report.\n    - id: health\n      text: Watch release health\n      schedule: "*/30 * * * *"\n      task: Check.\n    - id: issues\n      text: Triage new issues\n      on: "webhook:issue"\n      task: Triage.\n---\nCareful.\n');
+  w(R, '.github/agents/solo.agent.md', agentFile('solo'));
+  const chatOf = name => dom(renderBody(model(R, { agent: name }))).querySelector('.ch-facts');
+  const facts = chatOf('multi');
+  const items = [...facts.querySelectorAll('.goalfold li')];
+  ok(/3 goals/.test(facts.querySelector('summary').textContent) && !/Runs /.test(facts.textContent), 'the chat header counts the goals instead of listing every schedule');
+  ok(items.length === 3 && /Write the morning report/.test(items[0].textContent) && /weekdays at 09:00/.test(items[0].textContent) && /Triage new issues/.test(items[2].textContent) && /webhook/.test(items[2].textContent), 'and unfolding says which goal runs when');
+  ok(/Runs every day at 09:00/.test(chatOf('solo').textContent) && !chatOf('solo').querySelector('.goalfold'), 'one goal keeps the plain line');
+  const card = [...dom(renderBody(model(R, { tab: 'overview' }))).querySelectorAll('.agent')].find(c => /multi/.test(c.textContent));
+  ok(card.querySelectorAll('.goals .trig').length === 3 && /Watch release health/.test(card.textContent), 'the Overview card lists one line per goal');
+}
+
 console.log('where the console opens');
 {
   const R = world();

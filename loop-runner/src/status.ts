@@ -19,6 +19,8 @@ export interface AgentRow {
   lastWake?: { wake: boolean; at: string; capped?: number };
   /** What wakes it besides a person: `schedule` text and `on:` triggers, one entry per goal that has one. */
   triggers?: { kind: 'schedule' | 'webhook' | 'file'; text: string }[];
+  /** The same wakes grouped by goal: an agent may look after several things, each on its own clock or event. */
+  goals?: { id: string; text: string; triggers: { kind: 'schedule' | 'webhook' | 'file'; text: string }[] }[];
   /** Its scheduled and event wakes are skipped (a task given by hand still runs). */
   paused?: boolean;
   /** Workspace-relative path of the agent file. */
@@ -59,6 +61,7 @@ export function agentRows(root: string, activeAgent?: Active, now = new Date()):
     next: a.goals.flatMap(g => (g.schedule ? [nextMatch(g.schedule, now)] : [])).filter((d): d is Date => !!d).sort((x, y) => x.getTime() - y.getTime())[0],
     lastWake: wakes.get(a.name),
     triggers: a.goals.flatMap(g => [...(g.schedule ? [{ kind: 'schedule' as const, text: g.schedule }] : []), ...(g.on ? [{ kind: (g.on.startsWith('webhook:') ? 'webhook' : 'file') as 'webhook' | 'file', text: g.on.replace(/^(webhook|file):/, '') }] : [])]),
+    goals: a.goals.map(g => ({ id: g.id, text: g.text, triggers: [...(g.schedule ? [{ kind: 'schedule' as const, text: g.schedule }] : []), ...(g.on ? [{ kind: (g.on.startsWith('webhook:') ? 'webhook' : 'file') as 'webhook' | 'file', text: g.on.replace(/^(webhook|file):/, '') }] : [])] })),
     paused: paused.has(a.name) || undefined,
     file: a.file
   }));
