@@ -237,7 +237,9 @@ const whenShort = (iso: string) => {
   return d.toDateString() === new Date().toDateString() ? time(iso) : `${d.toLocaleDateString([], { month: 'numeric', day: 'numeric' })} ${time(iso)}`;
 };
 /** A time with its exact value on hover. */
-const stamp = (iso: string, text: string) => `<time datetime="${esc(iso)}" title="${esc(new Date(iso).toLocaleString())}">${esc(text)}</time>`;
+const stamp = (iso: string, text: string, extra = '') => `<time datetime="${esc(iso)}" title="${esc(new Date(iso).toLocaleString() + (extra ? ` · ${extra}` : ''))}">${esc(text)}</time>`;
+/** "42 requests · 6 min": what a finished run cost, for the hover of its time stamp. */
+const costOf = (requests?: number, ms?: number) => [requests ? `${requests} request${requests === 1 ? '' : 's'}` : '', ms === undefined ? '' : ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`].filter(Boolean).join(' · ');
 const span = (a: string, b: string) => {
   const ms = Date.parse(b) - Date.parse(a);
   if (!(ms >= 0)) { return ''; }
@@ -502,7 +504,7 @@ function threadEvent(e: ThreadEvent, agent: string, ctx: Ctx = {}): string {
     // The outcome is the title; the rest of a long summary sits under it.
     const title = firstLine(e.detail ?? '') || e.goal || '';
     const rest = e.detail && (e.detail.includes('\n') ? e.detail.slice(e.detail.indexOf('\n') + 1).trim() : e.detail.length > 140 ? e.detail : '');
-    return `<div class="rcard ${esc(e.status)} ${toneOf(e.tone)}" data-result="${esc(e.status)}"><div class="rtop"><span class="chip ${toneOf(e.tone)}"${e.why ? ` title="${esc(e.why)}"` : ''}>${esc(e.label)}</span><span class="rgoal ell strong" title="${esc(title)}">${esc(clip(title, 140))}</span><span class="stime nowrap">${stamp(e.ts, whenShort(e.ts))}</span></div>`
+    return `<div class="rcard ${esc(e.status)} ${toneOf(e.tone)}" data-result="${esc(e.status)}"><div class="rtop"><span class="chip ${toneOf(e.tone)}"${e.why ? ` title="${esc(e.why)}"` : ''}>${esc(e.label)}</span><span class="rgoal ell strong" title="${esc(title)}">${esc(clip(title, 140))}</span><span class="stime nowrap">${stamp(e.ts, whenShort(e.ts), costOf(e.requests, e.ms))}</span></div>`
       + taskLine(e.detail ? e.goal : undefined, e.from, ctx)
       + (rest ? `<div class="rsum wrap-text">${esc(rest)}</div>` : '')
       + (e.next ? line('Next:', e.next) : '') + (e.handoff ? line(`Handed to ${e.handoff.to}:`, e.handoff.task) : '')

@@ -81,7 +81,7 @@ export type ThreadEvent =
   | { kind: 'steps'; ts: string; steps: ThreadStep[] }
   | { kind: 'status'; ts: string; label: string; tone: Tone; detail?: string; chainId: string; outputs?: string[]; /** The line that opens a run (its task): the run's card says it, so it is not repeated inside the fold. */ start?: boolean }
   /** How a run ended, as one card: the key result. `detail` is the full finish summary. */
-  | { kind: 'result'; ts: string; chainId: string; status: string; label: string; tone: Tone; /** How the run began (`schedule`, `user`, a mate's name...): its task is only worth showing when it adds something. */ from?: string; /** Why the run ended this way, for the label's hover text. */ why?: string; goal?: string; detail?: string; next?: string; handoff?: { to: string; task: string }; deliverables: { path: string; preview?: string }[]; supporting: string[]; /** One line per question or approval settled during the run: "You approved: Roll back payments-service". */ approvals?: string[];
+  | { kind: 'result'; ts: string; chainId: string; /** Model requests the run made and its wall time, from the `end` event (shown on the time stamp's hover). */ requests?: number; ms?: number; status: string; label: string; tone: Tone; /** How the run began (`schedule`, `user`, a mate's name...): its task is only worth showing when it adds something. */ from?: string; /** Why the run ended this way, for the label's hover text. */ why?: string; goal?: string; detail?: string; next?: string; handoff?: { to: string; task: string }; deliverables: { path: string; preview?: string }[]; supporting: string[]; /** One line per question or approval settled during the run: "You approved: Roll back payments-service". */ approvals?: string[];
       /** Everything the run did, folded behind the card: today's detailed view, one click away. */
       fold: ThreadEvent[]; stepCount: number; problems: { refused: number; error: number; failed: number } }
   /** A run that has started and not ended (working, or parked on a gate): one card, its steps folded, like a finished run. */
@@ -224,7 +224,7 @@ export function buildThread(root: string, agent: string, opts: { limit?: number;
         const count = (re: RegExp) => bad.filter(x => re.test(x.detail ?? '')).length;
         const problems = { refused: count(/^REFUSED/), error: count(/^ERROR/), failed: 0 };
         problems.failed = bad.length - problems.refused - problems.error;
-        events.push({ kind: 'result', ts: e.ts, chainId: c.chainId, status: st, label, tone, why, from, goal,
+        events.push({ kind: 'result', ts: e.ts, chainId: c.chainId, requests: Number(e.requests ?? e.step) || undefined, ms: typeof e.ms === 'number' ? e.ms : undefined, status: st, label, tone, why, from, goal,
           detail: [summary, msg].filter(Boolean).join('\n') || undefined, next: st === 'open' ? next : undefined, handoff, deliverables: split.deliverables.map(d => ({ path: d, preview: previewOf(root, d) })), supporting: split.supporting, approvals: approvals.length ? approvals : undefined,
           fold, stepCount: fold.reduce((n2, f) => n2 + (f.kind === 'steps' ? f.steps.length : 0), 0), problems });
         resetRun();

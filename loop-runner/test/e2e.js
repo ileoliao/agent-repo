@@ -565,7 +565,8 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     await run('sentinel', 'dl-c', 'Report', [[['finish', { status: 'done', summary: 'ok', deliverables: ['rep/dl.md', 'nope.md'] }]]]);
     { const f = fs.readdirSync(path.join(W, '.loop/runs')).map(d => path.join(W, '.loop/runs', d, 'dl-c.jsonl')).find(fs.existsSync);
       const end = fs.readFileSync(f, 'utf8').trim().split('\n').map(JSON.parse).find(e => e.type === 'end');
-      ok(end && end.deliverables && end.deliverables.join() === 'rep/dl.md', 'the end audit event records the deliverables'); }
+      ok(end && end.deliverables && end.deliverables.join() === 'rep/dl.md', 'the end audit event records the deliverables');
+      ok(end.requests === end.step && end.requests >= 1 && typeof end.ms === 'number' && end.ms >= 0, 'the end event records the requests used and the wall time'); }
     x = await run('sentinel', c1, 'Watch the backlog\nuntil it drops below 120', [fin('open', 'not yet'), fin('open', 'still above target', 'recheck after the next deploy')]);
     ok(results[0].startsWith('Not finished') && x.r.status === 'open' && x.r.steps === 2, 'finish open without next is an error result; the run continues and finishes on the second try');
     let t = T.getTask(W, c1);

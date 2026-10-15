@@ -416,7 +416,7 @@ async function runItemInner(item: WorkItem, deps: RunDeps): Promise<RunResult> {
   const transcriptNow = piToPlain(pi.state.messages as any[]);
   const results = transcriptNow.flatMap(m => m.parts.flatMap(p => (p.t === 'result' ? [p.text] : [])));
   const done = finished as { status: string; summary: string; next?: string; deliverables?: string[] } | undefined;
-  log({ type: 'end', step, status, summary: done?.summary, outputs: [...new Set([...outputsFrom(results), ...wroteFromAudit(deps.root, item.chainId, item.id)])], ...(done?.deliverables?.length ? { deliverables: done.deliverables } : {}) });
+  log({ type: 'end', step, requests: step, ms: Date.now() - startedAt, status, summary: done?.summary, outputs: [...new Set([...outputsFrom(results), ...wroteFromAudit(deps.root, item.chainId, item.id)])], ...(done?.deliverables?.length ? { deliverables: done.deliverables } : {}) });
   deps.out.appendLine(`■ ${agent.name}: ${status}${done ? ` — ${done.summary}` : ''}`);
   return { status, summary: done?.summary, next: done?.next, steps: step };
 }

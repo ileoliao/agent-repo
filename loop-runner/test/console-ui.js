@@ -62,6 +62,7 @@ console.log('statuses use one vocabulary');
   ok(TH.END_LABEL.stalled[2] && TH.END_LABEL.max_steps[2], 'the specific reason is kept as hover text');
   const card = o => renderBody({ ...base, chat: chatOf([row()], 'a', [{ kind: 'result', ts: now, chainId: 'c1', status: 'stalled', label: 'Failed', why: 'It went in circles <b>', tone: 'bad', detail: 'x', deliverables: [], supporting: [], fold: [], stepCount: 0, problems: { refused: 0, error: 0, failed: 0 }, ...o }]) });
   ok(/<span class="chip bad" title="It went in circles &lt;b&gt;">Failed<\/span>/.test(card()), 'the chip says Failed and explains on hover, escaped');
+  ok(/<time [^>]*title="[^"]*· 42 requests · 6 min">/.test(card({ requests: 42, ms: 6 * 60_000 })) && /· 1 request"/.test(card({ requests: 1, ms: 20_000 }).replace(/ · \d+ s/, '')) && !/request/.test(card()), 'the time stamp of a finished run says "42 requests · 6 min" on hover, and nothing when it is unknown');
   ok(!/Finished|Waiting for you|Waiting on you|waiting on you|has a question for you|asks for your approval|decisions/.test(renderBody({ ...base, pending: [gate('approval')], chat: chatOf([row({ state: 'waiting', avatar: 'waiting', needsYou: 1, line: 'Needs you: t' })], 'a', [], [gate('approval')]) })), 'the old phrasings are gone');
 }
 
