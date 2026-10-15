@@ -40,6 +40,32 @@ webhook 经过 Service 可能落到任意副本，所以配对不依赖本地内
 
 `reason` 的取值：`late`（超时后才到）、`from_future`、`probe_id_not_aligned`（编号格式丢失精度）、`missing_or_bad_probe_id`、`duplicate`（同一副本收到重复通知，仅尽力标记）。
 
+### 服务自身的运行指标（标准 OTel SDK）
+
+探测服务通过同一个 OTLP 地址上报自己的运行指标，方便在 Grafana 中回顾它的工作情况。资源属性带 `service.name=heartbeat-probe` 和 `service.instance.id=<副本名>`。
+
+| OTel 指标 | 类型 | 属性 | Mimir 中的名称（默认转换） |
+|---|---|---|---|
+| `heartbeat.probe.sent` | Counter | probe, replica | `heartbeat_probe_sent_total` |
+| `heartbeat.probe.notifications` | Counter | probe, replica（发出方）, received_by, status, matched, reason | `heartbeat_probe_notifications_total` |
+| `heartbeat.probe.latency` | Histogram（秒） | probe, replica, status | `heartbeat_probe_latency_seconds_bucket` 等 |
+| `heartbeat.probe.webhook.rejected` | Counter | probe, received_by, reason | `heartbeat_probe_webhook_rejected_total` |
+
+常用查询示例（名称以你们 Mimir 中的实际转换结果为准）：
+
+```promql
+# 每个副本每小时验证成功的心跳数（正常应约为 3600/300 = 12）
+sum by (replica) (increase(heartbeat_probe_notifications_total{matched="true", status="firing"}[1h]))
+
+# 端到端延迟 p95
+histogram_quantile(0.95, sum by (le, replica) (rate(heartbeat_probe_latency_seconds_bucket{status="firing"}[1h])))
+
+# 配对失败的原因分布
+sum by (reason) (increase(heartbeat_probe_notifications_total{matched="false"}[1d]))
+```
+
+这些指标走的正是被检测的链路，**只用于回顾和分析，不用于判断链路是否中断**。链路中断时它们也会一起消失，判断由 GCP 完成。
+
 ### GCP 告警（`gcp/setup.sh` 创建，均按副本分别触发）
 
 | 告警 | 条件 | 发现的问题 |

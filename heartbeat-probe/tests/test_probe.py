@@ -97,6 +97,32 @@ def test_future_missing_duplicate_and_foreign(logs):
     assert [x["matched"] for x in r] == [False, False, True, False]
 
 
+class RecordingTelemetry(app.Telemetry):
+    def __init__(self):
+        self.calls = []
+
+    def sent(self):
+        self.calls.append(("sent",))
+
+    def notification(self, origin, status, matched, reason, latency):
+        self.calls.append(("notification", origin, status, matched, reason, latency))
+
+
+def test_telemetry_mirrors_outcomes(logs):
+    p = make_probe()
+    tel = p.telemetry = RecordingTelemetry()
+    p.tick(T0)
+    p.handle_alert(alert(T0), T0 + 30)
+    p.handle_alert(alert(T0), T0 + 31)
+    p.handle_alert(alert(T0), T0 + 400)
+    assert tel.calls == [
+        ("sent",),
+        ("notification", "heartbeat-probe-0", "firing", True, None, 30),
+        ("notification", "heartbeat-probe-0", "firing", False, "duplicate", None),
+        ("notification", "heartbeat-probe-0", "firing", False, "late", None),
+    ]
+
+
 def test_bad_config():
     with pytest.raises(ValueError):
         app.Config({"PROBE_PERIOD_SECONDS": "60", "PROBE_FIRING_SECONDS": "60", "WEBHOOK_TOKEN": "t"})
@@ -121,6 +147,8 @@ class FakeOtlp:
         from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
             ExportMetricsServiceRequest, ExportMetricsServiceResponse)
         self.points = []   # (metric_name, value, attrs, auth_header)
+        self.kinds = {}    # metric_name -> (data kind, unit)
+        self.resources = []
         recv = self
 
         class H(BaseHTTPRequestHandler):
@@ -130,13 +158,21 @@ class FakeOtlp:
             def do_POST(self):
                 req = ExportMetricsServiceRequest()
                 req.ParseFromString(self.rfile.read(int(self.headers["Content-Length"])))
+                auth = self.headers.get("Authorization")
                 for rm in req.resource_metrics:
+                    res = {a.key: a.value.string_value for a in rm.resource.attributes}
+                    recv.resources.append(res)
                     for sm in rm.scope_metrics:
                         for m in sm.metrics:
-                            for dp in m.gauge.data_points:
-                                v = dp.as_int if dp.HasField("as_int") else dp.as_double
+                            kind = m.WhichOneof("data")
+                            for dp in getattr(m, kind).data_points:
                                 attrs = {a.key: a.value.string_value for a in dp.attributes}
-                                recv.points.append((m.name, v, attrs, self.headers.get("Authorization")))
+                                if kind == "histogram":
+                                    v = (dp.count, dp.sum, list(dp.explicit_bounds))
+                                else:
+                                    v = dp.as_int if dp.HasField("as_int") else dp.as_double
+                                recv.points.append((m.name, v, attrs, auth))
+                                recv.kinds[m.name] = (kind, m.unit)
                 out = ExportMetricsServiceResponse().SerializeToString()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-protobuf")
@@ -188,6 +224,7 @@ def test_two_replicas_cross_delivery():
         deadline, snap = time.time() + 15, {}
         while time.time() < deadline:
             try:
+                healthz(b)                       # receiver must be listening too
                 snap = healthz(a)
                 if snap["state"] == 1:
                     break
@@ -217,8 +254,31 @@ def test_two_replicas_cross_delivery():
     assert any(l["event"] == "webhook_unauthorized" for l in lines)
     assert all({"severity", "message", "time"} <= set(l) for l in lines)
 
-    assert {p[0] for p in otlp.points} == {"heartbeat.probe.state", "heartbeat.probe.id"}
-    assert {p[2]["replica"] for p in otlp.points} == {"heartbeat-probe-0", "heartbeat-probe-1"}
+    assert otlp.kinds == {
+        "heartbeat.probe.state": ("gauge", ""),
+        "heartbeat.probe.id": ("gauge", ""),
+        "heartbeat.probe.sent": ("sum", "{probe}"),
+        "heartbeat.probe.notifications": ("sum", "{notification}"),
+        "heartbeat.probe.latency": ("histogram", "s"),
+        "heartbeat.probe.webhook.rejected": ("sum", "{request}"),
+    }
     assert all(p[2]["probe"] == "e2e" for p in otlp.points)
-    assert any(n == "heartbeat.probe.id" and v == pid for n, v, *_ in otlp.points)
     assert all(h == "Basic dGVhbTpwdw==" for *_, h in otlp.points)
+    gauges = [p for p in otlp.points if p[0] in ("heartbeat.probe.state", "heartbeat.probe.id")]
+    assert {p[2]["replica"] for p in gauges} == {"heartbeat-probe-0", "heartbeat-probe-1"}
+    assert any(n == "heartbeat.probe.id" and v == pid for n, v, *_ in gauges)
+
+    # self-observability: cumulative values, so look at the latest point per series
+    def last(name, **match):
+        vals = [v for n, v, a, _ in otlp.points if n == name and all(a.get(k) == x for k, x in match.items())]
+        return vals[-1] if vals else None
+
+    assert last("heartbeat.probe.sent", replica="heartbeat-probe-0") >= 1
+    assert last("heartbeat.probe.sent", replica="heartbeat-probe-1") >= 1
+    assert last("heartbeat.probe.notifications", replica="heartbeat-probe-0",
+                received_by="heartbeat-probe-1", status="firing", matched="true", reason="none") == 1
+    count, total, bounds = last("heartbeat.probe.latency", replica="heartbeat-probe-0", status="firing")
+    assert count == 1 and 0 <= total <= 5 and bounds == [float(b) for b in app.LATENCY_BUCKETS]
+    assert last("heartbeat.probe.webhook.rejected", received_by="heartbeat-probe-1", reason="unauthorized") == 1
+    assert {r.get("service.name") for r in otlp.resources} == {"heartbeat-probe"}
+    assert {r.get("service.instance.id") for r in otlp.resources} == {"heartbeat-probe-0", "heartbeat-probe-1"}

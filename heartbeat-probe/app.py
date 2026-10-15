@@ -26,6 +26,13 @@ Log events (jsonPayload.event):
   alert_received   webhook notification                    (replica = originator)
                    fields: status firing|resolved, matched, latency_seconds, reason, received_by
 
+Self-observability (standard OTel SDK, same OTLP endpoint, for reviewing the
+probe in Grafana; GCP stays the independent judge):
+  heartbeat.probe.sent              counter   {probe, replica}
+  heartbeat.probe.notifications     counter   {probe, replica, received_by, status, matched, reason}
+  heartbeat.probe.latency           histogram {probe, replica, status}  (validated only, seconds)
+  heartbeat.probe.webhook.rejected  counter   {probe, received_by, reason}
+
 Use stable replica IDs (StatefulSet pod names): GCP absence alerts are per replica.
 """
 
@@ -86,6 +93,59 @@ def log(severity: str, event: str, **fields) -> None:
         sys.stdout.flush()
 
 
+# ------------------------------------------------------------- telemetry ----
+
+LATENCY_BUCKETS = [5, 15, 30, 45, 60, 90, 120, 180, 240, 300]
+
+
+class Telemetry:
+    """Self-observability hooks. The no-op base keeps the core logic testable."""
+
+    def sent(self) -> None: ...
+    def notification(self, origin, status, matched, reason, latency) -> None: ...
+    def rejected(self, reason: str) -> None: ...
+
+
+class NoopTelemetry(Telemetry):
+    pass
+
+
+class OtelTelemetry(Telemetry):
+    """Standard OTel SDK instruments, exported with the probe gauges over the same OTLP endpoint."""
+
+    def __init__(self, meter, cfg: Config):
+        self.cfg = cfg
+        self._sent = meter.create_counter(
+            "heartbeat.probe.sent", unit="{probe}",
+            description="Probes started by this replica")
+        self._notifications = meter.create_counter(
+            "heartbeat.probe.notifications", unit="{notification}",
+            description="Grafana webhook notifications handled, by outcome")
+        self._latency = meter.create_histogram(
+            "heartbeat.probe.latency", unit="s",
+            description="End-to-end latency of validated notifications")
+        self._rejected = meter.create_counter(
+            "heartbeat.probe.webhook.rejected", unit="{request}",
+            description="Webhook requests rejected before processing")
+
+    def sent(self) -> None:
+        self._sent.add(1, {"probe": self.cfg.probe_name, "replica": self.cfg.replica})
+
+    def notification(self, origin, status, matched, reason, latency) -> None:
+        origin = str(origin)[:64]   # value comes from the request; keep cardinality bounded
+        status = status if status in ("firing", "resolved") else "other"
+        self._notifications.add(1, {
+            "probe": self.cfg.probe_name, "replica": origin, "received_by": self.cfg.replica,
+            "status": status, "matched": str(matched).lower(), "reason": reason or "none"})
+        if latency is not None:
+            self._latency.record(latency, {"probe": self.cfg.probe_name, "replica": origin,
+                                           "status": status})
+
+    def rejected(self, reason: str) -> None:
+        self._rejected.add(1, {"probe": self.cfg.probe_name, "received_by": self.cfg.replica,
+                               "reason": reason})
+
+
 # ----------------------------------------------------------- probe state ----
 
 class Probe:
@@ -98,6 +158,7 @@ class Probe:
         self.probe_id = 0
         self.seen: dict[tuple, float] = {}   # best-effort local duplicate marker only
         self.counters = {"sent": 0, "received": 0, "matched": 0}
+        self.telemetry: Telemetry = NoopTelemetry()
 
     def tick(self, now: float) -> None:
         cycle_start = int(now - (now % self.cfg.period))
@@ -109,6 +170,7 @@ class Probe:
                 if self.probe_id != cycle_start:
                     self.counters["sent"] += 1
                     log("INFO", "probe_sent", probe_id=cycle_start, **base)
+                    self.telemetry.sent()
                 self.state, self.probe_id = 1, cycle_start
             elif want_state == 0 and self.state == 1:
                 self.state = 0
@@ -132,44 +194,47 @@ class Probe:
         try:
             pid = int(float(raw_id))
         except (TypeError, ValueError):
-            log("WARNING", "alert_received", matched=False, reason="missing_or_bad_probe_id",
-                raw_probe_id=str(raw_id)[:64], **fields)
-            return
+            fields["raw_probe_id"] = str(raw_id)[:64]
+            return self._outcome(fields, False, "missing_or_bad_probe_id")
         fields["probe_id"] = pid
 
         if status not in ("firing", "resolved"):
-            log("WARNING", "alert_received", matched=False, reason="unknown_status", **fields)
-            return
+            return self._outcome(fields, False, "unknown_status")
         if pid % self.cfg.period != 0:
             # e.g. a lossy "1.76054e+09" rendering - never count it as success
-            log("WARNING", "alert_received", matched=False, reason="probe_id_not_aligned", **fields)
-            return
+            return self._outcome(fields, False, "probe_id_not_aligned")
 
         # firing is measured from the probe start, resolved from the clear time
         reference = pid if status == "firing" else pid + self.cfg.firing
         latency = now - reference
         if latency < -CLOCK_SKEW_SECONDS:
-            log("WARNING", "alert_received", matched=False, reason="from_future",
-                latency_seconds=round(latency, 3), **fields)
-            return
+            return self._outcome(fields, False, "from_future", latency)
         if latency > self.cfg.timeout:
-            log("WARNING", "alert_received", matched=False, reason="late",
-                latency_seconds=round(latency, 3), **fields)
-            return
+            return self._outcome(fields, False, "late", latency)
 
         key = (origin, pid, status)
         with self.lock:
-            self.counters["received"] += 1
             duplicate = key in self.seen
             self.seen.setdefault(key, now)
-            if not duplicate:
-                self.counters["matched"] += 1
         if duplicate:
-            log("INFO", "alert_received", matched=False, reason="duplicate",
-                latency_seconds=round(latency, 3), **fields)
-        else:
-            log("INFO", "alert_received", matched=True,
-                latency_seconds=round(max(latency, 0.0), 3), **fields)
+            return self._outcome(fields, False, "duplicate", latency)
+        self._outcome(fields, True, None, max(latency, 0.0))
+
+    def _outcome(self, fields: dict, matched: bool, reason, latency=None) -> None:
+        """Single exit point: structured log for GCP + OTel metrics for self-review."""
+        with self.lock:
+            self.counters["received"] += 1
+            if matched:
+                self.counters["matched"] += 1
+        extra = {"matched": matched}
+        if reason:
+            extra["reason"] = reason
+        if latency is not None:
+            extra["latency_seconds"] = round(latency, 3)
+        severity = "INFO" if matched or reason == "duplicate" else "WARNING"
+        log(severity, "alert_received", **extra, **fields)
+        self.telemetry.notification(fields["replica"], fields["status"], matched, reason,
+                                    latency if matched else None)
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -185,6 +250,7 @@ def setup_metrics(probe: Probe, cfg: Config):
     from opentelemetry.metrics import CallbackOptions, Observation
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
     from opentelemetry.sdk.resources import Resource
 
     attrs = {"probe": cfg.probe_name, "replica": cfg.replica}
@@ -198,11 +264,18 @@ def setup_metrics(probe: Probe, cfg: Config):
             if probe.probe_id:
                 yield Observation(probe.probe_id, attrs)
 
-    resource = Resource.create({"service.name": os.environ.get("OTEL_SERVICE_NAME", "heartbeat-probe")})
+    # Resource.create() also honours OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES.
+    base_attrs = {"service.instance.id": cfg.replica}
+    if not os.environ.get("OTEL_SERVICE_NAME"):
+        base_attrs["service.name"] = "heartbeat-probe"
+    resource = Resource.create(base_attrs)
     reader = PeriodicExportingMetricReader(OTLPMetricExporter(),
                                            export_interval_millis=cfg.export_interval * 1000)
-    provider = MeterProvider(resource=resource, metric_readers=[reader])
+    latency_view = View(instrument_name="heartbeat.probe.latency",
+                        aggregation=ExplicitBucketHistogramAggregation(LATENCY_BUCKETS))
+    provider = MeterProvider(resource=resource, metric_readers=[reader], views=[latency_view])
     meter = provider.get_meter("heartbeat-probe")
+    probe.telemetry = OtelTelemetry(meter, cfg)
     meter.create_observable_gauge("heartbeat.probe.state", callbacks=[observe_state],
                                   description="1 while the probe asks the alert to fire, else 0")
     meter.create_observable_gauge("heartbeat.probe.id", callbacks=[observe_id],
@@ -242,17 +315,20 @@ def make_handler(probe: Probe, cfg: Config):
             if not hmac.compare_digest(auth, expected):
                 log("WARNING", "webhook_unauthorized", client=self.client_address[0],
                     received_by=cfg.replica)
+                probe.telemetry.rejected("unauthorized")
                 return self._reply(401, {"error": "unauthorized"})
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = 0
             if length <= 0 or length > MAX_BODY_BYTES:
+                probe.telemetry.rejected("bad_length")
                 return self._reply(400, {"error": "bad length"})
             try:
                 payload = json.loads(self.rfile.read(length))
                 alerts = payload.get("alerts") or []
             except (ValueError, AttributeError):
+                probe.telemetry.rejected("bad_json")
                 return self._reply(400, {"error": "bad json"})
             now = time.time()
             for alert in alerts:
