@@ -198,7 +198,7 @@ async function phaseResume(check) {
   check('chat: that message is marked delivered, as a task', m1 && m1.status === 'delivered' && m1.via === 'task' && !chatFiles('clerk').some(m => m.status === 'pending'), JSON.stringify(m1));
 
   // a working agent: it reads your message at its next step
-  writeScript({ scout: [], clerk: [{ delay: 2500, calls: [{ name: 'list_dir', input: { path: '.' } }] }, fin('saw the message')] });
+  writeScript({ scout: [], clerk: [{ delay: 2500, calls: [{ name: 'run_command', input: { command: 'ls .' } }] }, fin('saw the message')] });
   await vscode.commands.executeCommand('harborMate._sim.submit', 'clerk', 'long task');
   await poll('delay started', () => readTrace().some(e => e.event === 'delay-started' && e.agent === 'clerk') ? true : null);
   await vscode.commands.executeCommand('harborMate._sim.chatSend', 'clerk', 'change of plan: only look at the root');

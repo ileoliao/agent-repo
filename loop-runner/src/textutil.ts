@@ -25,6 +25,7 @@ export function humanize(name: string, input: unknown): Humanized {
   const s = (v: unknown) => (typeof v === 'string' ? v : '');
   switch (name) {
     case 'read_file': return { phrase: `Read ${base(s(o.path)) || 'a file'}`, routine: true, fam: 'read', famKind: 'read' };
+    // list_dir is no longer a tool; old audit logs still contain it, so it keeps rendering.
     case 'list_dir': return { phrase: `Listed ${base(s(o.path) || '.') || '.'}`, routine: true, fam: 'list', famKind: 'list' };
     case 'write_file': return { phrase: `Wrote ${s(o.path)}`.trim(), routine: false };
     case 'edit_file': return { phrase: `Edited ${s(o.path)}`.trim(), routine: false };

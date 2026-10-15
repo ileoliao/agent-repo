@@ -348,7 +348,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(live.args.includes('-c') && /bash|sh$/.test(live.shell), 'this host runs commands through pi shell config');
   }
 
-  console.log('read_file continuation and list_dir limit');
+  console.log('read_file continuation');
   {
     const lines = Array.from({ length: 2005 }, (_, i) => `L${String(i + 1).padStart(4, '0')}`);
     fs.writeFileSync(path.join(W, 'long.txt'), lines.join('\n'));
@@ -369,14 +369,6 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(fd.finished.deliverables.join() === 'rep/out.md', 'finish deliverables are normalized to workspace paths and deduplicated');
     ok(/missing\.md/.test(fd.text) && /outside\.md/.test(fd.text) && /passwd/.test(fd.text) && !fd.finished.deliverables.some(d => /outside|passwd|missing/.test(d)), 'a missing file and paths outside the workspace are dropped, and the result text says which');
     ok((await runTool('finish', { status: 'done', summary: 's' }, ctx)).finished.deliverables === undefined, 'deliverables are optional');
-    const many = path.join(W, 'many');
-    fs.mkdirSync(many);
-    for (let i = 0; i < 501; i++) fs.writeFileSync(path.join(many, `f${String(i).padStart(3, '0')}.txt`), 'x');
-    const listed = await runTool('list_dir', { path: 'many' }, ctx);
-    ok(listed.text.includes('Use limit=1000'), 'list_dir tells the model to pass limit');
-    const rest = await runTool('list_dir', { path: 'many', limit: 1000 }, ctx);
-    const names = rest.text.split('\n').filter(l => l.endsWith('.txt'));
-    ok(names.length === 501 && !rest.text.includes('limit reached'), 'list_dir limit returns every entry');
   }
 
   console.log('tool mode, cancel, and queue retention');
@@ -880,7 +872,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
           if (throwOnce.delete(id)) { throw new Error('rate limit exceeded'); }
           await new Promise((res, rej) => { gate(id).p.then(res); tok.onCancellationRequested(() => rej(new Error('cancelled'))); if (tok.isCancellationRequested) { rej(new Error('cancelled')); } });
           const talk = gate(id).talk;
-          if (talk) { return { stream: (async function* () { yield new ToolCallPart(`${id}-t`, 'list_dir', { path: '.' }); })() }; }
+          if (talk) { return { stream: (async function* () { yield new ToolCallPart(`${id}-t`, 'run_command', { command: 'ls .' }); })() }; }
         }
         return { stream: (async function* () { yield new ToolCallPart(`${id}-f`, 'finish', { status: 'done', summary: 'ok' }); })() };
       }
@@ -1154,11 +1146,11 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
       } }; };
     const gItem = id => ({ id, agent: 'techlead', task: 't', from: 'user', chainId: `${id}-chain`, hop: 0, createdAt: new Date().toISOString() });
     const gDeps = (model, extra = {}) => ({ root: W, team, skills, model, secrets: {}, policy: loadPolicy(W, '.loop/policy.json'), maxSteps: 20, maxHops: 5, out, token, ...extra });
-    const loop = await runItem(gItem('stall1'), gDeps(scripted([[['list_dir', { path: '.' }]]])));
+    const loop = await runItem(gItem('stall1'), gDeps(scripted([[['run_command', { command: 'ls .' }]]])));
     ok(loop.status === 'stalled' && loop.steps === 3 && loop.summary.includes('3 times'), 'the same call with the same result 3 times in a row ends the run as stalled');
-    const varied = await runItem(gItem('stall2'), gDeps(scripted([[['list_dir', { path: '.' }]], [['list_dir', { path: '.github' }]], [['list_dir', { path: '.' }]], [['finish', { status: 'done', summary: 'ok' }]]])));
+    const varied = await runItem(gItem('stall2'), gDeps(scripted([[['run_command', { command: 'ls .' }]], [['run_command', { command: 'ls .github' }]], [['run_command', { command: 'ls .' }]], [['finish', { status: 'done', summary: 'ok' }]]])));
     ok(varied.status === 'done', 'different calls are not a stall');
-    const slow = await runItem(gItem('slow1'), gDeps(scripted([[['list_dir', { path: '.' }]], [['list_dir', { path: '.github' }]], [['list_dir', { path: '.loop' }]]], 30), { maxMs: 40 }));
+    const slow = await runItem(gItem('slow1'), gDeps(scripted([[['run_command', { command: 'ls .' }]], [['run_command', { command: 'ls .github' }]], [['run_command', { command: 'ls .loop' }]]], 30), { maxMs: 40 }));
     ok(slow.status === 'stalled' && slow.summary.includes('wall-clock') && slow.steps < 3, 'a run past its wall-clock cap ends as stalled');
 
     const today = new Date();
@@ -1704,6 +1696,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
       ok(/You can reach exactly/.test(pr('strict')) && !/You can reach exactly/.test(pr('standard')) && !/You can reach exactly/.test(pr('trusted')), 'standard and trusted are not told they can reach exactly a list');
       ok(/inside the workspace are open/.test(pr('standard')) && /\.loop\/, \.github\/ and \.git\/ stay protected/.test(pr('standard')) && /push, deploy, network writes, remote shells\) come back as needing approval/.test(pr('standard')) && !/needing approval/.test(pr('trusted')) && /inside the workspace are open/.test(pr('trusted')), 'standard says outward actions need approval; trusted drops that clause');
       ok(/an assumption about access is not evidence/.test(pr('standard')) && /an assumption about access is not evidence/.test(pr('trusted')), 'both still say to try the obvious route');
+      ok(!buildTools({ handoffs: ['x'] }).some(t => t.name === 'list_dir'), 'list_dir is gone: run_command ls covers it');
       const wf = pf => buildTools({ handoffs: [] }, pf).find(t => t.name === 'write_file').description;
       ok(wf('strict') === buildTools({ handoffs: [] }).find(t => t.name === 'write_file').description && /REFUSED, so write what you produce to \.loop\/outbox/.test(wf('strict')) && !/does not allow/.test(wf('standard')) && /Protected paths \(\.loop, \.github, \.git\) are REFUSED/.test(wf('trusted')) && /Drafts for human review go under \.loop\/outbox/.test(wf('standard')), 'the write_file description differs by profile; strict is unchanged');
     }
@@ -1794,7 +1787,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
 
     // 2. said while it works: it is read before the next request
     let m2;
-    const mod2 = model([[['list_dir', { path: '.' }]], FIN], count => { if (count === 1) { m2 = T.postHumanMessage(W, 'techlead', 'Actually, skip the docs folder.'); } });
+    const mod2 = model([[['run_command', { command: 'ls .' }]], FIN], count => { if (count === 1) { m2 = T.postHumanMessage(W, 'techlead', 'Actually, skip the docs folder.'); } });
     const r2 = await run(item('chat-turn'), mod2);
     const second = all(mod2.requests)[1];
     ok(r2.status === 'done' && !all(mod2.requests)[0].includes('skip the docs folder') && second.includes('Message from the human, sent while you were working') && second.includes('Actually, skip the docs folder.'), 'said while it works: it reaches the model before its next request, not before the one already in flight');
@@ -1823,7 +1816,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
 
     // 5. an interruption between receiving and finishing the turn does not lose it
     let m5;
-    const mod5 = model([[['list_dir', { path: '.' }]], 'throw'], count => { if (count === 1) { m5 = T.postHumanMessage(W, 'techlead', 'Remember to be brief.'); } });
+    const mod5 = model([[['run_command', { command: 'ls .' }]], 'throw'], count => { if (count === 1) { m5 = T.postHumanMessage(W, 'techlead', 'Remember to be brief.'); } });
     const r5 = await run(item('chat-crash'), mod5);
     ok(r5.status === 'error' && mine().find(m => m.id === m5.id).status === 'pending', 'if the model fails right after it was given, the message is still pending and will be given again');
 
@@ -1851,7 +1844,7 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(turn && turn.status === 'delivered' && turn.via === 'turn', 'a delivered message says how it was delivered');
     const ans = all.find(e => e.kind === 'answer' && e.text === 'blue');
     ok(ans && ans.title === 'Which queue?', 'your answer to a question appears with the question it answered');
-    const steps = all.find(e => e.kind === 'steps' && e.steps.some(s => s.title.startsWith('list_dir')));
+    const steps = all.find(e => e.kind === 'steps' && e.steps.some(s => s.title.startsWith('run_command')));
     ok(steps && !all.some(e => e.kind === 'steps' && e.steps.some(s => s.title.startsWith('finish'))), 'consecutive tool calls are one block, and finish is shown as the run\'s end instead');
     ok(T.buildThread(W, 'techlead', { limit: 5 }).events.length === 5 && T.buildThread(W, 'techlead', { limit: 5 }).hidden > 0, 'the thread can be limited and says how much is hidden');
     ok(T.buildThread(W, 'nobody-here').events.length === 0, 'an agent with no history has an empty thread');

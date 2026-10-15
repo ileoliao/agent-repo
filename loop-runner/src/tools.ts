@@ -7,7 +7,6 @@ import { WorkItem, enqueue, newId, saveGate } from './queue';
 import { exec, redact } from './exec';
 import { taskOnHandoff, updateTask } from './tasks';
 import { createEditToolDefinition } from './vendor/pi/tools/edit';
-import { createLsToolDefinition } from './vendor/pi/tools/ls';
 import { createReadToolDefinition } from './vendor/pi/tools/read';
 import { createWriteToolDefinition } from './vendor/pi/tools/write';
 
@@ -47,15 +46,6 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
           startLine: { type: 'number', description: 'First line to return, 1-based. Also accepts offset as an alias.' },
           endLine: { type: 'number', description: 'Last line to return, inclusive.' }
         },
-        required: ['path']
-      }
-    },
-    {
-      name: 'list_dir',
-      description: 'List a workspace directory (non-recursive). "." is the root. If the result says the entry limit was reached, call again with a higher limit.',
-      inputSchema: {
-        type: 'object',
-        properties: { path: { type: 'string' }, limit: { type: 'number', description: 'Maximum entries to return (default 500).' } },
         required: ['path']
       }
     },
@@ -191,14 +181,6 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
         'read', { path: rel, offset: window.offset, limit: window.limit }, abortSignal(ctx)
       );
       return { text: rewriteReadHint(toolText(result)) };
-    }
-    case 'list_dir': {
-      const rel = workspaceRel(ctx.root, input.path || '.');
-      const limit = asNumber(input.limit);
-      const result = await createLsToolDefinition(ctx.root).execute(
-        'ls', limit == null ? { path: rel } : { path: rel, limit }, abortSignal(ctx)
-      );
-      return { text: toolText(result) };
     }
     case 'write_file':
     case 'edit_file': {

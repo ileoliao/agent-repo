@@ -86,7 +86,7 @@ loop:                                # ← Harbor Mate 专用，VS Code 忽略�
 角色说明（Chat 和无人值守共用）
 ```
 
-单个 `schedule`/`wakeIf`/`task` 的旧写法照常可用（等价于 id 为 `default` 的目标）。CLI 不要让 mate 直接拼命令：用 skill 里的薄脚本（固定子命令、`--json`），策略只放行脚本；`SKILL.md` 里写 `requires: [harbor]`，Check Mates 会查它是否装好。终端里能用而 VS Code 找不到时，把目录加到 `harborMate.extraPath`。运行时给 mate 的通用工具只有 `read_file`、`list_dir`、`write_file`、`edit_file`、`run_command`、`ask_human`、`request_approval`、`handoff`、`finish`、`update_task`。
+单个 `schedule`/`wakeIf`/`task` 的旧写法照常可用（等价于 id 为 `default` 的目标）。CLI 不要让 mate 直接拼命令：用 skill 里的薄脚本（固定子命令、`--json`），策略只放行脚本；`SKILL.md` 里写 `requires: [harbor]`，Check Mates 会查它是否装好。终端里能用而 VS Code 找不到时，把目录加到 `harborMate.extraPath`。运行时给 mate 的通用工具只有 `read_file`、`write_file`、`edit_file`、`run_command`、`ask_human`、`request_approval`、`handoff`、`finish`、`update_task`（列目录用 `run_command ls`）。
 
 ## 安全
 
