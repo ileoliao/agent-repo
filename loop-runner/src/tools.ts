@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Policy, decideCommand, decideWrite, hardReject, secretsAllowed } from './policy';
+import { Policy, Profile, decideCommand, decideWrite, hardReject, secretsAllowed } from './policy';
 import { AgentDef } from './team';
 import { WorkItem, enqueue, newId, saveGate } from './queue';
 import { exec, redact } from './exec';
@@ -35,7 +35,7 @@ export interface ToolOutcome {
 }
 
 /** Generic, capability-free tools. What an agent can *do* comes from its skills' scripts. */
-export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
+export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode.LanguageModelChatTool[] {
   const tools: vscode.LanguageModelChatTool[] = [
     {
       name: 'read_file',
@@ -61,7 +61,9 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
     },
     {
       name: 'write_file',
-      description: 'Create/overwrite a workspace file. Drafts for human review go under .loop/outbox/. A path your policy does not allow is REFUSED, so write what you produce to .loop/outbox/ rather than trying other places.',
+      description: profile === 'strict'
+        ? 'Create/overwrite a workspace file. Drafts for human review go under .loop/outbox/. A path your policy does not allow is REFUSED, so write what you produce to .loop/outbox/ rather than trying other places.'
+        : 'Create/overwrite a workspace file. Drafts for human review go under .loop/outbox/. Protected paths (.loop, .github, .git) are REFUSED.',
       inputSchema: {
         type: 'object',
         properties: { path: { type: 'string' }, content: { type: 'string' } },
