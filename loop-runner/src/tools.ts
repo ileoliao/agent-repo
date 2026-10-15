@@ -38,7 +38,7 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
   const tools: vscode.LanguageModelChatTool[] = [
     {
       name: 'read_file',
-      description: 'Read a UTF-8 text file in the workspace (workspace-relative path). Use for SKILL.md references, code, data. To continue a truncated read, pass startLine (and optionally endLine).',
+      description: 'Read a UTF-8 text file (workspace-relative path): SKILL.md references, code, data. To continue a truncated read, pass startLine (and optionally endLine).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -62,7 +62,7 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
     },
     {
       name: 'edit_file',
-      description: 'Replace exactly one occurrence of oldText with newText in a workspace file. oldText must match the file exactly, whitespace included, and be unique: keep it as small as possible while still unique, and do not pad it with unchanged lines.',
+      description: 'Replace exactly one occurrence of oldText with newText in a workspace file. oldText must match the file exactly, whitespace included, and be unique: keep it as small as possible while still unique, with no padding of unchanged lines.',
       inputSchema: {
         type: 'object',
         properties: { path: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' } },
@@ -73,17 +73,17 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
       name: 'run_command',
       description:
         "Run a non-interactive shell command at the workspace root. Your skills' scripts are pre-approved. " +
-        'Output beyond about 16 KB is cut to its head and tail (the full output is saved to a file the result names), so prefer a skill script that prints a small summary over dumping raw data. ' +
+        'Output beyond about 16 KB is cut to its head and tail (the full output is saved to a file the result names); prefer a skill script that prints a small summary over dumping raw data. ' +
         'A REFUSED result will repeat if you retry it: use a different route, use request_approval only if the message offers it, otherwise report the gap.',
       inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] }
     },
     {
       name: 'ask_human',
       description:
-        'Ask the human for something only they can give: a decision between reasonable options, a preference, or access or data your skills cannot reach. ' +
-        'You pause here and continue this same conversation when they answer (often hours). First do every part of the work you can. ' +
-        'In context, say what you tried and quote the exact error. If a capability is missing, name the lasting fix (a skill, an allowed command, a secret) as well as any one-off workaround. ' +
-        'Ask one specific question, with the recommended option first.',
+        'Ask the human for what only they can give: a decision between reasonable options, a preference, or access or data your skills cannot reach. ' +
+        'You pause and continue this same conversation when they answer (often hours), so first do every part of the work you can. ' +
+        'In context, say what you tried and quote the exact error; if a capability is missing, name the lasting fix (a skill, an allowed command, a secret) as well as any one-off workaround. ' +
+        'Ask one specific question, recommended option first.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -98,10 +98,9 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
     {
       name: 'request_approval',
       description:
-        'Ask the human to approve an action (e.g. sending a reply to a user). Write any draft to .loop/outbox/ first and ' +
-        'list it in files; the human may edit it before approving. The command runs only after approval, so make it read ' +
-        'the draft file rather than embedding text. With wait=true you pause and continue this conversation with the ' +
-        'result or the rejection feedback; with wait=false it returns immediately and you should carry on or finish. ' +
+        'Ask the human to approve an action (e.g. sending a reply). Write any draft to .loop/outbox/ first and list it in files; the human may edit it before approving. ' +
+        'The command runs only after approval, so make it read the draft file rather than embed text. ' +
+        'wait=true pauses you and resumes with the result or the rejection feedback; wait=false returns at once, so carry on or finish. ' +
         'Not for questions or for getting access: use ask_human.',
       inputSchema: {
         type: 'object',
@@ -118,9 +117,9 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
     {
       name: 'finish',
       description:
-        'End this work item with a short summary. done = resolved; nothing_to_do = nothing needed doing; blocked = you cannot proceed and no answer from the human would unblock this run (the summary must name what is missing and what you tried). ' +
-        'open = this task is NOT finished and you will continue it later (for example you are waiting for a teammate); ' +
-        'it stays on your list of open tasks and you must say in next what the next step is and what you are waiting for.',
+        'End this work item with a short summary. done = resolved; nothing_to_do = nothing needed doing; ' +
+        'blocked = you cannot proceed and no answer from the human would unblock this run (the summary must name what is missing and what you tried); ' +
+        'open = NOT finished, you will continue later (for example waiting for a teammate): it stays on your open tasks, and next must say what the next step is and what you are waiting for.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -135,8 +134,8 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
     {
       name: 'update_task',
       description:
-        'Update an open task you hold, which need not be the one you are working on now (see "Your open tasks"). ' +
-        'state open + note: it is still open, note says what remains. state done or dropped: you no longer hold it; note says why.',
+        'Update an open task you hold, not necessarily the current one (see "Your open tasks"). ' +
+        'state open + note: still open, note says what remains. state done or dropped: you no longer hold it, note says why.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -151,7 +150,7 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
   if (agent.handoffs.length > 0) {
     tools.push({
       name: 'handoff',
-      description: 'Pass work that is outside your role to a teammate. Include everything they need in context (ids, paths, evidence); they do not see your conversation. Hand off one way: do not pass back work you were handed, the receiver is expected to finish it.',
+      description: 'Pass work outside your role to a teammate. Put everything they need in context (ids, paths, evidence): they do not see your conversation. Hand off one way: do not pass back work you were handed, the receiver finishes it.',
       inputSchema: {
         type: 'object',
         properties: {
