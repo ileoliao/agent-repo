@@ -5,5 +5,6 @@
 - `tank-showcase/`：Blender 程序化建模的 ZTZ-99A 风格主战坦克展示
 - `chengdu-inkwash/`：程序化水墨风格的成都历史动画
 - [inkwash-engine](inkwash-engine/README.md)：程序化水墨引擎（吸光度叠墨，`纸色 × exp(−ΣA)`），含山水 `shanshui/paint.py` 与笔毛试笔 `brushlab/sheet.py`。
+- [heartbeat-probe](heartbeat-probe/README.md)：告警链路端到端拨测（OTLP 指标 → Mimir → Grafana 规则 → webhook 配对），配合 GCP 日志告警发现链路中断、配对失败和延迟。
 
 > 测试：这是一段随便写的说明文字，用于验证 PR 流程。
