@@ -93,6 +93,22 @@ console.log('running a cleanup');
   fs.rmSync(w.R, { recursive: true, force: true });
 }
 
+console.log('scratch');
+{
+  const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-scratch-'));
+  const put = (rel, age) => { j(R, rel, 'x'); const t = new Date(daysAgo(age)); fs.utimesSync(path.join(R, rel), t, t); };
+  put('.loop/scratch/old.py', 8); put('.loop/scratch/new.py', 2); put('.loop/scratch/out/old-1.txt', 9); put('.loop/scratch/out/new-1.txt', 1);
+  const plan = M.planCleanup(R, M.DEFAULT_RETENTION, now);
+  ok(plan.map(v => v.file).sort().join() === '.loop/scratch/old.py,.loop/scratch/out/old-1.txt' && plan.every(v => v.kind === 'scratch'), 'scratch files older than 7 days are planned, newer ones are not');
+  ok(M.planCleanup(R, M.DEFAULT_RETENTION, now, { agent: 'a' }).length === 0, 'a cleanup for one mate leaves scratch alone');
+  const r = M.runCleanup(R, plan, 'auto', now);
+  ok(r.removed.scratch === 2 && !exists(R, '.loop/scratch/old.py') && exists(R, '.loop/scratch/new.py') && exists(R, '.loop/scratch/out/new-1.txt'), 'only the old ones are deleted');
+  put('.loop/scratch/out/new-1.txt', 9);
+  M.runCleanup(R, M.planCleanup(R, M.DEFAULT_RETENTION, now), 'auto', now);
+  ok(!exists(R, '.loop/scratch/out') && exists(R, '.loop/scratch/new.py'), 'a scratch folder emptied by the pass is removed');
+  fs.rmSync(R, { recursive: true, force: true });
+}
+
 console.log('pause and cancel');
 {
   const { R } = world();

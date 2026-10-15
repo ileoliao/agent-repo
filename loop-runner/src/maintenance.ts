@@ -14,7 +14,10 @@ export const DEFAULT_RETENTION: Retention = { doneDays: 14, runsDays: 30, gateDa
 /** Finished items in these states are waiting for a person, so they stay unless the human asks for them to go. */
 export const PROBLEM_STATUSES = new Set(['blocked', 'error', 'max_steps', 'stalled']);
 
-export type VictimKind = 'item' | 'run' | 'gate' | 'checkpoint' | 'task';
+/** Scripts and spilled command output under `.loop/scratch/` are throwaway: they go after this many days. */
+export const SCRATCH_DAYS = 7;
+
+export type VictimKind = 'item' | 'run' | 'gate' | 'checkpoint' | 'task' | 'scratch';
 export interface Victim { kind: VictimKind; /** Workspace-relative. */ file: string; label: string; ageDays: number; bytes: number }
 export interface CleanupOptions {
   /** Only this agent's finished work. Checkpoints and run files follow the item they belong to. */
@@ -35,6 +38,13 @@ const mtime = (f: string) => { try { return fs.statSync(f).mtimeMs; } catch { re
 const jsonFiles = (d: string): string[] => { try { return fs.readdirSync(d).filter(n => n.endsWith('.json')).map(n => path.join(d, n)); } catch { return []; } };
 const readJson = <T>(f: string): T | undefined => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) as T; } catch { return undefined; } };
 const dirs = (d: string): string[] => { try { return fs.readdirSync(d).filter(n => !n.startsWith('_') && fs.statSync(path.join(d, n)).isDirectory()); } catch { return []; } };
+
+/** Every file below `d`, recursively (symlinks are not followed). */
+function filesUnder(d: string): string[] {
+  let names: fs.Dirent[];
+  try { names = fs.readdirSync(d, { withFileTypes: true }); } catch { return []; }
+  return names.flatMap(e => (e.isDirectory() ? filesUnder(path.join(d, e.name)) : e.isFile() ? [path.join(d, e.name)] : []));
+}
 
 /** Items that are queued for an agent or parked on a gate. */
 function liveItems(root: string): WorkItem[] {
@@ -93,6 +103,14 @@ export function planCleanup(root: string, ret: Retention = DEFAULT_RETENTION, no
     if (a >= days(ret.taskDays)) { out.push({ kind: 'task', file: `.loop/tasks/${t.id}.json`, label: `task "${t.title.slice(0, 50)}" (${t.state})`, ageDays: Math.floor(a), bytes: size(path.join(L(root, 'tasks'), `${t.id}.json`)) }); }
   }
 
+  // Scratch is not any agent's finished work, so a per-agent cleanup leaves it alone.
+  if (!opts.agent) {
+    for (const f of filesUnder(L(root, 'scratch'))) {
+      const a = (now.getTime() - mtime(f)) / DAY;
+      if (a >= days(SCRATCH_DAYS)) { out.push({ kind: 'scratch', file: rel(root, f), label: `scratch ${rel(root, f).slice('.loop/scratch/'.length)}`, ageDays: Math.floor(a), bytes: size(f) }); }
+    }
+  }
+
   const runs = L(root, 'runs');
   for (const day of dirs(runs)) {
     const t = Date.parse(day);
@@ -113,7 +131,7 @@ export interface CleanupResult { removed: Record<VictimKind, number>; bytes: num
 
 /** Delete the planned files, drop emptied run folders, and leave one line in `.loop/maintenance.jsonl`. */
 export function runCleanup(root: string, victims: Victim[], by: 'auto' | 'human', now = new Date()): CleanupResult {
-  const removed: Record<VictimKind, number> = { item: 0, run: 0, gate: 0, checkpoint: 0, task: 0 };
+  const removed: Record<VictimKind, number> = { item: 0, run: 0, gate: 0, checkpoint: 0, task: 0, scratch: 0 };
   let bytes = 0;
   for (const v of victims) {
     const abs = path.join(root, v.file);
@@ -122,6 +140,9 @@ export function runCleanup(root: string, victims: Victim[], by: 'auto' | 'human'
     fs.rmSync(abs, { force: true });
     removed[v.kind]++; bytes += v.bytes;
   }
+  // Drop scratch folders the pass emptied (deepest first); the scratch root itself stays.
+  const emptied = (d: string) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) { const sub = path.join(d, e.name); emptied(sub); try { if (!fs.readdirSync(sub).length) { fs.rmdirSync(sub); } } catch { /* in use */ } } } };
+  if (removed.scratch) { try { emptied(L(root, 'scratch')); } catch { /* none */ } }
   const runs = L(root, 'runs');
   for (const day of dirs(runs)) { try { if (!fs.readdirSync(path.join(runs, day)).length) { fs.rmdirSync(path.join(runs, day)); } } catch { /* in use */ } }
   if (victims.length) {
