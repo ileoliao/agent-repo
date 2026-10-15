@@ -151,6 +151,68 @@ flowchart LR
   A4 --> P
 ```
 
+## Where verdicts are made
+
+Two levels, and only the second is authoritative.
+
+| Level | Who decides | How |
+|---|---|---|
+| Single check | A probe replica | Query checks: the sending replica, after reading back through Grafana (all `count` items before the deadline → `ok=true`). Alert checks: whichever replica receives the webhook (aligned `probe_id`, inside the time window → `ok=true`). **A missing webhook produces no record at all**: alert-check failures exist only as absence. |
+| Promise met or not | GCP Cloud Monitoring | SLO `ok / started` per promise and tenant over `slo_window_days`, plus the broken / failing / slow / fast-burn policies. |
+
+The self-observability metrics in Mimir travel the tested path and vanish when it breaks: use them for review, never for the verdict.
+
+### How results reach GCP
+
+The probe has no GCP client and does not know GCP exists. Its only output to the judge is stdout:
+
+```mermaid
+flowchart LR
+  P["Probe replica<br/>stdout JSON"] --> A["GKE logging agent<br/>default, no config"]
+  A --> CL["Cloud Logging<br/>jsonPayload"]
+  CL --> LM["Log-based metrics<br/>heartbeat_check_started / ok / failed / latency<br/>labels: promise, tenant, replica"]
+  LM --> SLO["Request-based SLOs<br/>good = ok, total = started"]
+  LM --> POL["Alert policies<br/>absence, failures, latency"]
+  SLO --> BURN["Burn-rate policies"]
+```
+
+This keeps the verdict entirely outside your OTel, Loki and Mimir. Consequences:
+
+- **Runs on GKE** (or anywhere whose stdout reaches Cloud Logging). Running the probe on-premises needs another way into Cloud Logging, such as the Ops Agent; the probe itself does not call the Logging API.
+- **Create the log-based metrics before deploying**: they only count entries ingested after they exist.
+- **Expect a few minutes of delay** (log ingestion plus metric extraction); absence windows default to 15 minutes for that reason.
+- **Log exclusions or sinks that drop the container's logs** make every promise look broken. This fails safe, but check the project's exclusion filters before go-live.
+
+### Where to look
+
+| What | Where |
+|---|---|
+| Promise attainment and error budget | Cloud Monitoring → Services → `heartbeat-probe <name>` → one SLO per promise and tenant |
+| Incidents | Cloud Monitoring → Alerting, policies prefixed `[heartbeat-probe/<name>]` |
+| Why a check failed | Logs Explorer: `jsonPayload.event="check_result" AND jsonPayload.ok=false` |
+| Trends for review | Grafana, from the self-observability metrics |
+
+**Blind spot:** when the probe itself is down, `started` and `ok` both drop to zero, so the SLO ratio does not move. The *broken* policy still fires (no `ok` results), but the SLO page alone will not show it; read SLO reports together with incident history.
+
+## What this covers and what it does not
+
+**Covers**
+
+- Quantified platform reliability: an SLO and error budget per promise and tenant, usable for reporting, capacity requests and change freezes.
+- Silent failures of the alerting path itself (Grafana down, rule errors, webhook delivery, expired credentials), detected from outside the platform.
+- Blast radius: which tenants and promises an incident affected, from when and for how long; the evidence for tenant isolation and the way to verify it.
+- Before/after comparison for platform changes (sampling layer, scaling, upgrades).
+- Freshness and completeness numbers that were previously unknown: time to queryable logs, complete traces.
+
+**Does not cover**
+
+- **Prevention.** It detects impact, not causes. Overload still needs quotas, isolation, sampling and per-service footprint visibility; it cannot say which service caused an incident.
+- **Root cause.** It names the broken promise and tenant, not the failing component.
+- **Problems outside the probe's own data.** Probe traffic is tiny and well-formed, so it misses issues that hit only some services: high-cardinality rejections, a single throttled log stream, real traces dropped by sampling, low-rate partial loss (1% loss rarely hits 10 probe lines).
+- **Teams' own alert rules and contact points.** It proves the platform can deliver an alert, not that each team's rule is correct.
+- **Query performance under load.** Probe queries are small; heavy-query timeouts and peak-hour slowness go unnoticed.
+- **Derived metrics.** Recording rules and the SLO pipeline built on them are not yet a promise (a natural next one: "a written metric shows up in the recording-rule output within N minutes").
+
 ## Configuration
 
 One YAML file; see [`config.example.yaml`](config.example.yaml). Secrets are referenced by environment variable name (`*_env` fields).
@@ -230,7 +292,7 @@ sum by (promise, reason) (increase(heartbeat_probe_checks_results_total{ok="fals
 
 1. **Write `config.yaml`** from `config.example.yaml`.
 2. **Render and review** `python render.py render --config config.yaml`, then put `build/grafana/*.yaml` into Grafana's provisioning/alerting directory and set `HEARTBEAT_WEBHOOK_TOKEN` on Grafana.
-3. **Create GCP objects** `python render.py apply --config config.yaml --replace-policies`. The notification channel must not depend on the platform being tested.
+3. **Create GCP objects** `python render.py apply --config config.yaml --replace-policies`. Do this **before** step 4: log-based metrics do not count entries that arrived before they existed. The notification channel must not depend on the platform being tested.
 4. **Build and deploy** `docker build -t REGISTRY/heartbeat-probe:2.0.0 .`, put the same config into the ConfigMap in `k8s/deployment.yaml`, fill the Secret, `kubectl apply -f k8s/`.
    - StatefulSet: stable replica names keep Mimir series and per-replica GCP alerts stable.
    - stdout must reach Cloud Logging directly, never through your OTel/Loki pipeline.
@@ -238,6 +300,8 @@ sum by (promise, reason) (increase(heartbeat_probe_checks_results_total{ok="fals
 
 ## Pre-launch checklist
 
+- **GCP objects in a test project first.** The generated log metrics, SLOs and burn-rate policies follow the public API formats and `apply` is tested against a fake API, but they have not been applied to a real project yet. Run `render.py apply` in a test project and confirm every object is accepted.
+- **Log exclusions**: no exclusion filter or sink drops the `heartbeat-probe` container logs.
 - **Metric and label names** after your translation: gauges should be `heartbeat_probe_state` / `heartbeat_probe_id`. Loki should expose OTel log attributes as structured metadata `probe_check`, `probe_id`, `probe_replica`, `probe_name`; adjust `query` templates and re-render if yours differ.
 - **Trace sampling**: once tail sampling is in place, add a policy that always keeps `service.name = heartbeat-probe`, otherwise `traces_query` fails by design. This also proves the sampling layer is on the path.
 - **`$values.<ref>.Value`** renders in the annotation preview of each generated rule. If not, add a Reduce (last) expression and point the annotation at it.
