@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import { createLocalShellOperations, type BashOperations } from './vendor/pi/tools/bash';
 import { createLocalPowerShellOperations } from './vendor/pi/tools/powershell';
@@ -11,6 +12,8 @@ export interface ExecOptions {
   secrets: Record<string, string>;
   /** Also masked out of the output though not injected (secrets withheld from this command). */
   redactWith?: Record<string, string>;
+  /** When the output exceeds maxOutputBytes, the full (redacted) output is written to `dir/name` and the result points at `rel`. */
+  spill?: { dir: string; name: string; rel: string };
   /** Extra non-secret environment variables. */
   env?: Record<string, string>;
   onCancel?: (kill: () => void) => { dispose(): void };
@@ -119,7 +122,11 @@ async function run(command: string, o: ExecOptions): Promise<{ code: number | nu
   // log survives. The middle is dropped and the final cut below leaves cap/2 on each side.
   let head = '';
   let tail = '';
+  // The whole output, kept only to spill it to disk when it turns out to be too long (bounded: a runaway command cannot fill memory).
+  const all: string[] = [];
+  let allLen = 0;
   const append = (str: string) => {
+    if (o.spill && allLen < SPILL_MAX) { all.push(str); allLen += str.length; }
     const room = Math.max(0, cap - head.length);
     head += str.slice(0, room);
     tail += str.slice(room);
@@ -154,8 +161,21 @@ async function run(command: string, o: ExecOptions): Promise<{ code: number | nu
   if (text.length > cap) {
     const half = Math.floor(cap / 2);
     text = text.slice(0, half) + '\n...[truncated]...\n' + text.slice(-half);
+    if (o.spill) { text += spillFull(o.spill, redact(all.join(''), { ...o.redactWith, ...o.secrets }), allLen >= SPILL_MAX); }
   }
   return { code, text: `[${status}]\n${text}` };
+}
+
+const SPILL_MAX = 32 * 1024 * 1024;
+
+/** Writes the full output to disk and returns the line that tells the model where it is. Empty if the write failed. */
+function spillFull(spill: NonNullable<ExecOptions['spill']>, full: string, capped: boolean): string {
+  try {
+    fs.mkdirSync(spill.dir, { recursive: true });
+    fs.writeFileSync(path.join(spill.dir, spill.name), full);
+    const lines = full.split('\n').length - (full.endsWith('\n') ? 1 : 0);
+    return `\nFull output: ${spill.rel} (${lines} lines${capped ? ', first 32 MB only' : ''}). Use grep or read_file with startLine.`;
+  } catch { return ''; }
 }
 
 /** Replace every secret value, including short ones. Longer values are masked first. */

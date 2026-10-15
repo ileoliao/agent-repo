@@ -106,6 +106,21 @@ console.log('secrets');
   setExtraPath([]);
 }
 
+console.log('big output goes to disk');
+{
+  const SEC = { MYSEC: 'hunter2-value' };
+  const small = { ...standard, maxOutputBytes: 2000 };
+  const r = await runTool('run_command', { command: 'printf "%s\\n" hunter2-value; seq 1 5000' }, { ...ctx(small, [], SEC), step: 7 });
+  const m = /Full output: (\.loop\/scratch\/out\/i1-7-[a-z0-9]+\.txt) \(5001 lines\)\. Use grep or read_file with startLine\.$/.exec(r.text);
+  ok(m && r.text.includes('[truncated]') && r.text.length < 2300, 'a truncated result ends with the file, its line count and how to read it');
+  const full = fs.readFileSync(path.join(R, m[1]), 'utf8');
+  ok(full.includes('\n5000') && full.startsWith('[') === false && full.includes('***') && !full.includes('hunter2-value'), 'the file holds the whole output, redacted');
+  const rd = await runTool('read_file', { path: m[1], startLine: 4990, endLine: 4995 }, ctx(small, [], SEC));
+  ok(/4990\n4991/.test(rd.text.replace(/\r/g, '')), 'read_file reads it under .loop/scratch, from startLine');
+  const short = await runTool('run_command', { command: 'seq 1 5' }, ctx(small, [], SEC));
+  ok(!/Full output/.test(short.text) && !fs.existsSync(path.join(R, '.loop/scratch/out', fs.readdirSync(path.join(R, '.loop/scratch/out')).find(f => f.includes('-0-')) ?? 'none')), 'short output writes no file and mentions none');
+}
+
 fs.rmSync(R, { recursive: true, force: true });
 console.log(`${n} policy-profile checks passed`);
 })().catch(e => { console.error('FAILED:', e.message); process.exit(1); });

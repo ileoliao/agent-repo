@@ -6,6 +6,7 @@ import { Task, TaskLogEntry, getTask, openTasksFor, taskOnEnd, taskOnStart } fro
 import { redact } from './exec';
 import { buildTools, runTool, ToolOutcome } from './tools';
 import { clip } from './textutil';
+import { foldForRequest } from './fold';
 import { outputsFrom, wroteFromAudit } from './runs';
 import { changedFiles, snapshotOutbox } from './outbox';
 import { memoryFor } from './manage';
@@ -268,7 +269,9 @@ async function runItemInner(item: WorkItem, deps: RunDeps): Promise<RunResult> {
       const base = { role: 'assistant' as const, api: model.api, provider: model.provider, model: model.id, usage: ZERO_USAGE, timestamp: t0 };
       stream.push({ type: 'start', partial: { ...base, content: [], stopReason: 'stop' } as AssistantMessage });
       try {
-        const msgs = piToPlain((context.messages as Message[]).filter(m => (m as any).role !== 'system')).map(toVscode);
+        // Old big tool results are folded for the request only; the transcript and checkpoints keep them whole.
+        const budget = (deps.model.maxInputTokens || 128000) * 4;
+        const msgs = foldForRequest(piToPlain((context.messages as Message[]).filter(m => (m as any).role !== 'system')), budget).map(toVscode);
         const response = await deps.model.sendRequest(msgs, {
           tools, toolMode: vscode.LanguageModelChatToolMode.Auto, justification: `Harbor Mate: ${agent.name} work item ${item.id}`
         }, deps.token);

@@ -81,7 +81,7 @@ export function buildTools(agent: AgentDef): vscode.LanguageModelChatTool[] {
       name: 'run_command',
       description:
         "Run a non-interactive shell command at the workspace root. Your skills' scripts are pre-approved. " +
-        'Output beyond about 16 KB is cut to its head and tail, so prefer a skill script that prints a small summary over dumping raw data. ' +
+        'Output beyond about 16 KB is cut to its head and tail (the full output is saved to a file the result names), so prefer a skill script that prints a small summary over dumping raw data. ' +
         'A REFUSED result will repeat if you retry it: use a different route, use request_approval only if the message offers it, otherwise report the gap.',
       inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] }
     },
@@ -238,6 +238,7 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
           decision: 'deny'
         };
       }
+      const spillName = `${ctx.item.id}-${ctx.step ?? 0}-${Date.now().toString(36)}.txt`;
       const r = await exec(input.command, {
         cwd: ctx.root,
         timeoutSec: ctx.policy.commandTimeoutSec,
@@ -245,6 +246,7 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
         // Free-form commands run without secrets in standard/trusted (a script could print them); redaction still covers all of them.
         secrets: secretsAllowed(ctx.policy, input.command, ctx.extraAllow) ? ctx.secrets : {},
         redactWith: ctx.secrets,
+        spill: { dir: path.join(ctx.root, '.loop', 'scratch', 'out'), name: spillName, rel: `.loop/scratch/out/${spillName}` },
         onCancel: kill => ctx.token.onCancellationRequested(kill)
       });
       return { text: r.text, decision: 'allow' };
