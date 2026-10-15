@@ -155,7 +155,7 @@
         },
         "harborMate.maxMinutes": {
           "type": "number",
-          "default": 30,
+          "default": 60,
           "description": "Wall-clock cap for one run, in minutes. The run ends as stalled when it is exceeded."
         },
         "harborMate.workers": {

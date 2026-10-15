@@ -442,7 +442,7 @@ export class TeamService {
       model, secrets: await this.secrets(),
       maxSteps: this.cfg().get<number>('maxSteps', 120),
       maxHops: this.cfg().get<number>('maxHops', 5),
-      maxMs: this.cfg().get<number>('maxMinutes', 30) * 60_000,
+      maxMs: this.cfg().get<number>('maxMinutes', 60) * 60_000,
       takesMessages: earliest,
       out: this.out, token: live.cts.token
     });
