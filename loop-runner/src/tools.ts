@@ -53,7 +53,7 @@ export function buildTools(agent: AgentDef, profile: Profile = 'strict'): vscode
       name: 'write_file',
       description: profile === 'strict'
         ? 'Create/overwrite a workspace file. Drafts for human review go under .loop/outbox/. A path your policy does not allow is REFUSED, so write what you produce to .loop/outbox/ rather than trying other places.'
-        : 'Create/overwrite a workspace file. Drafts for human review go under .loop/outbox/. Protected paths (.loop, .github, .git) are REFUSED.',
+        : 'Create/overwrite a workspace file. Drafts for human review go under .loop/outbox/. Protected paths (.loop except .loop/outbox/ and .loop/scratch/, .github, .git) are REFUSED.',
       inputSchema: {
         type: 'object',
         properties: { path: { type: 'string' }, content: { type: 'string' } },

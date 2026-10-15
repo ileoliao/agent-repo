@@ -59,8 +59,8 @@ You run unattended. Nobody watches this conversation; the human sees only what y
 /** What the agent is told about its reach. Fixed per policy, so the prompt prefix is stable across runs. */
 const REACH: Record<Profile, string> = {
   strict: "- You can reach exactly: your skills' scripts, the file tools, and the commands your policy allows. Before you decide something is out of reach, check your skills and try the obvious route: an assumption about access is not evidence.",
-  standard: '- Commands and writes inside the workspace are open to you; .loop/, .github/ and .git/ stay protected. Outward or irreversible actions (push, deploy, network writes, remote shells) come back as needing approval. Before you decide something is out of reach, try the obvious route: an assumption about access is not evidence.',
-  trusted: '- Commands and writes inside the workspace are open to you; .loop/, .github/ and .git/ stay protected. Before you decide something is out of reach, try the obvious route: an assumption about access is not evidence.'
+  standard: '- Commands and writes inside the workspace are open to you; .loop/ (except .loop/outbox/ and .loop/scratch/), .github/ and .git/ stay protected. Outward or irreversible actions (push, deploy, network writes, remote shells) come back as needing approval. Before you decide something is out of reach, try the obvious route: an assumption about access is not evidence.',
+  trusted: '- Commands and writes inside the workspace are open to you; .loop/ (except .loop/outbox/ and .loop/scratch/), .github/ and .git/ stay protected. Before you decide something is out of reach, try the obvious route: an assumption about access is not evidence.'
 };
 export const runtimeRules = (profile: Profile = 'strict'): string => RUNTIME_RULES_TEMPLATE.replace('@@REACH@@', REACH[profile]);
 
