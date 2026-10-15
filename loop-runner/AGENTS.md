@@ -17,7 +17,7 @@ The deployment constraint is real: the target environment allows only GitHub Cop
 
 Do not add features. In particular, do not add:
 
-- per-agent memory beyond the standing-notes file below, or context compaction
+- per-agent memory beyond the standing-notes file below, or context compaction (except the request-time folding approved on 2026-10-15, below)
 - parallel workers beyond the small pool approved on 2026-10-13 (below)
 - built-in notification channels or business integrations
 
@@ -49,6 +49,8 @@ Bug fixes, security fixes and test improvements are welcome. If a change seems t
 
 **Addendum (2026-10-14, round 3).** A run that has started and not ended is one "live" thread event (`kind: 'live'`, built in `buildThread`): task line, one collapsed step fold, and a `working · step N · time` line while the mate runs. Steps read as human verbs (`humanize`: Ran, Read, Wrote, Edited, Listed, Handed to, Asked you). The header pill reads `Off · N need you` when mates are off. Dropping a task takes two clicks. A mate with no runs shows "No runs yet. <when it runs>." and a Run now button, and adding a mate selects it in the console. Check Mates is the one health command: the setup check, then the health report when there is run history (`harborMate.showHealth` and `@mate /health` remain, hidden from the palette and the menu).
 
+**Approved (2026-10-15): trust by consequence.** Models are smart; the policy should stop over-constraining them and draw the line by consequence (irreversible or outward actions need a human), not by an allowlist. Four parts. (1) **Policy profiles** (`policy.ts`): `profile` is `strict` (allowlist + deny + hard rejects: every policy file without `profile`, so hand-written setups are unchanged), `standard` (default when there is no policy file; setting `harborMate.defaultProfile`) or `trusted`. In standard a command runs unless `hardReject` hits or the whole command or a segment matches `approveCommands` (`STANDARD_APPROVE`: push, publish, deploy, network writes, ssh, rm on absolute or home paths); that returns a `REFUSED` result telling the model to call `request_approval` with the exact command, and `approveAndRun` applies `hardReject` but not the approve list. Trusted has no approve list. Standard and trusted allow command substitution (deny and approve rules still see the whole string), allow writes anywhere in the workspace except `protectedPaths` (`writablePaths` does not apply), and still hard-reject anything outside it. `OPEN_DENY` replaces strict's deny list there (curl, wget, ssh, scp, nc move to approve). `^harbor` is an allow rule in every profile. Secrets are injected in standard/trusted only when every segment is a skill script or a `harbor` call and there is no substitution (`secretsAllowed`). (2) **Scripts in one go**: `.loop/scratch/**` is always writable like the outbox; the runtime rules tell the model to write a script there for multi-step work; housekeeping deletes scratch files older than 7 days. (3) **The step cap is a backstop**: `maxSteps` 120 (it counts model requests); the `end` event records `requests` and `ms`, and the run card's time stamp shows them on hover. `maxMinutes`, the stall check and the nudges stay. (4) **Big output and folding**: output beyond `maxOutputBytes` is written whole (redacted) to `.loop/scratch/out/<itemId>-<step>-<t>.txt` and the result ends with its path and line count; `fold.ts` replaces, in the request only, tool results over 2000 characters that are older than a boundary quantized to every 10 turns (never the first message or the last 6 turns) once the conversation passes 60% of the model's input budget. The transcript and checkpoints are not changed (invariant 7).
+
 Out of scope until asked: per-goal secret scoping, daily handover, escalation, per-agent concurrency limits, per-card messaging or reassignment.
 
 ## Division of labour (the core design rule)
@@ -66,8 +68,9 @@ If you find yourself writing business logic in `src/`, it belongs in a skill ins
 | `frontmatter.ts` | Dependency-free YAML subset: nested maps, lists of maps, block scalars, quote-aware comments | no |
 | `cron.ts` | 5-field cron matcher (local time; DOM/DOW OR semantics) | no |
 | `team.ts` | Load agents and skills, `validateTeam`, `pickModel` | no |
-| `policy.ts` | Allow/deny decisions for commands and writes; hard rejects (substitution, redirection, chaining); `skillScriptRule` | no |
-| `exec.ts` | Harbor Mate shell wrapper: allowlisted env, secret injection, redaction, output cap (keeps the first and the real last `cap/2` chars). Process spawn/kill is pi's | no |
+| `policy.ts` | Profiles (`strict`/`standard`/`trusted`), allow/deny/approve decisions for commands and writes; hard rejects (substitution in strict, redirection, chaining); `skillScriptRule`; `secretsAllowed` | no |
+| `fold.ts` | `foldForRequest`: request-time folding of old big tool results (the transcript is untouched). Pure | no |
+| `exec.ts` | Harbor Mate shell wrapper: allowlisted env, secret injection, redaction, output cap (keeps the first and the real last `cap/2` chars; the full redacted output is spilled to `.loop/scratch/out/`). Process spawn/kill is pi's | no |
 | `vendor/pi/` | Vendored pi tool implementations (bash, read, write, edit, ls, find, grep). No TUI | no |
 | `queue.ts` | File-backed state: work items, gates, checkpoints, audit | no |
 | `wake.ts` | `checkWake`: runs `loop.wakeIf` and interprets its exit code | no |
@@ -121,9 +124,9 @@ A message is marked delivered only after the turn that carried it ended normally
 1. **Refusal is a tool result, never an exception or a dialog.** Policy denials return text starting with `REFUSED`; tool exceptions return `ERROR: ...`. The loop always continues so the model can change course. This is the reason the runtime does not stall.
 2. **Nothing ever blocks waiting for a human.** There are no modal prompts inside the loop. Human input only arrives through gates, which park the item and free the worker.
 3. **Deny wins.** Deny rules are checked before allow rules, at `request_approval` time **and again** at execution time. Human approval cannot bypass a deny rule.
-4. **Compound commands are checked per segment** (split on `&&`, `||`, `;`, `|`, a single `&`, and newlines; quotes are respected). Command substitution (`$(` and backticks) is always denied. Shell redirection into a protected path, or out of the workspace, is always denied. These hard rejects are applied at `request_approval` and again in `approveAndRun`.
-5. **Agents cannot edit their own definitions or the runtime's state.** `.loop/**`, `.github/**` and `.git/**` are protected by default. `.loop/outbox/**` is the only always-writable carve-out, used for drafts.
-6. **Secrets never reach the model.** They are injected as env vars at exec time and redacted from every tool result, including `read_file` and values shorter than 4 characters. The child environment is an allowlist plus those secrets, not a copy of `process.env`. The allowlist includes non-secret plumbing (`SSH_AUTH_SOCK`, DBus/XDG runtime, proxy and CA variables) but never tokens such as `GH_TOKEN`; give those to the runtime with Set Secret. Only their names appear in prompts.
+4. **Compound commands are checked per segment** (split on `&&`, `||`, `;`, `|`, a single `&`, and newlines; quotes are respected). Command substitution (`$(` and backticks) is denied in `strict`; in `standard` and `trusted` it is allowed, and deny and approve rules are checked against the whole command string too. Shell redirection into a protected path, or out of the workspace, is always denied. These hard rejects are applied at `request_approval` and again in `approveAndRun`.
+5. **Agents cannot edit their own definitions or the runtime's state.** `.loop/**`, `.github/**` and `.git/**` are protected by default. `.loop/outbox/**` (drafts) and `.loop/scratch/**` (throwaway scripts, spilled output) are the always-writable carve-outs.
+6. **Secrets never reach the model.** They are injected as env vars at exec time (in `standard` and `trusted` only into commands whose every segment is a skill script or a `harbor` call and that contain no `$(` or backtick, so a free-form script cannot print them; `strict` injects into every allowed command) and redacted from every tool result, including `read_file` and values shorter than 4 characters. The child environment is an allowlist plus those secrets, not a copy of `process.env`. The allowlist includes non-secret plumbing (`SSH_AUTH_SOCK`, DBus/XDG runtime, proxy and CA variables) but never tokens such as `GH_TOKEN`; give those to the runtime with Set Secret. Only their names appear in prompts.
 7. **The transcript is plain data.** Checkpoints store `PlainMsg[]`; `runner.ts` converts to pi messages when resuming and back at every checkpoint, and to `vscode` classes only per request (pi's own message state is never persisted). Checkpoints must replay byte-identically, which keeps the prompt-cache prefix stable.
 8. **Prompt order is static-first.** Order: runtime rules, then role, then skills, then teammates, then the work item. Do not put timestamps or per-run data earlier in the prompt; it breaks prompt caching, which matters under token-based Copilot billing.
 9. **One gate per turn.** A second gate call in the same turn returns `Not sent: ...` and creates nothing.
@@ -205,6 +208,8 @@ Tool `finish` statuses: `done`, `blocked`, `nothing_to_do`, `open` (requires `ne
 
 Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `notify`, `end`, `error`, `wake`, `retry`, `human` (the agent was given the human's message(s): `via`, `ids`, a clipped `text`). `tool` events may carry `wrote` (files a command left in the outbox). Keep these names stable; a future OTel exporter will map each `chainId` to a trace and each event to a span.
 
+`end` also carries `requests` (model requests used, = `step`) and `ms` (wall time of that call); older chains lack them.
+
 `end` may carry `outputs: string[]`: the workspace-relative files that `write_file` or `edit_file` wrote successfully, from the transcript's tool results (so it holds after a resume). Older chains have no `outputs`; readers fall back to file modification time.
 
 `retry` means the item was left in `queue/<agent>/` instead of `_done`. Reasons: `cancelled` (Stop Mates, or the run was cancelled as VS Code closed) and `rate-limit`. The rate-limit path alerts once, pauses the worker, then runs that same item again. Only temporary errors qualify (rate limit, quota, exhausted credits, too many requests, temporarily blocked). `Message exceeds token limit.` is permanent for the item and ends it as `error`. A successful Start Mates sets workspaceState `harborMate.teamStarted` (per workspace, so one workspace's flag never starts or stops another). The next activation starts the team on its own and drains the queue before scheduling. The first start stays a user command so Copilot's consent dialog has a user gesture: the Start Mates command itself sends a one-token request with a `justification` to every resolved model that `canSendRequest` does not yet allow, so the consent dialog appears while a person is present (auto-start never does this). If Copilot returns no models yet, start waits up to 2 minutes for `onDidChangeChatModels` once. Reload on a running team re-resolves models. A schedule slot missed while VS Code stayed open (sleep) is caught up once on the next tick. A scheduled wake is skipped while a scheduled item for that agent is queued or parked in `_waiting`. Stop Mates clears the flag. Pending gates are announced again on every start, including ones that already have `notifiedAt`.
@@ -221,7 +226,11 @@ Audit event `type` values: `start`, `resume`, `model`, `tool`, `park`, `gate`, `
 | `commandTimeoutSec` | 180 |
 | `maxOutputBytes` | 16000 (tool output keeps head and tail) |
 | `workers` | 2 (one slot reserved for urgent items) |
-| `maxSteps` | 40 |
+| `maxSteps` | 120 (a backstop; counts model requests) |
+| `defaultProfile` | standard (policy profile when there is no policy file; a file without `profile` is strict) |
+| Scratch | `.loop/scratch/**` always writable; files older than 7 days are deleted by housekeeping |
+| Output spill | beyond `maxOutputBytes`: full redacted output to `.loop/scratch/out/`, path in the result |
+| Folding | above 60% of `maxInputTokens * 4` chars: tool results over 2000 chars before the boundary (every 10 turns, last 6 kept) become one line |
 | `maxHops` | 5 |
 | `maxMinutes` | 30 (wall-clock cap per run; ends as `stalled`) |
 | Stall | 3 identical call+result in a row ends the run as `stalled` |

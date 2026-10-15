@@ -91,8 +91,9 @@ loop:                                # ← Harbor Mate 专用，VS Code 忽略�
 ## 安全
 
 - **策略**：每条命令和写入先过 policy（`.loop/policy.json`，`.loop/policies/*.json` 按 mate 或目标覆盖）。**deny 永远优先**：申请时和执行时各查一次，人工批准也越不过；命令替换、换行或单个 `&` 拼接、重定向到受保护路径同样被拒。`.loop/`、`.github/`、`.git/` 默认受保护（只有 `.loop/outbox/` 可写），策略里写的 `protectedPaths` 追加在默认值上，删不掉。
+- **策略档位（`profile`）**：按后果划线，不靠命令白名单。不可逆或对外的动作要人批准，其余交给模型。`strict` 是白名单加 deny（手写、没有 `profile` 字段的策略文件就是它，行为不变）。`standard`（没有策略文件时的默认，设置 `harborMate.defaultProfile`）：除 hard reject 和 deny 外都能跑；命中 `approveCommands`（整条命令或任一段，默认含 `git push`、`npm publish`、`kubectl apply`、`docker push`、curl/wget 的写请求、`ssh/scp/rsync/nc`、对绝对路径或家目录的 `rm`）的返回 `REFUSED`，让模型用确切命令调 `request_approval`，人批准后执行（批准路径仍查 hard reject，但不再查 approve 列表）；允许 `$(...)` 和反引号（deny、approve 仍按整条命令检查，所以 `echo $(git push)` 也要批准）；工作区内除 `protectedPaths` 外都可写，工作区外仍直接拒绝。`trusted` 与 standard 相同但没有 approve 列表，只剩 deny 和 hard reject。策略文件写 `"profile": "standard"` 即选档位，可覆盖 `approveCommands`/`denyCommands`。所有档位都放行 `harbor` 命令（仍受 deny 约束）。`.loop/scratch/**` 在所有档位都可写，用来放一次性脚本和被截断输出的全文，7 天后自动清理。
 - **拒绝是工具结果，不是弹窗**：mate 换个办法或上报，运行不会停摆；循环里永远不阻塞等人。
-- **凭证**：用 `Set Secret` 存进 VS Code 的 SecretStorage，执行时注入为环境变量，从每个工具结果（包括 `read_file`）里脱敏，提示词里只出现名字。命令的环境变量是白名单加这些凭证，不继承 `GH_TOKEN` 之类；`SSH_AUTH_SOCK`、代理和自签 CA 这类非密钥变量会传过去（带用户名密码的代理地址会被命令看到，请改用不带凭据的）。
+- **凭证**：用 `Set Secret` 存进 VS Code 的 SecretStorage，执行时注入为环境变量，从每个工具结果（包括 `read_file`）里脱敏，提示词里只出现名字。strict 下每条命令都注入凭证；standard 和 trusted 只在命令的每一段都是 skill 脚本或 `harbor`、且不含 `$(` 和反引号时才注入，其余命令不带凭证运行（否则自由脚本能把凭证倒着打印绕过脱敏）；脱敏在所有档位都做。命令的环境变量是白名单加这些凭证，不继承 `GH_TOKEN` 之类；`SSH_AUTH_SOCK`、代理和自签 CA 这类非密钥变量会传过去（带用户名密码的代理地址会被命令看到，请改用不带凭据的）。
 - **审批绑定你看到的内容**：控制台显示每个草稿文件，批准的就是你看到的那一版；之后被改过、或从没显示过的，不会执行，要重新审核。
 - **一键放行**：策略没放行的命令会作为“被拦下的命令”出现在对话里，点 Allow 只为这个 mate 加这一条确切命令（写进它自己的策略文件，先确认）；被 deny 规则拦下的不能一键放行。
 - **卡住保护**：同一个调用连续 3 次得到相同结果，或单次运行超过 `harborMate.maxMinutes`，运行以 `stalled` 结束并通知你；`maxRunsPerDay` 限制每个本地日的定时唤醒数。
@@ -105,7 +106,8 @@ loop:                                # ← Harbor Mate 专用，VS Code 忽略�
 |---|---|---|
 | `harborMate.modelFamily` | 空 | 没指定模型的 mate 用的 Copilot family；空 = 第一个可用 |
 | `harborMate.workers` | 2 | 同时运行的工作项数；非 urgent 的最多占 `workers - 1` 个，留一个给 urgent（默认即一个普通加一个 urgent，要两个普通一起跑设 3）；同一条转交链不会并行 |
-| `harborMate.maxSteps` | 40 | 每个工作项最多的模型轮数 |
+| `harborMate.maxSteps` | 120 | 每个工作项最多的模型请求数；只是兜底，正常靠 `finish`、卡住检测和 `maxMinutes` 结束 |
+| `harborMate.defaultProfile` | `standard` | 没有策略文件时的策略档位：`strict` / `standard` / `trusted` |
 | `harborMate.maxMinutes` | 30 | 单次运行的时间上限，超过记为 `stalled` |
 | `harborMate.maxHops` | 5 | 一条转交链最多转几次 |
 | `harborMate.policyFile` | `.loop/policy.json` | 没有自己 `policy` 的 mate 用的策略 |
@@ -118,7 +120,8 @@ loop:                                # ← Harbor Mate 专用，VS Code 忽略�
 
 - 只在 VS Code 打开时运行，是现有告警的补充。
 - 只用 GitHub Copilot 的模型；发给模型的数据需要先确认合规，脱敏放在 skill 脚本里做。
-- 正则策略是启发式的，不是沙箱。
+- 正则策略是启发式的，不是沙箱。standard 的 approve 列表只认已知的写法，python/node 脚本自己发请求它看不到；要更严用 `strict`。
+- 命令输出超过 `maxOutputBytes` 时全文（已脱敏）存到 `.loop/scratch/out/`，结果里给出路径；对话很长时，发给模型的请求会把较早的大段工具结果折成一行（只影响请求，记录和 checkpoint 不变）。
 - 闸门等待超过几分钟后提示缓存会失效，续跑时整段对话按全价重读一次。
 
 ## 给开发者和其他 AI
