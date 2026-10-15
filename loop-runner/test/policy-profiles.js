@@ -31,7 +31,7 @@ ok(legacy.profile === 'strict' && legacy.denyCommands.join() === P.DEFAULT_POLIC
 w('std.json', JSON.stringify({ profile: 'standard', denyCommands: ['\\bfoo\\b'] }));
 const stdFile = P.loadPolicy(R, 'std.json', 'strict');
 ok(stdFile.profile === 'standard' && hard(stdFile, 'foo') && !hard(stdFile, 'sudo ls') && stdFile.approveCommands.length > 0 && stdFile.protectedPaths.includes('.github/**'), 'a file may name a profile, override deny rules, and keeps the protected floor');
-ok(strict.denyCommands.join() === '\\brm\\s+-[a-z]*r,\\bgit (push|reset --hard|clean)\\b,\\b(curl|wget|ssh|scp|nc)\\b,\\bsudo\\b,>\\s*/', 'strict keeps its deny list exactly');
+ok(strict.denyCommands.join() === '\\brm\\s+-[a-z]*r,\\bgit (push|reset --hard|clean)\\b,\\b(curl|wget|ssh|scp|nc)\\b,\\bsudo\\b,>\\s*/(?!dev/null(?=\\s|$|[;&|)]))', 'strict keeps its deny list (only the /dev/null exemption was added)');
 ok(!standard.denyCommands.some(r => /curl|ssh/.test(r)) && !trusted.denyCommands.some(r => /curl|ssh/.test(r)) && trusted.approveCommands.length === 0, 'standard and trusted do not deny curl/ssh; trusted has no approve list');
 
 console.log('commands');
@@ -47,6 +47,15 @@ const never = ['sudo ls', 'git reset --hard', 'git clean -fd', 'echo x > /etc/pa
 ok(never.every(c => hard(standard, c) && hard(trusted, c) && dec(standard, c).decision === 'deny' && !dec(standard, c).approval), 'sudo, hard reset, redirects out of the workspace or into protected paths and rm of / or ~ are hard rejects in both');
 ok(!hard(standard, 'echo x > src/a.txt') && !hard(standard, 'echo x > anywhere/new.txt') && !hard(standard, 'echo x > .loop/scratch/t.txt') && !hard(standard, 'echo x > .loop/outbox/d.md'), 'redirects inside the workspace are fine');
 ok(!hard(trusted, 'echo $(git status)') && asksHuman(standard, 'echo $(git push)') && allowed(trusted, 'echo $(git push)'), '$( is allowed in standard, but the whole string is still checked');
+
+console.log('/dev/null and curl');
+{
+  const devnull = ['ls x 2>/dev/null', 'ls x >/dev/null', 'ls x &>/dev/null', 'ls x >/dev/null 2>&1', 'ls x > /dev/null', 'ls x 2>/dev/null | wc -l'];
+  ok(devnull.every(c => allowed(strict, c) && allowed(standard, c) && allowed(trusted, c) && !hard(strict, c) && !hard(standard, c)), 'redirects to /dev/null are fine in every profile');
+  ok(['echo hi > /etc/passwd', 'ls > /dev/nullx', 'ls > /dev/null/x', 'ls 2>/dev/nullx'].every(c => hard(strict, c) && hard(standard, c) && hard(trusted, c)), 'other absolute redirects, /dev/nullx included, are still rejected');
+  ok(['curl --request POST https://x', 'curl --request=delete https://x', 'curl -X post https://x', 'curl -X Put https://x', 'wget -X patch u', 'curl --json {} https://x', 'curl -s -XDELETE https://x'].every(c => asksHuman(standard, c)), 'curl and wget writes are caught by --request, any letter case, and --json');
+  ok(['curl --request GET https://x', 'curl -X get https://x', 'curl https://x/post'].every(c => allowed(standard, c)), 'and reads are not');
+}
 
 console.log('harbor');
 ok(allowed(strict, 'harbor status --json') && allowed(strict, 'harbor logs | jq .') && !allowed(strict, 'harbor status && python3 x.py') && !allowed(strict, 'harbor-evil x'), 'harbor is allowed in strict by default, per segment, and only that word');

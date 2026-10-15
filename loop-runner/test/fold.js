@@ -33,7 +33,7 @@ console.log('folding');
   ok(msgs.slice(-12).every((m, i) => JSON.stringify(m) === JSON.stringify(out[out.length - 12 + i])), 'the last 6 turns are untouched');
   ok(out.every((m, i) => m.role === msgs[i].role && m.parts.length === msgs[i].parts.length && m.parts.every((p, k) => p.t === msgs[i].parts[k].t && (p.callId ?? '') === (msgs[i].parts[k].callId ?? ''))), 'structure is kept: every call still has its result');
   ok(msgs.every(m => m.parts.every(p => p.t !== 'result' || !p.text.startsWith('[folded:'))), 'the input (the transcript) is not modified');
-  ok(out[4].parts[0].text === '[folded: [exit 0], 4 lines]', 'a folded result is one line: its first line and its line count');
+  ok(out[4].parts[0].text === '[folded: exit 0 · line one of result 1, 4 lines]', 'a folded result is one line: its first line and its line count');
 }
 
 console.log('determinism and the boundary');
@@ -52,6 +52,9 @@ console.log('the line');
 {
   const withFile = 'cut\n' + 'y'.repeat(2500) + '\nFull output: .loop/scratch/out/i-3-abc.txt (5001 lines). Use grep or read_file with startLine.';
   ok(foldedLine(withFile).endsWith(', full output: .loop/scratch/out/i-3-abc.txt]') && foldedLine(withFile).startsWith('[folded: cut, 3 lines'), 'it keeps the spilled file path');
+  const exec = '[exit 0]\n\nfirst content ' + 'z'.repeat(200) + '\nmore\nFull output: .loop/scratch/out/q.txt (9 lines). Use grep.';
+  ok(foldedLine(exec) === `[folded: exit 0 · first content ${'z'.repeat(85)}…, 5 lines, full output: .loop/scratch/out/q.txt]`, 'an exec result folds to its status and its first content line (100 chars), with the file path');
+  ok(foldedLine('[exit 1]\nboom') === '[folded: exit 1 · boom, 2 lines]' && foldedLine('[killed by SIGKILL (timeout 5s or cancelled)]\nx') .startsWith('[folded: killed by SIGKILL'), 'a failing or killed status is kept');
   ok(foldedLine('a'.repeat(300) + '\nb').startsWith(`[folded: ${'a'.repeat(119)}…, 2 lines]`), 'the first line is clipped to 120');
 }
 console.log(`${n} fold checks passed`);

@@ -17,10 +17,15 @@ export const FOLD_STEP = 10;
 const sizeOf = (p: PlainPart): number => (p.t === 'text' ? p.v.length : p.t === 'call' ? p.name.length + JSON.stringify(p.input ?? null).length : p.text.length);
 export const charsOf = (msgs: PlainMsg[]): number => msgs.reduce((n, m) => n + m.parts.reduce((k, p) => k + sizeOf(p), 0), 0);
 
-/** The one line that stands for a folded result. */
+/** The one line that stands for a folded result: the status line of an exec result (`[exit 0]`) plus the first content line. */
 export function foldedLine(text: string): string {
   const path = /Full output: (\S+)/.exec(text)?.[1];
-  return `[folded: ${clip(firstLine(text), 120)}, ${text.split('\n').length} lines${path ? `, full output: ${path}` : ''}]`;
+  const lines = text.split('\n');
+  const status = /^\[(exit -?\d+|killed[^\]]*|error)\]$/.exec(lines[0]);
+  const head = status
+    ? `${status[1]} · ${clip(firstLine(lines.slice(1).join('\n')), 100)}`
+    : clip(firstLine(text), 120);
+  return `[folded: ${head}, ${lines.length} lines${path ? `, full output: ${path}` : ''}]`;
 }
 
 export function foldForRequest(msgs: PlainMsg[], budgetChars: number): PlainMsg[] {

@@ -46,7 +46,7 @@ export const DEFAULT_POLICY: Policy = {
     '\\bgit (push|reset --hard|clean)\\b',
     '\\b(curl|wget|ssh|scp|nc)\\b',
     '\\bsudo\\b',
-    '>\\s*/'
+    '>\\s*/(?!dev/null(?=\\s|$|[;&|)]))' // redirects to /dev/null are fine
   ],
   writablePaths: ['src/**', 'test/**', 'tests/**', 'docs/**'],
   protectedPaths: ['.loop/**', '.git/**', '.github/**', '.vscode/**', '**/*.env', '**/secrets/**'],
@@ -59,6 +59,9 @@ export const OUTBOX = '.loop/outbox/**';
 /** Throwaway scripts and spilled command output. Always writable, in every profile; housekeeping deletes old files. */
 export const SCRATCH = '.loop/scratch/**';
 
+/** Write methods, matched in any letter case (`-X post`). */
+const METHODS = '(' + ['POST', 'PUT', 'PATCH', 'DELETE'].map(w => [...w].map(c => `[${c}${c.toLowerCase()}]`).join('')).join('|') + ')';
+
 /** Irreversible or outward actions: standard asks a human first. Matched against the whole command and each segment. */
 export const STANDARD_APPROVE: string[] = [
   '\\bgit push\\b',
@@ -66,7 +69,7 @@ export const STANDARD_APPROVE: string[] = [
   '\\b(npm|pnpm|yarn) publish\\b',
   '\\b(kubectl|helm|terraform)\\s+(apply|delete|destroy|upgrade|install)\\b',
   '\\bdocker push\\b',
-  '\\b(curl|wget)\\b.*(\\s-X\\s*(POST|PUT|PATCH|DELETE)|\\s(-d|--data[\\w-]*|-F|--form|-T|--upload-file)\\b)',
+  `\\b(curl|wget)\\b.*(\\s-X\\s*${METHODS}|\\s--request[\\s=]+${METHODS}|\\s(-d|--data[\\w-]*|-F|--form|-T|--upload-file|--json)\\b)`,
   '\\b(ssh|scp|rsync|nc)\\b',
   '\\brm\\s+.*(\\s)(/|~)'
 ];
@@ -74,7 +77,7 @@ export const STANDARD_APPROVE: string[] = [
 export const OPEN_DENY: string[] = [
   '\\bsudo\\b',
   '\\bgit (reset --hard|clean)\\b',
-  '>\\s*/',
+  '>\\s*/(?!dev/null(?=\\s|$|[;&|)]))', // redirects to /dev/null are fine
   // Recursive rm of / or ~ themselves (flags before or after the target).
   '\\brm\\s+(?:-\\S+\\s+)*(?:-\\S*[rR]\\S*\\s+(?:-\\S+\\s+)*(?:--\\s+)?(?:/\\*?|~/?\\*?|\\$HOME/?)|(?:--\\s+)?(?:/\\*?|~/?\\*?|\\$HOME/?)(?:\\s+-\\S+)*\\s+-\\S*[rR]\\S*)(?=\\s|$|[;&|])'
 ];
@@ -142,6 +145,7 @@ export function commandSegments(command: string): string[] {
     if (c === '&' && command[i + 1] === '&') { push(); i++; continue; }
     if (c === '|' && command[i + 1] === '|') { push(); i++; continue; }
     if ((c === '|' || c === '&') && command[i - 1] === '>') { buf += c; continue; }
+    if (c === '&' && command[i + 1] === '>') { buf += c; continue; } // `&>file` is a redirect, not a separator
     if (c === '&' || c === '|' || c === ';') { push(); continue; }
     buf += c;
   }
@@ -188,6 +192,7 @@ export function redirectionTargets(command: string): string[] {
 }
 
 function unsafeRedirect(policy: Policy, target: string): string | undefined {
+  if (target === '/dev/null') return undefined;
   if (path.posix.isAbsolute(target) || path.win32.isAbsolute(target) || target.startsWith('~') || target.split(/[\\/]/).includes('..')) {
     return `redirect escapes workspace (${target})`;
   }

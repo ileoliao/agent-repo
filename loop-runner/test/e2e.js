@@ -441,6 +441,27 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
       }
     });
 
+    // Folding is request-time only: the model sees a folded line, the saved transcript keeps the whole result.
+    {
+      const fi = mkItem('fold-item');
+      const sent = [];
+      let cpAtEnd;
+      const foldModel = {
+        family: 'fake', id: 'fold', maxInputTokens: 1000,
+        async sendRequest(messages) {
+          const turn = messages.filter(m => m.role === 'assistant').length;
+          sent.push(messages.map(m => m.content.map(c => (c.value ?? (c.content ? c.content[0].value : ''))).join('')).join('\n'));
+          if (turn === 19) { cpAtEnd = JSON.stringify(Q.loadCheckpoint(W, fi.id)); }
+          const call = turn < 19 ? new ToolCallPart(`fd-${turn}`, 'run_command', { command: `seq 1 ${1000 + turn}` }) : new ToolCallPart('fd-end', 'finish', { status: 'done', summary: 'ok' });
+          return { stream: (async function* () { yield call; })() };
+        }
+      };
+      const fr = await run(fi, foldModel, { maxSteps: 40, policy: loadPolicy(W, 'no-such-policy.json', 'standard') });
+      ok(fr.status === 'done' && sent.length === 20, 'a 20-request run with a tiny input budget completes');
+      ok(!sent[3].includes('[folded:') && sent[19].includes('[folded: exit 0 · 1,') , 'early requests are whole; a late request carries folded lines for old results');
+      ok(cpAtEnd.includes('\\n1000\\n') && !cpAtEnd.includes('[folded:'), 'the checkpoint still holds the full original result text, unfolded');
+    }
+
     // Gap 7: an interrupted item continues from its last completed turn; the handoff is not repeated.
     const rl = mkItem('resume-item', 'sentinel');
     const hand = [['handoff', { to: 'techlead', task: 'dup check', context: 'c' }]];
