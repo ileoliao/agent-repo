@@ -2,14 +2,29 @@
 
 Continuously verifies that the whole path "metric ingest → Nginx → OTel Collector → Mimir → Grafana rule evaluation → webhook notification" works, and raises alerts on GCP when the path breaks, when the probe itself stops, or when it gets slow. Runs with multiple replicas.
 
-```
-replica 0 ─┐
-replica 1 ─┼─OTLP─> Nginx ─> OTel Collector ─> Mimir ─> Grafana rule (one alert instance per replica)
-replica N ─┘                                                  │
-   ▲                                                          │ webhook (probe_id + replica)
-   └─────────── Service load-balances to any replica ◄────────┘
-   │
- stdout JSON ──direct──> Cloud Logging ──> log-based metrics (replica label) ──> Cloud Monitoring alerts
+```mermaid
+flowchart LR
+  subgraph K8S["GKE: heartbeat-probe StatefulSet"]
+    R0["replica 0"]
+    R1["replica 1"]
+  end
+
+  subgraph STACK["Observability stack under test"]
+    NG["Nginx<br/>Basic auth"] --> OC["OTel Collector"] --> MM["Mimir"] --> GR["Grafana rule<br/>one alert instance per replica"]
+  end
+
+  subgraph GCP["GCP: independent judge"]
+    CL["Cloud Logging"] --> LM["Log-based metrics<br/>label: replica"] --> CM["Cloud Monitoring<br/>alert policies"]
+  end
+
+  R0 -- "OTLP: state, id, self metrics" --> NG
+  R1 -- "OTLP: state, id, self metrics" --> NG
+  GR -- "webhook: probe_id, replica" --> SVC["Service /webhook<br/>load-balanced"]
+  SVC --> R0
+  SVC --> R1
+  R0 -. "stdout JSON logs" .-> CL
+  R1 -. "stdout JSON logs" .-> CL
+  CM --> ONCALL["On-call channel<br/>independent of the stack"]
 ```
 
 ## How it works
@@ -20,6 +35,37 @@ replica N ─┘                                                  │
 | First 120 s | `heartbeat_probe_state{replica}=1`; Grafana fires for that replica and the webhook echoes `probe_id` |
 | Remaining 180 s | `heartbeat_probe_state{replica}=0`; the alert resolves and the webhook sends `resolved` |
 
+One probe cycle, with the notification landing on a different replica than the sender:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant R0 as Replica 0 (sender)
+  participant P as Nginx, Collector, Mimir
+  participant G as Grafana rule
+  participant R1 as Replica 1 (receiver)
+  participant L as GCP Cloud Logging
+
+  Note over R0: t = probe_id (cycle start)
+  R0->>L: probe_sent (replica 0, probe_id)
+  loop every 15 s while firing
+    R0->>P: OTLP state=1, id=probe_id
+  end
+  loop every 30 s
+    G->>P: query state and id per replica
+  end
+  P-->>G: replica 0 state is 1 and fresh
+  G->>R1: webhook firing (probe_id, replica 0)
+  Note over R1: validate window, latency = now - probe_id
+  R1->>L: alert_received firing, matched=true, latency
+  Note over R0: t = probe_id + 120 s
+  R0->>L: probe_cleared
+  R0->>P: OTLP state=0
+  P-->>G: replica 0 state is 0
+  G->>R1: webhook resolved (probe_id, replica 0)
+  R1->>L: alert_received resolved, matched=true, latency
+```
+
 ### Multiple replicas: stateless pairing
 
 The webhook goes through a Service and can land on any replica, so pairing does not rely on in-process memory:
@@ -28,6 +74,28 @@ The webhook goes through a Service and can land on any replica, so pairing does 
 - Validation: `probe_id` must be aligned to the period and inside the timeout window (not too old, not from the future). Anything else is logged as `matched=false` with a reason.
 - `replica` in the log is the replica that **sent** the probe (taken from the alert labels); `received_by` is the replica that actually received the webhook.
 - Timeouts are not detected by the service itself. GCP detects them per replica as "no validated heartbeat for a while".
+
+How a received notification is validated (every outcome is logged and counted in `heartbeat.probe.notifications`):
+
+```mermaid
+flowchart TD
+  A["Webhook alert"] --> B{"probe label matches?"}
+  B -- no --> X["Ignore"]
+  B -- yes --> C{"probe_id parses?"}
+  C -- no --> F1["matched=false<br/>missing_or_bad_probe_id"]
+  C -- yes --> D{"status is firing or resolved?"}
+  D -- no --> F2["matched=false<br/>unknown_status"]
+  D -- yes --> E{"probe_id aligned to period?"}
+  E -- no --> F3["matched=false<br/>probe_id_not_aligned"]
+  E -- yes --> L["latency = now - reference<br/>firing: reference = probe_id<br/>resolved: reference = probe_id + firing"]
+  L --> G{"more than 60 s in the future?"}
+  G -- yes --> F4["matched=false<br/>from_future"]
+  G -- no --> H{"older than the timeout?"}
+  H -- yes --> F5["matched=false<br/>late"]
+  H -- no --> I{"already seen on this replica?"}
+  I -- yes --> F6["matched=false<br/>duplicate"]
+  I -- no --> OK["matched=true<br/>latency recorded"]
+```
 
 ### Log events (`jsonPayload.event`)
 
@@ -73,6 +141,23 @@ These metrics travel through the very path being tested. **Use them for review a
 | Alerting pipeline broken | No validated heartbeat for a replica within 15 min | That replica's path is broken; all replicas at once = the whole path is broken (including Grafana being down) |
 | Probe replica not sending | No `probe_sent` from a replica within 15 min | The probe replica itself is down |
 | Alerting pipeline slow | End-to-end latency p95 > 180 s | The path works but is badly degraded |
+
+How failures surface. The design rule is that every failure turns into *silence*, and GCP alerts on silence:
+
+```mermaid
+flowchart LR
+  F1["Ingest broken<br/>Nginx or Collector"] --> S
+  F2["Mimir write or query fails"] --> S
+  F3["Rule error or no data<br/>execErrState and noDataState = OK"] --> S
+  F4["Grafana down"] --> S
+  F5["Webhook delivery fails"] --> S
+  S["No validated heartbeat<br/>for the affected replicas"] --> A1["GCP: Alerting pipeline broken"]
+  D["Probe replica down"] --> N["No probe_sent from that replica"] --> A2["GCP: Probe replica not sending"]
+  SL["Path works but slow"] --> A3["GCP: Alerting pipeline slow"]
+  A1 --> P["Page on-call"]
+  A2 --> P
+  A3 --> P
+```
 
 ## Deployment
 
