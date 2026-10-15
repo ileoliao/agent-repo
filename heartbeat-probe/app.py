@@ -1,27 +1,32 @@
 """
-End-to-end alerting pipeline probe (heartbeat-probe).
+End-to-end alerting pipeline probe (heartbeat-probe). Multi-replica safe.
 
-Loop:
-  1. Every PROBE_PERIOD_SECONDS a new probe starts. For the first
-     PROBE_FIRING_SECONDS of the cycle the gauge heartbeat.probe.state is 1,
-     otherwise 0. The gauge heartbeat.probe.id carries the probe ID (cycle
-     start, epoch seconds) so Grafana can echo it back.
-  2. Metrics go out over OTLP through the normal ingest path
+Loop (every replica runs it independently):
+  1. Every PROBE_PERIOD_SECONDS a new probe starts. probe_id = cycle start
+     (epoch seconds, aligned to the period), so every replica derives the same
+     clock-based ID and the send time is implied by the ID itself.
+  2. For the first PROBE_FIRING_SECONDS of the cycle the gauge
+     heartbeat.probe.state{probe, replica} is 1, otherwise 0. The gauge
+     heartbeat.probe.id{probe, replica} carries probe_id.
+     Metrics go out over OTLP through the normal ingest path
      (Nginx -> OTel Collector -> Mimir).
-  3. A Grafana alert rule fires while state > 0 and puts the probe ID into an
-     annotation; the webhook contact point POSTs it back to /webhook.
-  4. This service pairs the firing (and resolved) notification with the probe
-     it sent and writes one structured JSON log line per event to stdout.
-     Cloud Logging picks these up; GCP alerts on absence / mismatch / latency.
+  3. A Grafana rule (one alert instance per replica) fires while state > 0 and
+     echoes probe_id in an annotation; the webhook hits /webhook on ANY replica.
+  4. The receiving replica validates the notification statelessly
+     (probe_id aligned to the period and within PROBE_TIMEOUT_SECONDS of now),
+     computes latency from probe_id, and logs it with the *originating* replica
+     taken from the alert labels. No shared state is needed.
+  5. Cloud Logging collects stdout; GCP alerts per replica on the absence of
+     matched heartbeats (= timeout), absence of probe_sent (= probe down), and
+     on latency.
 
 Log events (jsonPayload.event):
-  probe_sent       probe entered firing phase
-  probe_cleared    probe left firing phase
-  alert_received   webhook notification (status firing|resolved, matched, latency_seconds)
-  probe_timeout    no matching firing notification within PROBE_TIMEOUT_SECONDS
-  resolve_timeout  no matching resolved notification within PROBE_TIMEOUT_SECONDS
+  probe_sent       this replica entered the firing phase   (replica = self)
+  probe_cleared    this replica left the firing phase      (replica = self)
+  alert_received   webhook notification                    (replica = originator)
+                   fields: status firing|resolved, matched, latency_seconds, reason, received_by
 
-Run exactly ONE replica: the probe state is in memory.
+Use stable replica IDs (StatefulSet pod names): GCP absence alerts are per replica.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import hmac
 import json
 import os
 import signal
+import socket
 import sys
 import threading
 import time
@@ -37,6 +43,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MAX_BODY_BYTES = 1 << 20
+CLOCK_SKEW_SECONDS = 60
 
 
 # ---------------------------------------------------------------- config ----
@@ -44,6 +51,7 @@ MAX_BODY_BYTES = 1 << 20
 class Config:
     def __init__(self, env=os.environ):
         self.probe_name = env.get("PROBE_NAME", "e2e")
+        self.replica = env.get("REPLICA_ID") or env.get("HOSTNAME") or socket.gethostname()
         self.period = int(env.get("PROBE_PERIOD_SECONDS", "300"))
         self.firing = int(env.get("PROBE_FIRING_SECONDS", "120"))
         self.timeout = int(env.get("PROBE_TIMEOUT_SECONDS", "300"))
@@ -81,98 +89,92 @@ def log(severity: str, event: str, **fields) -> None:
 # ----------------------------------------------------------- probe state ----
 
 class Probe:
-    """Pure state machine; time is passed in so it can be tested."""
+    """Sender state is per replica; receiving is stateless. Time is injected for tests."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.lock = threading.Lock()
         self.state = 0
         self.probe_id = 0
-        self.awaiting_fire: dict[int, float] = {}      # probe_id -> sent_at
-        self.awaiting_resolve: dict[int, float] = {}   # probe_id -> cleared_at
-        self.done_fire: dict[int, float] = {}          # matched ids, for duplicate detection
-        self.counters = {"sent": 0, "matched": 0, "timeouts": 0}
+        self.seen: dict[tuple, float] = {}   # best-effort local duplicate marker only
+        self.counters = {"sent": 0, "received": 0, "matched": 0}
 
-    # Called about once per second by the driver loop.
     def tick(self, now: float) -> None:
         cycle_start = int(now - (now % self.cfg.period))
         want_state = 1 if (now - cycle_start) < self.cfg.firing else 0
+        base = {"probe": self.cfg.probe_name, "replica": self.cfg.replica}
 
         with self.lock:
             if want_state == 1 and (self.state == 0 or self.probe_id != cycle_start):
-                self.state = 1
-                self.probe_id = cycle_start
-                if cycle_start not in self.awaiting_fire and cycle_start not in self.done_fire:
-                    self.awaiting_fire[cycle_start] = now
+                if self.probe_id != cycle_start:
                     self.counters["sent"] += 1
-                    log("INFO", "probe_sent", probe=self.cfg.probe_name, probe_id=cycle_start)
+                    log("INFO", "probe_sent", probe_id=cycle_start, **base)
+                self.state, self.probe_id = 1, cycle_start
             elif want_state == 0 and self.state == 1:
                 self.state = 0
-                self.awaiting_resolve[self.probe_id] = now
-                log("INFO", "probe_cleared", probe=self.cfg.probe_name, probe_id=self.probe_id)
+                log("INFO", "probe_cleared", probe_id=self.probe_id, **base)
 
-            for pid, sent_at in list(self.awaiting_fire.items()):
-                if now - sent_at > self.cfg.timeout:
-                    del self.awaiting_fire[pid]
-                    self.counters["timeouts"] += 1
-                    log("ERROR", "probe_timeout", probe=self.cfg.probe_name, probe_id=pid,
-                        waited_seconds=round(now - sent_at, 1))
-
-            for pid, cleared_at in list(self.awaiting_resolve.items()):
-                if now - cleared_at > self.cfg.timeout:
-                    del self.awaiting_resolve[pid]
-                    log("WARNING", "resolve_timeout", probe=self.cfg.probe_name, probe_id=pid,
-                        waited_seconds=round(now - cleared_at, 1))
-
-            horizon = now - 4 * self.cfg.period
-            for pid, t in list(self.done_fire.items()):
+            horizon = now - 2 * self.cfg.period
+            for k, t in list(self.seen.items()):
                 if t < horizon:
-                    del self.done_fire[pid]
+                    del self.seen[k]
 
     def handle_alert(self, alert: dict, now: float) -> None:
         labels = alert.get("labels") or {}
         if labels.get("probe") not in (None, self.cfg.probe_name):
             return
         status = alert.get("status", "unknown")
+        origin = labels.get("replica", "unknown")
+        fields = {"probe": self.cfg.probe_name, "replica": origin,
+                  "received_by": self.cfg.replica, "status": status}
+
         raw_id = (alert.get("annotations") or {}).get("probe_id", "")
         try:
             pid = int(float(raw_id))
         except (TypeError, ValueError):
-            log("WARNING", "alert_received", probe=self.cfg.probe_name, status=status,
-                matched=False, reason="missing_or_bad_probe_id", raw_probe_id=str(raw_id)[:64])
+            log("WARNING", "alert_received", matched=False, reason="missing_or_bad_probe_id",
+                raw_probe_id=str(raw_id)[:64], **fields)
+            return
+        fields["probe_id"] = pid
+
+        if status not in ("firing", "resolved"):
+            log("WARNING", "alert_received", matched=False, reason="unknown_status", **fields)
+            return
+        if pid % self.cfg.period != 0:
+            # e.g. a lossy "1.76054e+09" rendering - never count it as success
+            log("WARNING", "alert_received", matched=False, reason="probe_id_not_aligned", **fields)
             return
 
+        # firing is measured from the probe start, resolved from the clear time
+        reference = pid if status == "firing" else pid + self.cfg.firing
+        latency = now - reference
+        if latency < -CLOCK_SKEW_SECONDS:
+            log("WARNING", "alert_received", matched=False, reason="from_future",
+                latency_seconds=round(latency, 3), **fields)
+            return
+        if latency > self.cfg.timeout:
+            log("WARNING", "alert_received", matched=False, reason="late",
+                latency_seconds=round(latency, 3), **fields)
+            return
+
+        key = (origin, pid, status)
         with self.lock:
-            if status == "firing":
-                if pid in self.awaiting_fire:
-                    sent_at = self.awaiting_fire.pop(pid)
-                    self.done_fire[pid] = now
-                    self.counters["matched"] += 1
-                    log("INFO", "alert_received", probe=self.cfg.probe_name, status=status,
-                        probe_id=pid, matched=True, latency_seconds=round(now - sent_at, 3))
-                else:
-                    reason = "duplicate" if pid in self.done_fire else "unknown_or_late"
-                    log("WARNING", "alert_received", probe=self.cfg.probe_name, status=status,
-                        probe_id=pid, matched=False, reason=reason)
-            elif status == "resolved":
-                if pid in self.awaiting_resolve:
-                    cleared_at = self.awaiting_resolve.pop(pid)
-                    log("INFO", "alert_received", probe=self.cfg.probe_name, status=status,
-                        probe_id=pid, matched=True, latency_seconds=round(now - cleared_at, 3))
-                else:
-                    log("WARNING", "alert_received", probe=self.cfg.probe_name, status=status,
-                        probe_id=pid, matched=False, reason="unknown_or_late")
+            self.counters["received"] += 1
+            duplicate = key in self.seen
+            self.seen.setdefault(key, now)
+            if not duplicate:
+                self.counters["matched"] += 1
+        if duplicate:
+            log("INFO", "alert_received", matched=False, reason="duplicate",
+                latency_seconds=round(latency, 3), **fields)
+        else:
+            log("INFO", "alert_received", matched=True,
+                latency_seconds=round(max(latency, 0.0), 3), **fields)
 
     def snapshot(self) -> dict:
         with self.lock:
-            return {
-                "probe": self.cfg.probe_name,
-                "state": self.state,
-                "probe_id": self.probe_id,
-                "awaiting_fire": sorted(self.awaiting_fire),
-                "awaiting_resolve": sorted(self.awaiting_resolve),
-                **self.counters,
-            }
+            return {"probe": self.cfg.probe_name, "replica": self.cfg.replica,
+                    "state": self.state, "probe_id": self.probe_id, **self.counters}
 
 
 # --------------------------------------------------------------- metrics ----
@@ -185,7 +187,7 @@ def setup_metrics(probe: Probe, cfg: Config):
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     from opentelemetry.sdk.resources import Resource
 
-    attrs = {"probe": cfg.probe_name}
+    attrs = {"probe": cfg.probe_name, "replica": cfg.replica}
 
     def observe_state(_: CallbackOptions):
         with probe.lock:
@@ -238,9 +240,13 @@ def make_handler(probe: Probe, cfg: Config):
                 return self._reply(404, {"error": "not found"})
             auth = self.headers.get("Authorization", "").encode()
             if not hmac.compare_digest(auth, expected):
-                log("WARNING", "webhook_unauthorized", client=self.client_address[0])
+                log("WARNING", "webhook_unauthorized", client=self.client_address[0],
+                    received_by=cfg.replica)
                 return self._reply(401, {"error": "unauthorized"})
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
             if length <= 0 or length > MAX_BODY_BYTES:
                 return self._reply(400, {"error": "bad length"})
             try:
@@ -276,8 +282,8 @@ def main() -> int:
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
 
-    log("INFO", "started", probe=cfg.probe_name, period=cfg.period, firing=cfg.firing,
-        timeout=cfg.timeout, port=cfg.listen_port)
+    log("INFO", "started", probe=cfg.probe_name, replica=cfg.replica, period=cfg.period,
+        firing=cfg.firing, timeout=cfg.timeout, port=cfg.listen_port)
     while not stop.is_set():
         probe.tick(time.time())
         stop.wait(1.0)
@@ -285,7 +291,7 @@ def main() -> int:
     server.shutdown()
     if provider is not None:
         provider.shutdown()
-    log("INFO", "stopped", probe=cfg.probe_name)
+    log("INFO", "stopped", probe=cfg.probe_name, replica=cfg.replica)
     return 0
 
 

@@ -13,8 +13,9 @@ groups:
         title: E2E Heartbeat Probe
         condition: C
         data:
-          # A: probe state, only if the series is fresh (< 90s old).
-          # A stale series returns nothing -> no firing -> GCP sees the gap.
+          # One alert instance per replica (grouped by `replica`).
+          # A: probe state, only if that replica's series is fresh (< 90s old).
+          # A stale series returns nothing -> no firing -> GCP sees the gap for that replica.
           - refId: A
             relativeTimeRange: { from: 300, to: 0 }
             datasourceUid: MIMIR_DATASOURCE_UID          # TODO: datasource of the probe's tenant
@@ -22,17 +23,17 @@ groups:
               refId: A
               instant: true
               expr: |
-                max(heartbeat_probe_state{probe="e2e"})
-                and on()
-                (time() - max(timestamp(heartbeat_probe_state{probe="e2e"})) < 90)
-          # B: probe ID, echoed back through the annotation.
+                max by (replica) (heartbeat_probe_state{probe="e2e"})
+                and on (replica)
+                (time() - max by (replica) (timestamp(heartbeat_probe_state{probe="e2e"})) < 90)
+          # B: probe ID per replica, echoed back through the annotation.
           - refId: B
             relativeTimeRange: { from: 300, to: 0 }
             datasourceUid: MIMIR_DATASOURCE_UID
             model:
               refId: B
               instant: true
-              expr: max(heartbeat_probe_id{probe="e2e"})
+              expr: max by (replica) (heartbeat_probe_id{probe="e2e"})
           - refId: C
             datasourceUid: __expr__
             model:
@@ -54,7 +55,7 @@ groups:
           summary: End-to-end heartbeat probe (expected to fire every cycle; not an incident)
         notification_settings:
           receiver: heartbeat-probe-webhook
-          group_by: [alertname, probe]
+          group_by: [alertname, probe, replica]
           group_wait: 0s
           group_interval: 30s
           repeat_interval: 4h

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -13,6 +14,8 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import app  # noqa: E402
+
+T0 = 1_760_538_000  # aligned to 300s
 
 
 # ---------------------------------------------------------- unit tests ----
@@ -24,96 +27,74 @@ def logs(monkeypatch):
     return out
 
 
-def make_probe(**over):
-    env = {"PROBE_PERIOD_SECONDS": "300", "PROBE_FIRING_SECONDS": "120",
-           "PROBE_TIMEOUT_SECONDS": "300", "WEBHOOK_TOKEN": "t", **over}
-    return app.Probe(app.Config(env))
+def make_probe(replica="heartbeat-probe-0"):
+    return app.Probe(app.Config({"PROBE_PERIOD_SECONDS": "300", "PROBE_FIRING_SECONDS": "120",
+                                 "PROBE_TIMEOUT_SECONDS": "300", "WEBHOOK_TOKEN": "t",
+                                 "REPLICA_ID": replica}))
 
 
-def firing(pid, status="firing"):
-    return {"status": status, "labels": {"probe": "e2e"}, "annotations": {"probe_id": str(pid)}}
+def alert(pid, status="firing", replica="heartbeat-probe-0", probe="e2e"):
+    return {"status": status, "labels": {"probe": probe, "replica": replica},
+            "annotations": {"probe_id": str(pid)}}
 
 
-def events(logs, name):
-    return [l for l in logs if l["event"] == name]
+def received(logs):
+    return [l for l in logs if l["event"] == "alert_received"]
 
 
-def test_full_cycle_matched(logs):
+def test_sender_cycle(logs):
     p = make_probe()
-    t0 = 1_000_200  # cycle start: 1_000_200 - (1_000_200 % 300) = 1_000_200
-    p.tick(t0)
-    assert p.state == 1 and p.probe_id == t0
-    p.handle_alert(firing(f"{t0}"), t0 + 45)
-    p.tick(t0 + 121)                      # firing phase over
-    assert p.state == 0
-    p.handle_alert(firing(t0, "resolved"), t0 + 160)
-
-    fired = [l for l in events(logs, "alert_received") if l["status"] == "firing"]
-    resolved = [l for l in events(logs, "alert_received") if l["status"] == "resolved"]
-    assert fired[0]["matched"] is True and fired[0]["latency_seconds"] == 45
-    assert resolved[0]["matched"] is True and resolved[0]["latency_seconds"] == 39
-    assert not events(logs, "probe_timeout")
-
-
-def test_float_string_id_is_accepted(logs):
-    # The rule template uses printf "%.0f"; a full-precision float string must also match.
-    p = make_probe()
-    t0 = 1_760_538_000
-    p.tick(t0)
-    p.handle_alert(firing("1760538000.0"), t0 + 10)
-    assert events(logs, "alert_received")[0]["matched"] is True
-
-
-def test_lossy_scientific_id_does_not_match(logs):
-    # Default %g formatting ("1.76054e+09") loses digits -> must NOT be counted as success.
-    p = make_probe()
-    t0 = 1_760_538_000
-    p.tick(t0)
-    p.handle_alert(firing("1.76054e+09"), t0 + 10)
-    assert events(logs, "alert_received")[0]["matched"] is False
-
-
-def test_timeout_when_no_notification(logs):
-    p = make_probe()
-    t0 = 1_000_200
-    for t in range(t0, t0 + 302):
+    for t in range(T0, T0 + 300):
         p.tick(t)
-    to = events(logs, "probe_timeout")
-    assert len(to) == 1 and to[0]["probe_id"] == t0 and to[0]["severity"] == "ERROR"
-    # a late notification is reported as unmatched, not as success
-    p.handle_alert(firing(t0), t0 + 305)
-    assert events(logs, "alert_received")[-1]["matched"] is False
+    p.tick(T0 + 300)
+    ev = [(l["event"], l["probe_id"]) for l in logs]
+    assert ev == [("probe_sent", T0), ("probe_cleared", T0), ("probe_sent", T0 + 300)]
+    assert all(l["replica"] == "heartbeat-probe-0" for l in logs)
 
 
-def test_duplicate_and_unknown(logs):
+def test_restart_mid_firing_logs_sent_again_once(logs):
     p = make_probe()
-    t0 = 1_000_200
-    p.tick(t0)
-    p.handle_alert(firing(t0), t0 + 30)
-    p.handle_alert(firing(t0), t0 + 60)       # repeat notification
-    p.handle_alert(firing(123), t0 + 61)      # stale / foreign id
-    p.handle_alert({"status": "firing", "labels": {"probe": "e2e"}, "annotations": {}}, t0 + 62)
-    recv = events(logs, "alert_received")
-    assert [r["matched"] for r in recv] == [True, False, False, False]
-    assert recv[1]["reason"] == "duplicate"
-    assert recv[2]["reason"] == "unknown_or_late"
-    assert recv[3]["reason"] == "missing_or_bad_probe_id"
-
-
-def test_other_probe_label_ignored(logs):
-    p = make_probe()
-    p.tick(1_000_200)
-    p.handle_alert({"status": "firing", "labels": {"probe": "other"},
-                    "annotations": {"probe_id": "1000200"}}, 1_000_210)
-    assert not events(logs, "alert_received")
-
-
-def test_restart_mid_cycle_sends_once(logs):
-    p = make_probe()
-    t0 = 1_000_200
-    for t in range(t0, t0 + 60):
+    for t in range(T0 + 50, T0 + 100):   # fresh process starting mid-cycle
         p.tick(t)
-    assert len(events(logs, "probe_sent")) == 1
+    assert [l["event"] for l in logs] == ["probe_sent"]
+
+
+def test_any_replica_can_receive_and_match(logs):
+    receiver = make_probe("heartbeat-probe-1")       # did NOT send this probe
+    receiver.handle_alert(alert(T0, replica="heartbeat-probe-0"), T0 + 45)
+    receiver.handle_alert(alert(T0, "resolved", replica="heartbeat-probe-0"), T0 + 160)
+    r = received(logs)
+    assert [x["matched"] for x in r] == [True, True]
+    assert r[0]["replica"] == "heartbeat-probe-0" and r[0]["received_by"] == "heartbeat-probe-1"
+    assert r[0]["latency_seconds"] == 45
+    assert r[1]["latency_seconds"] == 40          # measured from clear time T0+120
+
+
+def test_late_notification_is_not_success(logs):
+    make_probe().handle_alert(alert(T0), T0 + 301)
+    assert received(logs)[0]["matched"] is False and received(logs)[0]["reason"] == "late"
+
+
+def test_lossy_scientific_id_is_rejected(logs):
+    make_probe().handle_alert(alert("1.76054e+09"), T0 + 10)
+    assert received(logs)[0]["reason"] == "probe_id_not_aligned"
+
+
+def test_full_precision_float_string_is_accepted(logs):
+    make_probe().handle_alert(alert(f"{T0}.0"), T0 + 10)
+    assert received(logs)[0]["matched"] is True
+
+
+def test_future_missing_duplicate_and_foreign(logs):
+    p = make_probe()
+    p.handle_alert(alert(T0 + 600), T0)                       # from the future
+    p.handle_alert({"status": "firing", "labels": {"probe": "e2e"}, "annotations": {}}, T0)
+    p.handle_alert(alert(T0), T0 + 30)
+    p.handle_alert(alert(T0), T0 + 60)                         # repeat notification
+    p.handle_alert(alert(T0, probe="other"), T0 + 61)          # another probe: ignored
+    r = received(logs)
+    assert [x.get("reason") for x in r] == ["from_future", "missing_or_bad_probe_id", None, "duplicate"]
+    assert [x["matched"] for x in r] == [False, False, True, False]
 
 
 def test_bad_config():
@@ -147,9 +128,8 @@ class FakeOtlp:
                 pass
 
             def do_POST(self):
-                body = self.rfile.read(int(self.headers["Content-Length"]))
                 req = ExportMetricsServiceRequest()
-                req.ParseFromString(body)
+                req.ParseFromString(self.rfile.read(int(self.headers["Content-Length"])))
                 for rm in req.resource_metrics:
                     for sm in rm.scope_metrics:
                         for m in sm.metrics:
@@ -170,8 +150,7 @@ class FakeOtlp:
 
 
 def post(url, payload, token):
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=data, method="POST",
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
                                  headers={"Content-Type": "application/json",
                                           "Authorization": f"Bearer {token}"})
     try:
@@ -181,27 +160,35 @@ def post(url, payload, token):
         return e.code
 
 
-def test_end_to_end_with_fake_otlp_and_simulated_grafana():
-    otlp = FakeOtlp()
+def start_replica(name, otlp_port, lines):
     port = free_port()
     env = {**os.environ,
            "PROBE_PERIOD_SECONDS": "6", "PROBE_FIRING_SECONDS": "3", "PROBE_TIMEOUT_SECONDS": "5",
            "METRIC_EXPORT_INTERVAL_SECONDS": "1", "LISTEN_PORT": str(port), "WEBHOOK_TOKEN": "s3cret",
-           "OTEL_EXPORTER_OTLP_ENDPOINT": f"http://127.0.0.1:{otlp.port}",
+           "REPLICA_ID": name,
+           "OTEL_EXPORTER_OTLP_ENDPOINT": f"http://127.0.0.1:{otlp_port}",
            "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Basic%20dGVhbTpwdw==",
            "OTEL_SERVICE_NAME": "heartbeat-probe"}
     proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "app.py")], env=env,
                             stdout=subprocess.PIPE, text=True)
-    lines = []
     threading.Thread(target=lambda: [lines.append(json.loads(l)) for l in proc.stdout], daemon=True).start()
-    base = f"http://127.0.0.1:{port}"
+    return proc, f"http://127.0.0.1:{port}"
+
+
+def healthz(base):
+    return json.load(urllib.request.urlopen(base + "/healthz", timeout=2))
+
+
+def test_two_replicas_cross_delivery():
+    otlp = FakeOtlp()
+    lines = []
+    pa, a = start_replica("heartbeat-probe-0", otlp.port, lines)
+    pb, b = start_replica("heartbeat-probe-1", otlp.port, lines)
     try:
-        # wait for a firing phase, then answer exactly as Grafana would
-        deadline = time.time() + 15
-        snap = {}
+        deadline, snap = time.time() + 15, {}
         while time.time() < deadline:
             try:
-                snap = json.load(urllib.request.urlopen(base + "/healthz", timeout=2))
+                snap = healthz(a)
                 if snap["state"] == 1:
                     break
             except OSError:
@@ -210,34 +197,28 @@ def test_end_to_end_with_fake_otlp_and_simulated_grafana():
         assert snap.get("state") == 1
         pid = snap["probe_id"]
 
-        grafana_payload = {"receiver": "heartbeat-probe-webhook", "status": "firing",
-                           "alerts": [{"status": "firing", "labels": {"alertname": "E2E Heartbeat Probe", "probe": "e2e"},
-                                       "annotations": {"probe_id": str(pid)}}]}
-        assert post(base + "/webhook", grafana_payload, "wrong") == 401
-        assert post(base + "/webhook", grafana_payload, "s3cret") == 200
-
-        # let this probe clear, resolve it, then ignore the next one so it times out
-        while json.load(urllib.request.urlopen(base + "/healthz"))["state"] == 1:
-            time.sleep(0.2)
-        grafana_payload["alerts"][0]["status"] = "resolved"
-        assert post(base + "/webhook", grafana_payload, "s3cret") == 200
-        time.sleep(9)
+        payload = {"status": "firing", "alerts": [
+            {"status": "firing", "labels": {"probe": "e2e", "replica": "heartbeat-probe-0"},
+             "annotations": {"probe_id": str(pid)}}]}
+        assert post(b + "/webhook", payload, "wrong") == 401
+        assert post(b + "/webhook", payload, "s3cret") == 200     # replica 0's probe lands on replica 1
+        time.sleep(2.5)                                          # let both export a few points
     finally:
-        proc.terminate()
-        proc.wait(timeout=10)
+        for p in (pa, pb):
+            p.terminate()
+        for p in (pa, pb):
+            p.wait(timeout=10)
         otlp.server.shutdown()
 
-    ev = [l["event"] for l in lines]
-    recv = [l for l in lines if l["event"] == "alert_received"]
-    assert recv[0]["status"] == "firing" and recv[0]["matched"] is True and recv[0]["probe_id"] == pid
-    assert recv[1]["status"] == "resolved" and recv[1]["matched"] is True
-    assert "webhook_unauthorized" in ev
-    assert any(l["event"] == "probe_timeout" and l["probe_id"] != pid for l in lines)
+    m = [l for l in lines if l["event"] == "alert_received"]
+    assert len(m) == 1 and m[0]["matched"] is True
+    assert m[0]["replica"] == "heartbeat-probe-0" and m[0]["received_by"] == "heartbeat-probe-1"
+    assert {l["replica"] for l in lines if l["event"] == "probe_sent"} == {"heartbeat-probe-0", "heartbeat-probe-1"}
+    assert any(l["event"] == "webhook_unauthorized" for l in lines)
     assert all({"severity", "message", "time"} <= set(l) for l in lines)
 
-    names = {p[0] for p in otlp.points}
-    assert names == {"heartbeat.probe.state", "heartbeat.probe.id"}
+    assert {p[0] for p in otlp.points} == {"heartbeat.probe.state", "heartbeat.probe.id"}
+    assert {p[2]["replica"] for p in otlp.points} == {"heartbeat-probe-0", "heartbeat-probe-1"}
+    assert all(p[2]["probe"] == "e2e" for p in otlp.points)
     assert any(n == "heartbeat.probe.id" and v == pid for n, v, *_ in otlp.points)
-    assert {v for n, v, *_ in otlp.points if n == "heartbeat.probe.state"} == {0, 1}
-    assert all(a == {"probe": "e2e"} for *_, a, _ in otlp.points)
     assert all(h == "Basic dGVhbTpwdw==" for *_, h in otlp.points)

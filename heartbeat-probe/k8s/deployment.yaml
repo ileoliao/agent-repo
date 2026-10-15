@@ -1,4 +1,6 @@
 # GKE example. stdout goes straight to Cloud Logging - NOT through your OTel/Loki pipeline.
+# StatefulSet gives stable replica names (heartbeat-probe-0, -1, ...), which keeps
+# the Mimir series and the per-replica GCP absence alerts stable across restarts.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -9,25 +11,36 @@ stringData:
   OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Basic%20BASE64_TEAM_CREDENTIAL"   # %20 = space (OTel spec)
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: heartbeat-probe
 spec:
-  replicas: 1                 # must be exactly 1: probe state is in memory
-  strategy:
-    type: Recreate            # never two instances at once
+  replicas: 2
+  serviceName: heartbeat-probe-headless
+  podManagementPolicy: Parallel
   selector:
     matchLabels: { app: heartbeat-probe }
   template:
     metadata:
       labels: { app: heartbeat-probe }
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app: heartbeat-probe }
       containers:
         - name: heartbeat-probe   # GCP filters on this container name
-          image: REGISTRY/heartbeat-probe:1.0.0
+          image: REGISTRY/heartbeat-probe:1.1.0
           ports:
             - containerPort: 8080
           env:
+            - name: REPLICA_ID
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
             - { name: PROBE_NAME, value: "e2e" }
             - { name: PROBE_PERIOD_SECONDS, value: "300" }
             - { name: PROBE_FIRING_SECONDS, value: "120" }
@@ -55,10 +68,30 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
+  name: heartbeat-probe-headless
+spec:
+  clusterIP: None
+  selector: { app: heartbeat-probe }
+  ports:
+    - port: 8080
+---
+# Webhook entry point: load-balanced across all replicas (any replica can validate any probe).
+apiVersion: v1
+kind: Service
+metadata:
   name: heartbeat-probe
 spec:
   selector: { app: heartbeat-probe }
   ports:
     - port: 80
       targetPort: 8080
-# Expose /webhook to the Grafana alerting instances (internal LB / Ingress) - not shown.
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: heartbeat-probe
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: heartbeat-probe }
+# Expose the `heartbeat-probe` Service to the Grafana alerting instances (internal LB / Ingress) - not shown.
