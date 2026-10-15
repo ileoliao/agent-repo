@@ -1,14 +1,24 @@
 # GKE example. stdout goes straight to Cloud Logging - NOT through your OTel/Loki pipeline.
 # StatefulSet gives stable replica names (heartbeat-probe-0, -1, ...), which keeps
-# the Mimir series and the per-replica GCP absence alerts stable across restarts.
+# Mimir series and the per-replica GCP absence alerts stable across restarts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heartbeat-probe
+data:
+  config.yaml: |
+    # paste your config.yaml here (same file you pass to render.py)
+---
 apiVersion: v1
 kind: Secret
 metadata:
   name: heartbeat-probe
 type: Opaque
 stringData:
-  WEBHOOK_TOKEN: "change-me"                                    # same value as HEARTBEAT_WEBHOOK_TOKEN on Grafana
-  OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Basic%20BASE64_TEAM_CREDENTIAL"   # %20 = space (OTel spec)
+  WEBHOOK_TOKEN: "change-me"          # same value as HEARTBEAT_WEBHOOK_TOKEN on Grafana
+  GRAFANA_TOKEN: "change-me"          # Grafana service account, Viewer on the probe datasources
+  OTLP_HEADERS_TEAM_A: "Authorization=Basic%20BASE64_TEAM_A"   # %20 = space (OTel header format)
+  OTLP_HEADERS_TEAM_B: "Authorization=Basic%20BASE64_TEAM_B"
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -33,37 +43,34 @@ spec:
                 labelSelector:
                   matchLabels: { app: heartbeat-probe }
       containers:
-        - name: heartbeat-probe   # GCP filters on this container name
-          image: REGISTRY/heartbeat-probe:1.1.0
+        - name: heartbeat-probe   # GCP filters on this container name (gcp.log_scope)
+          image: REGISTRY/heartbeat-probe:2.0.0
           ports:
             - containerPort: 8080
           env:
             - name: REPLICA_ID
               valueFrom:
                 fieldRef: { fieldPath: metadata.name }
-            - { name: PROBE_NAME, value: "e2e" }
-            - { name: PROBE_PERIOD_SECONDS, value: "300" }
-            - { name: PROBE_FIRING_SECONDS, value: "120" }
-            - { name: PROBE_TIMEOUT_SECONDS, value: "300" }
-            - { name: METRIC_EXPORT_INTERVAL_SECONDS, value: "15" }
-            - { name: OTEL_SERVICE_NAME, value: "heartbeat-probe" }
-            # Same public OTLP endpoint (Nginx) the business services use
-            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "https://otel.example.internal" }
-            - { name: OTEL_EXPORTER_OTLP_PROTOCOL, value: "http/protobuf" }
+            - { name: PROBE_CONFIG, value: /etc/heartbeat-probe/config.yaml }
           envFrom:
             - secretRef: { name: heartbeat-probe }
+          volumeMounts:
+            - { name: config, mountPath: /etc/heartbeat-probe, readOnly: true }
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
           livenessProbe:
             httpGet: { path: /healthz, port: 8080 }
             periodSeconds: 30
           resources:
-            requests: { cpu: 10m, memory: 64Mi }
-            limits: { memory: 128Mi }
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
           securityContext:
             runAsNonRoot: true
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
+      volumes:
+        - name: config
+          configMap: { name: heartbeat-probe }
 ---
 apiVersion: v1
 kind: Service
@@ -75,7 +82,7 @@ spec:
   ports:
     - port: 8080
 ---
-# Webhook entry point: load-balanced across all replicas (any replica can validate any probe).
+# Webhook entry point: load-balanced across all replicas (any replica validates any alert).
 apiVersion: v1
 kind: Service
 metadata:
