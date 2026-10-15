@@ -49,8 +49,9 @@ export function rejectApproval(root: string, id: string, feedback?: string) {
 
 /**
  * Runs the approved command. Hard rejects are applied again here: deny rules, command
- * substitution, and redirection onto a protected path. Human approval cannot bypass them,
- * even if the gate was queued before the policy changed.
+ * substitution (strict only), and redirection onto a protected path. Human approval cannot bypass them,
+ * even if the gate was queued before the policy changed. The approve list is deliberately NOT applied:
+ * the human approving it is exactly what that list asks for.
  */
 export async function approveAndRun(root: string, id: string, policy: Policy, secrets: Record<string, string>, seen?: Record<string, string>) {
   const g = pendingGate(root, id, 'approval');

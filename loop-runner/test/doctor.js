@@ -32,7 +32,7 @@ const skill = (R, name, script) => { w(R, `.github/skills/${name}/SKILL.md`, `--
     w(R, '.github/agents/needs-bash.agent.md', agent('needs-bash', '  skills: [shell]\n'));
     w(R, '.github/agents/chat-only.agent.md', '---\nname: chat-only\ndescription: x\n---\nHi.\n');
 
-    const r = await runDoctor(R, { runProbes: true });
+    const r = await runDoctor(R, { defaultProfile: 'strict', runProbes: true });
     const at = n => r.checks.filter(c => c.agent === n);
     ok(r.ready.includes('good') && r.ready.includes('loud'), 'agents whose probes exit 0 or 1 are ready');
     ok(at('good').some(c => c.level === 'ok' && /nothing to do/.test(c.what)) && at('loud').some(c => c.level === 'ok' && /wake/.test(c.what)), 'the probe result is described in plain words');
@@ -40,14 +40,14 @@ const skill = (R, name, script) => { w(R, `.github/skills/${name}/SKILL.md`, `--
     ok(at('lost').some(c => c.level === 'fail' && /skill "nowhere"/.test(c.what)), 'a missing skill is reported against its agent');
     ok(at('refused').some(c => c.level === 'fail' && /refused by policy/.test(c.what)), 'a probe policy would refuse is caught before it ever runs');
     ok(!r.checks.some(c => c.agent === 'chat-only'), 'a chat-only agent is not judged');
-    const noRun = await runDoctor(R, { runProbes: false });
+    const noRun = await runDoctor(R, { defaultProfile: 'strict', runProbes: false });
     ok(!noRun.checks.some(c => /ran: exit/.test(c.what)), 'without runProbes nothing is executed');
-    const lone = await runDoctor(R, { agent: 'sick' });
+    const lone = await runDoctor(R, { defaultProfile: 'strict', agent: 'sick' });
     ok(lone.checks.every(c => c.agent === 'sick'), 'one agent can be checked on its own');
-    ok(/Nothing|no agent named/i.test(doctorMarkdown(await runDoctor(R, { agent: 'ghost' }))) || (await runDoctor(R, { agent: 'ghost' })).blocked[0] === 'ghost', 'an unknown agent is explained');
+    ok(/Nothing|no agent named/i.test(doctorMarkdown(await runDoctor(R, { defaultProfile: 'strict', agent: 'ghost' }))) || (await runDoctor(R, { defaultProfile: 'strict', agent: 'ghost' })).blocked[0] === 'ghost', 'an unknown agent is explained');
     const md = doctorMarkdown(r);
     ok(/cannot run yet/.test(md) && md.includes('❌') && md.includes('✅'), 'the report reads as ready versus not ready');
-    const nb = await runDoctor(R, { agent: 'needs-bash', pathEnv: '/nonexistent' });
+    const nb = await runDoctor(R, { defaultProfile: 'strict', agent: 'needs-bash', pathEnv: '/nonexistent' });
     ok(nb.checks.some(c => c.level === 'fail' && /bash or sh/.test(c.what)), 'a missing interpreter is named');
     ok(onPath(['node']) === 'node' && onPath(['definitely-not-a-binary-xyz']) === undefined, 'interpreters are looked up on PATH');
     const tool = await runChatTool('run_doctor', { agent: 'good' }, { root: R, state: () => ({}), reload: async () => [] });
@@ -94,20 +94,20 @@ const skill = (R, name, script) => { w(R, `.github/skills/${name}/SKILL.md`, `--
     w(R, '.github/agents/a.agent.md', agent('a', '  skills: [has-node]\n'));
     w(R, '.github/agents/b.agent.md', agent('b', '  skills: [has-ghost]\n'));
     w(R, '.github/agents/c.agent.md', agent('c', '  skills: [bad]\n'));
-    const ra = await runDoctor(R, { agent: 'a', runProbes: true });
+    const ra = await runDoctor(R, { defaultProfile: 'strict', agent: 'a', runProbes: true });
     ok(ra.ready.includes('a') && ra.checks.some(c => c.level === 'ok' && /`node` is installed/.test(c.what)), 'a required program that is installed is confirmed, with its version');
-    const rb = await runDoctor(R, { agent: 'b' });
+    const rb = await runDoctor(R, { defaultProfile: 'strict', agent: 'b' });
     ok(rb.blocked.includes('b') && rb.checks.some(c => c.level === 'fail' && /harbor-cli-xyz/.test(c.what) && /extraPath/.test(c.fix)), 'a missing program blocks the agent and points at extraPath');
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-bin-'));
     const exe = path.join(bin, 'harbor-cli-xyz');
     fs.writeFileSync(exe, '#!/bin/sh\necho "harbor 9.9.9"\n'); fs.chmodSync(exe, 0o755);
-    const rb2 = await runDoctor(R, { agent: 'b', runProbes: true, extraPath: [bin] });
+    const rb2 = await runDoctor(R, { defaultProfile: 'strict', agent: 'b', runProbes: true, extraPath: [bin] });
     ok(rb2.ready.includes('b') && rb2.checks.some(c => /9\.9\.9/.test(c.what)), 'extraPath makes it findable, and its version is shown');
     const { setExtraPath, buildShellEnv } = require(`${OUT}/exec.js`);
     setExtraPath([bin]);
     ok(buildShellEnv({}).PATH.split(path.delimiter)[0] === bin, 'commands run with extraPath in front of PATH');
     setExtraPath([]);
-    const rc = await runDoctor(R, { agent: 'c' });
+    const rc = await runDoctor(R, { defaultProfile: 'strict', agent: 'c' });
     ok(!rc.checks.some(c => /rm -rf/.test(c.what)), 'an unsafe requires entry is ignored, never run');
     fs.rmSync(R, { recursive: true, force: true }); fs.rmSync(bin, { recursive: true, force: true });
   }
@@ -119,7 +119,7 @@ const skill = (R, name, script) => { w(R, `.github/skills/${name}/SKILL.md`, `--
       const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-tpl-'));
       const res = installTemplate(R, t.id);
       ok(res.ok && Object.keys(t.files).every(f => fs.existsSync(path.join(R, f))), `${t.label}: installs its files`);
-      const r = await runDoctor(R, { agent: t.agent, runProbes: true });
+      const r = await runDoctor(R, { defaultProfile: 'strict', agent: t.agent, runProbes: true });
       ok(r.ready.includes(t.agent) && !r.checks.some(c => c.level !== 'ok'), `${t.label}: is ready as installed, with no warnings`);
       ok(!installTemplate(R, t.id).ok, `${t.label}: never overwrites`);
       fs.rmSync(R, { recursive: true, force: true });

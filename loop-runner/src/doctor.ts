@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { loadAllAgents, loadSkills, policyPathFor, skillsFor, validateTeam, loadAgents } from './team';
-import { decideCommand, loadPolicy, skillScriptRule } from './policy';
+import { Profile, decideCommand, loadPolicy, skillScriptRule } from './policy';
 import { exec, getExtraPath } from './exec';
 import { designWarnings } from './manage';
 import { parseOn } from './triggers';
@@ -21,6 +21,8 @@ export interface DoctorOptions {
   secrets?: Record<string, string>;
   /** Fallback policy file when an agent names none. */
   policyFile?: string;
+  /** harborMate.defaultProfile: the profile of an agent that has no policy file. */
+  defaultProfile?: Profile;
   /** The configured webhook port (0 = off); lets the doctor warn about a webhook goal nobody can reach. */
   triggerPort?: number;
   /** Extra directories searched for programs; defaults to harborMate.extraPath as set in the runtime. */
@@ -87,7 +89,7 @@ export async function runDoctor(root: string, o: DoctorOptions = {}): Promise<Do
     const polRel = policyPathFor(a, undefined, o.policyFile ?? '.loop/policy.json');
     let policy;
     try {
-      policy = loadPolicy(root, polRel);
+      policy = loadPolicy(root, polRel, o.defaultProfile);
       if (a.policy && !fs.existsSync(path.join(root, a.policy))) { add(a.name, 'warn', `Its policy file ${a.policy} does not exist, so the default policy applies.`, 'Create the file, or remove loop.policy.'); }
     } catch (e: any) { add(a.name, 'fail', `Its policy file ${polRel} cannot be read: ${e?.message ?? e}`, 'Fix the JSON in that file.'); }
 

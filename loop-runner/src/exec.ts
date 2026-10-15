@@ -9,6 +9,8 @@ export interface ExecOptions {
   maxOutputBytes: number;
   /** Injected into the environment and masked out of the output. */
   secrets: Record<string, string>;
+  /** Also masked out of the output though not injected (secrets withheld from this command). */
+  redactWith?: Record<string, string>;
   /** Extra non-secret environment variables. */
   env?: Record<string, string>;
   onCancel?: (kill: () => void) => { dispose(): void };
@@ -148,7 +150,7 @@ async function run(command: string, o: ExecOptions): Promise<{ code: number | nu
   } finally {
     sub?.dispose();
   }
-  let text = redact(head + tail, o.secrets);
+  let text = redact(head + tail, { ...o.redactWith, ...o.secrets });
   if (text.length > cap) {
     const half = Math.floor(cap / 2);
     text = text.slice(0, half) + '\n...[truncated]...\n' + text.slice(-half);

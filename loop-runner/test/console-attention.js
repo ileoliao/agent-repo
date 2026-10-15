@@ -15,7 +15,7 @@ const ok = (c, m) => { assert.ok(c, m); n++; console.log('  ✓', m); };
 const dom = html => new JSDOM(`<body>${html}</body>`).window.document;
 const w = (R, rel, t) => { const f = path.join(R, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, t); };
 const agentFile = name => `---\nname: ${name}\ndescription: ${name} does things\nloop:\n  schedule: "0 9 * * *"\n  task: Go.\n---\nYou do careful work and finish with a summary.\n`;
-const CMD = 'harbor status --json';
+const CMD = 'kubectl status --json';
 const REFUSED = { type: 'tool', agent: 'beta', step: 1, name: 'run_command', input: { command: CMD }, result: 'REFUSED by policy (no allow rule matched). Retrying will fail the same way.' };
 
 /** alpha is quiet; beta's newest run ended blocked on a command no rule allows. */
@@ -24,7 +24,7 @@ function world() {
   for (const a of ['alpha', 'beta']) { w(R, `.github/agents/${a}.agent.md`, agentFile(a)); }
   Q.audit(R, 'cb', { type: 'start', agent: 'beta', from: 'schedule', task: 'Check' });
   Q.audit(R, 'cb', { ...REFUSED });
-  Q.audit(R, 'cb', { type: 'end', agent: 'beta', step: 2, status: 'blocked', summary: 'harbor is not allowed', outputs: [] });
+  Q.audit(R, 'cb', { type: 'end', agent: 'beta', step: 2, status: 'blocked', summary: 'kubectl is not allowed', outputs: [] });
   return R;
 }
 const model = (R, extra = {}) => consoleModel(R, { running: true, ...extra });
@@ -39,7 +39,7 @@ console.log('a blocked command is a to-do, and counts everywhere');
   ok(/1 needs you/.test(d.querySelector('.state.wait').textContent) && d.querySelector('.state.wait').dataset.agent === 'beta' && d.querySelector('.state.wait').dataset.scroll === '1', 'the status pill counts it, and is a button to that mate and its card');
   ok(d.querySelector('.roster-row[data-agent="beta"] .count').textContent === '1' && !d.querySelector('.roster-row[data-agent="alpha"] .count'), 'and the badge on that mate in the list');
   const card = d.querySelector('[data-blocked]');
-  ok(card && /^Blocked from running a command/.test(card.querySelector('.card-title').textContent) && !card.querySelector('.meta .tag') && card.querySelector('pre.cmd').textContent === CMD && card.querySelector('[data-allow-agent="beta"][data-allow-cmd="harbor status --json"]') && card.querySelector('[data-dismiss-agent="beta"]'), 'its card shows the mate, the exact command, and Allow and Dismiss');
+  ok(card && /^Blocked from running a command/.test(card.querySelector('.card-title').textContent) && !card.querySelector('.meta .tag') && card.querySelector('pre.cmd').textContent === CMD && card.querySelector('[data-allow-agent="beta"][data-allow-cmd="kubectl status --json"]') && card.querySelector('[data-dismiss-agent="beta"]'), 'its card shows the mate, the exact command, and Allow and Dismiss');
 }
 
 console.log('one number: the status bar and the pill agree');

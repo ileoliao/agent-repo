@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Policy, decideCommand, decideWrite, hardReject } from './policy';
+import { Policy, decideCommand, decideWrite, hardReject, secretsAllowed } from './policy';
 import { AgentDef } from './team';
 import { WorkItem, enqueue, newId, saveGate } from './queue';
 import { exec, redact } from './exec';
@@ -22,6 +22,8 @@ export interface ToolContext {
   secrets: Record<string, string>;
   maxHops: number;
   token: vscode.CancellationToken;
+  /** Model request number; names a spilled output file. */
+  step?: number;
 }
 
 export interface ToolOutcome {
@@ -224,6 +226,12 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
     }
     case 'run_command': {
       const gate = decideCommand(ctx.policy, input.command, ctx.extraAllow);
+      if (gate.approval) {
+        return {
+          text: `REFUSED: this command needs human approval (matches ${gate.rule}). Retrying will fail the same way. Call request_approval with this exact command: ${input.command}`,
+          decision: 'deny'
+        };
+      }
       if (gate.decision !== 'allow') {
         return {
           text: `REFUSED by policy (${gate.rule}). Retrying will fail the same way. If this exact action truly needs doing, request_approval can ask the human to sign it off; otherwise use a different route or report the gap.`,
@@ -234,7 +242,9 @@ async function dispatchTool(name: string, input: any, ctx: ToolContext): Promise
         cwd: ctx.root,
         timeoutSec: ctx.policy.commandTimeoutSec,
         maxOutputBytes: ctx.policy.maxOutputBytes,
-        secrets: ctx.secrets,
+        // Free-form commands run without secrets in standard/trusted (a script could print them); redaction still covers all of them.
+        secrets: secretsAllowed(ctx.policy, input.command, ctx.extraAllow) ? ctx.secrets : {},
+        redactWith: ctx.secrets,
         onCancel: kill => ctx.token.onCancellationRequested(kill)
       });
       return { text: r.text, decision: 'allow' };

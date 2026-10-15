@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { AgentDef, GoalDef, SkillDef, loadAllAgents, loadSkills, pickModel, policyPathFor, validateTeam } from './team';
 import { Gate, WorkItem, audit, complete, enqueue, getGate, listGates, newId, nextItem, pending, saveGate, waiting, keepQueued } from './queue';
-import { loadPolicy } from './policy';
+import { Profile, loadPolicy } from './policy';
 import { GoalIO, checkSilence, fireGoal, goalsDue } from './goals';
 import { runItem } from './runner';
 import { taskOnEnd } from './tasks';
@@ -341,10 +341,13 @@ export class TeamService {
     this.changed();
   }
 
+  /** `harborMate.defaultProfile`: the policy profile when no policy file exists. */
+  profile(): Profile { return this.cfg().get<Profile>('defaultProfile', 'standard'); }
+
   private goalIO(root: string): GoalIO {
     return {
       lastFired: this.lastFired, save: () => this.saveFired(root), skills: this.skills, wakeErrors: this.wakeErrors, lastAlert: this.lastAlert,
-      policy: (a, g) => loadPolicy(root, policyPathFor(a, g.id, this.cfg().get<string>('policyFile', '.loop/policy.json'))),
+      policy: (a, g) => loadPolicy(root, policyPathFor(a, g.id, this.cfg().get<string>('policyFile', '.loop/policy.json')), this.profile()),
       secrets: () => this.secrets(), alert: ev => this.alert(ev), log: l => this.out.appendLine(l)
     };
   }
@@ -435,9 +438,9 @@ export class TeamService {
     const earliest = () => [...this.live.values()].find(l => l.item.agent === agent.name)?.item.id === item.id;
     const r = await runItem(item, {
       root, team: this.team, skills: this.skills,
-      policy: loadPolicy(root, policyPathFor(agent, item.goal, this.cfg().get<string>('policyFile', '.loop/policy.json'))),
+      policy: loadPolicy(root, policyPathFor(agent, item.goal, this.cfg().get<string>('policyFile', '.loop/policy.json')), this.profile()),
       model, secrets: await this.secrets(),
-      maxSteps: this.cfg().get<number>('maxSteps', 40),
+      maxSteps: this.cfg().get<number>('maxSteps', 120),
       maxHops: this.cfg().get<number>('maxHops', 5),
       maxMs: this.cfg().get<number>('maxMinutes', 30) * 60_000,
       takesMessages: earliest,
@@ -585,7 +588,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   };
   // A resolved gate may have woken a parked item; tick so the worker picks it up right away.
   const after = (_woke: boolean) => { svc.tick(); consolePanel?.refresh(); };
-  const policyFor = (g: Gate) => loadPolicy(root(), (svc.team.get(g.agent) ? policyPathFor(svc.team.get(g.agent)!, g.goal, '') : '') || svc.cfg().get<string>('policyFile', '.loop/policy.json'));
+  const policyFor = (g: Gate) => loadPolicy(root(), (svc.team.get(g.agent) ? policyPathFor(svc.team.get(g.agent)!, g.goal, '') : '') || svc.cfg().get<string>('policyFile', '.loop/policy.json'), svc.profile());
   const approveGate = async (id: string, seen?: Record<string, string>) => {
     const g = getGate(root(), id);
     if (!g) { throw new Error(`No approval ${id}`); }
@@ -686,7 +689,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('harborMate.runDoctor', async () => {
       svc.applyExtraPath();
-      const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking mates…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json'), triggerPort: Number(svc.cfg().get<number>('triggerPort', 0)) })));
+      const md = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Harbor Mate: checking mates…' }, async () => doctorMarkdown(await runDoctor(root(), { runProbes: true, secrets: await svc.secrets(), policyFile: svc.cfg().get<string>('policyFile', '.loop/policy.json'), defaultProfile: svc.profile(), triggerPort: Number(svc.cfg().get<number>('triggerPort', 0)) })));
       let models = 0;
       try { models = (await vscode.lm.selectChatModels({})).length; } catch { /* not signed in */ }
       const copilot = models ? `✅ **Copilot** is ready: ${models} model${models > 1 ? 's' : ''} available.` : '❌ **Copilot** has no models available. Sign in to GitHub Copilot in VS Code: mates cannot run without it.';

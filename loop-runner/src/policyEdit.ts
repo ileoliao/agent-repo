@@ -23,7 +23,7 @@ export function planAllowCommand(root: string, agentName: string, command: strin
 
   const effective = policyPathFor(agent, undefined, defaultPolicy);
   let policy;
-  try { policy = loadPolicy(root, effective); } catch (e: any) { return { error: `Its policy file ${effective} cannot be read: ${e?.message ?? e}` }; }
+  try { policy = loadPolicy(root, effective, 'strict'); } catch (e: any) { return { error: `Its policy file ${effective} cannot be read: ${e?.message ?? e}` }; }
   const skills = loadSkills(root);
   const extra = skillsFor(agent).map(n => skills.get(n)).filter((s): s is NonNullable<typeof s> => !!s).map(s => skillScriptRule(s.relDir));
   const deny = hardReject(policy, cmd);

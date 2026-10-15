@@ -10,9 +10,22 @@ import * as path from 'path';
  */
 export type Decision = 'allow' | 'deny';
 
+/**
+ * How much the policy constrains the model. The line is drawn by consequence, not by an allowlist:
+ *   strict   allowlist + deny + hard rejects (the behaviour of every hand-written policy file without `profile`)
+ *   standard anything goes except hard rejects, deny rules, and `approveCommands` (irreversible or outward: needs a human)
+ *   trusted  like standard with no approve list: only deny rules and hard rejects
+ */
+export type Profile = 'strict' | 'standard' | 'trusted';
+export const PROFILES: Profile[] = ['strict', 'standard', 'trusted'];
+
 export interface Policy {
+  /** Absent = strict. */
+  profile?: Profile;
   allowCommands: string[];
   denyCommands: string[];
+  /** standard/trusted: a command matching one (whole or any segment) is refused until a human approves it via request_approval. */
+  approveCommands: string[];
   writablePaths: string[];
   protectedPaths: string[];
   commandTimeoutSec: number;
@@ -20,6 +33,8 @@ export interface Policy {
 }
 
 export const DEFAULT_POLICY: Policy = {
+  profile: 'strict',
+  approveCommands: [],
   allowCommands: [
     '^git (status|diff|log|show|branch|add|commit|checkout -b|switch -c|fetch)\\b',
     '^(ls|cat|head|tail|wc|grep|rg|find|jq)\\b',
@@ -41,16 +56,52 @@ export const DEFAULT_POLICY: Policy = {
 
 /** Agents may always write drafts here, even though .loop/** is otherwise protected. */
 export const OUTBOX = '.loop/outbox/**';
+/** Throwaway scripts and spilled command output. Always writable, in every profile; housekeeping deletes old files. */
+export const SCRATCH = '.loop/scratch/**';
 
-export function loadPolicy(root: string, relPath: string): Policy {
+/** Irreversible or outward actions: standard asks a human first. Matched against the whole command and each segment. */
+export const STANDARD_APPROVE: string[] = [
+  '\\bgit push\\b',
+  '\\bgit\\b(?:\\s+-\\S+(?:\\s+[^\\s-]\\S*)?)*\\s+push\\b', // git -C dir push
+  '\\b(npm|pnpm|yarn) publish\\b',
+  '\\b(kubectl|helm|terraform)\\s+(apply|delete|destroy|upgrade|install)\\b',
+  '\\bdocker push\\b',
+  '\\b(curl|wget)\\b.*(\\s-X\\s*(POST|PUT|PATCH|DELETE)|\\s(-d|--data[\\w-]*|-F|--form|-T|--upload-file)\\b)',
+  '\\b(ssh|scp|rsync|nc)\\b',
+  '\\brm\\s+.*(\\s)(/|~)'
+];
+/** Deny in standard and trusted. curl/wget/ssh/scp/nc moved to STANDARD_APPROVE. */
+export const OPEN_DENY: string[] = [
+  '\\bsudo\\b',
+  '\\bgit (reset --hard|clean)\\b',
+  '>\\s*/',
+  // Recursive rm of / or ~ themselves (flags before or after the target).
+  '\\brm\\s+(?:-\\S+\\s+)*(?:-\\S*[rR]\\S*\\s+(?:-\\S+\\s+)*(?:--\\s+)?(?:/\\*?|~/?\\*?|\\$HOME/?)|(?:--\\s+)?(?:/\\*?|~/?\\*?|\\$HOME/?)(?:\\s+-\\S+)*\\s+-\\S*[rR]\\S*)(?=\\s|$|[;&|])'
+];
+
+/** The built-in defaults of a profile. A policy file that names a profile starts from these. */
+export function profileDefaults(profile: Profile): Policy {
+  if (profile === 'strict') return DEFAULT_POLICY;
+  return { ...DEFAULT_POLICY, profile, denyCommands: OPEN_DENY, approveCommands: profile === 'standard' ? STANDARD_APPROVE : [] };
+}
+
+/** `defaultProfile` applies only when there is no policy file. A file without `profile` is strict. */
+export function loadPolicy(root: string, relPath: string, defaultProfile: Profile = 'standard'): Policy {
   const p = path.join(root, relPath);
   if (!fs.existsSync(p)) {
-    return DEFAULT_POLICY;
+    return profileDefaults(PROFILES.includes(defaultProfile) ? defaultProfile : 'standard');
   }
   const custom = JSON.parse(fs.readFileSync(p, 'utf8'));
+  const profile: Profile = PROFILES.includes(custom.profile) ? custom.profile : 'strict';
+  const base = profileDefaults(profile);
   // The protected paths are a floor: a policy can add to them but never remove one, so no policy lets an agent rewrite its own definition.
-  return { ...DEFAULT_POLICY, ...custom, protectedPaths: [...new Set([...DEFAULT_POLICY.protectedPaths, ...(Array.isArray(custom.protectedPaths) ? custom.protectedPaths : [])])] };
+  return { ...base, ...custom, profile, protectedPaths: [...new Set([...DEFAULT_POLICY.protectedPaths, ...(Array.isArray(custom.protectedPaths) ? custom.protectedPaths : [])])] };
 }
+
+const isStrict = (policy: Policy) => (policy.profile ?? 'strict') === 'strict';
+
+/** Every `harbor` command is allowed in every profile (still subject to deny rules and hard rejects). */
+export const HARBOR_RULE = '^harbor(?=\\s|$)';
 
 /** Allow rule for running scripts that ship inside an assigned skill. */
 export function skillScriptRule(relDir: string): string {
@@ -155,7 +206,7 @@ function unsafeRedirect(policy: Policy, target: string): string | undefined {
 export function hardReject(policy: Policy, command: string): string | undefined {
   const deny = deniedBy(policy, command);
   if (deny) return deny;
-  if (/\$\(|`/.test(command)) return 'command substitution';
+  if (isStrict(policy) && /\$\(|`/.test(command)) return 'command substitution';
   for (const target of redirectionTargets(command)) {
     const reason = unsafeRedirect(policy, target);
     if (reason) return reason;
@@ -167,13 +218,36 @@ export function hardReject(policy: Policy, command: string): string | undefined 
   return undefined;
 }
 
-export function decideCommand(policy: Policy, command: string, extraAllow: string[] = []): { decision: Decision; rule?: string } {
+/** standard/trusted: the approve rule a command (whole, or any segment) matches. Strict has none. */
+export function needsApproval(policy: Policy, command: string): string | undefined {
+  if (isStrict(policy)) return undefined;
+  const pieces = [command, ...commandSegments(command)];
+  return (policy.approveCommands ?? []).find(rule => { const re = new RegExp(rule); return pieces.some(p => re.test(p)); });
+}
+
+export function decideCommand(policy: Policy, command: string, extraAllow: string[] = []): { decision: Decision; rule?: string; approval?: boolean } {
   const hard = hardReject(policy, command);
   if (hard) return { decision: 'deny', rule: hard };
-  const rules = [...policy.allowCommands, ...extraAllow];
+  if (!isStrict(policy)) {
+    const ask = needsApproval(policy, command);
+    return ask ? { decision: 'deny', rule: ask, approval: true } : { decision: 'allow' };
+  }
+  const rules = [...policy.allowCommands, ...extraAllow, HARBOR_RULE];
   const parts = commandSegments(command);
   const ok = parts.every(part => rules.some(rule => new RegExp(rule).test(part)));
   return ok ? { decision: 'allow' } : { decision: 'deny', rule: 'no allow rule matched' };
+}
+
+/**
+ * Whether the stored secrets may be injected into this command. strict: always (as before). standard/trusted: only when
+ * every segment is a skill script or a harbor call and nothing is substituted, so a free-form script cannot print them.
+ */
+export function secretsAllowed(policy: Policy, command: string, extraAllow: string[]): boolean {
+  if (isStrict(policy)) return true;
+  if (/\$\(|`/.test(command)) return false;
+  const rules = [...extraAllow, HARBOR_RULE].map(r => new RegExp(r));
+  const parts = commandSegments(command);
+  return parts.length > 0 && parts.every(part => rules.some(re => re.test(part)));
 }
 
 export function decideWrite(policy: Policy, relPath: string): { decision: Decision; rule?: string } {
@@ -181,9 +255,14 @@ export function decideWrite(policy: Policy, relPath: string): { decision: Decisi
   if (globMatch(OUTBOX, p)) {
     return { decision: 'allow', rule: OUTBOX };
   }
+  if (globMatch(SCRATCH, p)) {
+    return { decision: 'allow', rule: SCRATCH };
+  }
   for (const g of policy.protectedPaths) {
     if (globMatch(g, p)) { return { decision: 'deny', rule: g }; }
   }
+  // standard/trusted: anywhere in the workspace except protected paths (writablePaths does not apply).
+  if (!isStrict(policy)) { return { decision: 'allow', rule: 'workspace' }; }
   for (const g of policy.writablePaths) {
     if (globMatch(g, p)) { return { decision: 'allow', rule: g }; }
   }
