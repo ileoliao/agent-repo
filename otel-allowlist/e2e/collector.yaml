@@ -1,0 +1,31 @@
+# Minimal Collector config for the end-to-end check. run.sh replaces ALLOWLIST_FILE.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:14318
+processors:
+  filter/allowlist:
+    error_mode: ignore
+    trace_conditions:
+      - 'not IsMatch(resource.attributes["service.name"], "${file:ALLOWLIST_FILE}")'
+    metric_conditions:
+      - 'not IsMatch(resource.attributes["service.name"], "${file:ALLOWLIST_FILE}")'
+    log_conditions:
+      - 'not IsMatch(resource.attributes["service.name"], "${file:ALLOWLIST_FILE}")'
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 18888
+  pipelines:
+    traces:  {receivers: [otlp], processors: [filter/allowlist], exporters: [debug]}
+    metrics: {receivers: [otlp], processors: [filter/allowlist], exporters: [debug]}
+    logs:    {receivers: [otlp], processors: [filter/allowlist], exporters: [debug]}

@@ -1,0 +1,5 @@
+# One service.name per line. Lines and text after '#' are ignored.
+# Allowed characters: A-Z a-z 0-9 . _ -  (case-sensitive, exact match)
+payments-api
+lending.batch
+svc-a

@@ -1,0 +1,55 @@
+# Values for the official opentelemetry-collector Helm chart.
+# Rendered with chart 0.177.0 and validated with otelcol-contrib 0.163.2.
+# Merge these into your existing values; the pipeline processor lists
+# replace the chart defaults, so keep any processors you already use.
+
+config:
+  processors:
+    filter/allowlist:
+      error_mode: ignore
+      # Conditions only read resource attributes, so each resource is checked once,
+      # not every span / data point / log record.
+      trace_conditions:
+        - 'not IsMatch(resource.attributes["service.name"], "${file:/etc/otel/allowlist/allowlist.regex}")'
+      metric_conditions:
+        - 'not IsMatch(resource.attributes["service.name"], "${file:/etc/otel/allowlist/allowlist.regex}")'
+      log_conditions:
+        - 'not IsMatch(resource.attributes["service.name"], "${file:/etc/otel/allowlist/allowlist.regex}")'
+  service:
+    pipelines:
+      traces:
+        processors: [memory_limiter, filter/allowlist, batch]
+      metrics:
+        processors: [memory_limiter, filter/allowlist, batch]
+      logs:
+        processors: [memory_limiter, filter/allowlist, batch]
+
+# ConfigMap otel-allowlist holds services.txt and allowlist.regex (see release.sh).
+extraVolumes:
+  - name: allowlist
+    configMap:
+      name: otel-allowlist
+extraVolumeMounts:
+  - name: allowlist
+    mountPath: /etc/otel/allowlist
+    readOnly: true
+
+# The chart only checksums its own config; pass the allowlist hash so a list
+# change rolls the pods:  --set podAnnotations.checksum/allowlist=<sha256>
+podAnnotations:
+  checksum/allowlist: ""
+
+# Start a new pod and wait until it is ready before stopping an old one.
+# Readiness uses the chart's default health_check probe on port 13133.
+rollout:
+  strategy: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+terminationGracePeriodSeconds: 60
+lifecycleHooks:
+  preStop:
+    # The official image is built FROM scratch (no shell, no sleep binary),
+    # so use the native Kubernetes sleep action (Kubernetes 1.30+).
+    sleep:
+      seconds: 10
