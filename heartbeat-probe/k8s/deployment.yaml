@@ -42,7 +42,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: heartbeat-probe       # GCP filters on this container name (gcp.log_scope)
-          image: REGISTRY/heartbeat-probe:3.0.0
+          image: REGISTRY/heartbeat-probe:3.1.0
           ports:
             - containerPort: 8080
           env:
@@ -91,7 +91,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: heartbeat-probe
-          image: REGISTRY/heartbeat-probe:3.0.0
+          image: REGISTRY/heartbeat-probe:3.1.0
           ports:
             - containerPort: 8080
           env:

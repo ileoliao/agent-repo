@@ -77,6 +77,35 @@ def test_invalid(raw, mutate, msg):
         config.from_dict(raw, ENV)
 
 
+def test_alert_windows_derive_from_period(raw):
+    raw["probe"]["period_seconds"] = 120
+    for p in raw["promises"].values():
+        p["deadline_seconds"] = min(p["deadline_seconds"], 100)
+        if "firing_seconds" in p:
+            p["firing_seconds"] = 60
+    c = config.from_dict(raw, ENV)
+    assert (c.alerting["broken_window_seconds"], c.alerting["silent_window_seconds"]) == (240, 360)
+
+
+@pytest.mark.parametrize("alerting, msg", [
+    ({"broken_window_seconds": 500}, "broken_window_seconds"),      # < 300 + 240
+    ({"silent_window_seconds": 800}, "silent_window_seconds"),      # < 600 + 240
+    ({"degraded_failures": 0}, "degraded_failures"),
+    ({"bogus": 1}, "unknown settings"),
+])
+def test_alert_window_validation(raw, alerting, msg):
+    raw["gcp"]["alerting"] = alerting
+    with pytest.raises(config.ConfigError, match=msg):
+        config.from_dict(raw, ENV)
+
+
+@pytest.mark.parametrize("old", ["page_channel_id", "ticket_channel_id"])
+def test_renamed_channel_keys_are_reported(raw, old):
+    raw["gcp"][old] = "1"
+    with pytest.raises(config.ConfigError, match="renamed"):
+        config.from_dict(raw, ENV)
+
+
 def test_header_parsing():
     assert config.parse_otlp_headers("a=b%20c, X-Scope-OrgID=t1") == {"a": "b c", "X-Scope-OrgID": "t1"}
     with pytest.raises(config.ConfigError):

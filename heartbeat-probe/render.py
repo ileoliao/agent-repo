@@ -14,9 +14,10 @@ Generate everything that must agree with the probe configuration.
 GCP model (one verdict per check, so plain counting is exact):
   log metric  heartbeat_check          labels promise, tenant, probe_instance, ok, reason
   log metric  heartbeat_check_latency  passed checks only
-  policy  broken   (page)    a promise/tenant had failures and NO instance passed
-  policy  degraded (ticket)  >= N failed checks for a promise/tenant in a window
-  policy  silent   (ticket)  an instance produced no verdict at all
+  policy  platform broken  CRITICAL  a promise/tenant had failures and NO instance passed
+  policy  degraded         WARNING   one instance failed >= N checks in a window
+  policy  silent           WARNING   an instance produced no verdict at all
+  Policies open Cloud Monitoring incidents and notify the configured channels.
   SLO     per promise x tenant: passed / all verdicts over slo_window_days
 """
 
@@ -137,8 +138,9 @@ def _query(ref: str, ds: str, expr: str, loki: bool = False) -> dict:
 def gcp_objects(cfg: config_mod.Config) -> dict:
     gcp, a = cfg.gcp, cfg.alerting
     project = gcp.get("project_id") or "PROJECT_ID"
-    page = f"projects/{project}/notificationChannels/{gcp.get('page_channel_id', 'CHANNEL_ID')}"
-    ticket = f"projects/{project}/notificationChannels/{gcp.get('ticket_channel_id') or gcp.get('page_channel_id', 'CHANNEL_ID')}"
+    critical_id = gcp.get("critical_channel_id", "CHANNEL_ID")
+    critical = f"projects/{project}/notificationChannels/{critical_id}"
+    warning = f"projects/{project}/notificationChannels/{gcp.get('warning_channel_id') or critical_id}"
     scope = gcp.get("log_scope") or \
         'resource.type="k8s_container" AND resource.labels.container_name="heartbeat-probe"'
     names = " OR ".join(f'"{i}"' for i in cfg.instances)
@@ -176,22 +178,26 @@ def gcp_objects(cfg: config_mod.Config) -> dict:
 
     bw, dw, sw = a["broken_window_seconds"], a["degraded_window_seconds"], a["silent_window_seconds"]
     by = "sum by (promise, tenant)"
+    failed_logs = 'Logs Explorer: `jsonPayload.event="check_result" AND jsonPayload.ok=false`'
     policies = [
         promql_policy(
-            "platform broken", "CRITICAL", page,
+            "platform broken", "CRITICAL", critical,
             f'({by} (increase({PROM}{{ok="false"}}[{bw}s])) > 0)\n'
             f'unless on (promise, tenant)\n'
             f'({by} (increase({PROM}{{ok="true"}}[{bw}s])) > 0)',
             f"No probe instance kept the `promise` for `tenant` in the last {bw}s, and at least one "
-            "instance reported a failure. The platform is breaking this promise. See the failing "
-            "checks' `reason` in Logs Explorer: `jsonPayload.event=\"check_result\" AND jsonPayload.ok=false`."),
+            "instance reported a failure: the platform is breaking this promise. Detection time is about "
+            f"{bw}s plus log ingestion. The failing checks' `reason` (and `export_status_code` for "
+            f"export_failed) is in {failed_logs}."),
         promql_policy(
-            "promise degraded", "WARNING", ticket,
-            f'{by} (increase({PROM}{{ok="false"}}[{dw}s])) >= {a["degraded_failures"]}',
-            f"At least {a['degraded_failures']} failed checks in {dw}s for this promise and tenant. "
-            "If all failures come from one probe_instance, suspect that instance's node or zone first."),
+            "probe instance degraded", "WARNING", warning,
+            f'sum by (probe_instance) (increase({PROM}{{ok="false"}}[{dw}s])) >= {a["degraded_failures"]}',
+            f"`probe_instance` failed at least {a['degraded_failures']} checks in {dw}s. Grouped by instance so "
+            "that one sick probe opens one incident, not one per promise and tenant. If the other instance "
+            "fails too, the platform is degrading; if not, suspect this instance's node or zone. Which "
+            f"promises and tenants failed: {failed_logs}."),
         promql_policy(
-            "probe instance silent", "WARNING", ticket,
+            "probe instance silent", "WARNING", warning,
             "\nor\n".join(f'absent_over_time({PROM}{{probe_instance="{i}"}}[{sw}s])' for i in cfg.instances),
             f"A probe instance produced no verdict for {sw}s: the instance is down, cannot start, "
             "or its logs do not reach Cloud Logging. Platform verdicts for it are void meanwhile."),

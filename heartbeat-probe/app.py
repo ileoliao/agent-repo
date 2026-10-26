@@ -23,6 +23,7 @@ from probe.pipelines import AlertGauge, TenantPipeline
 from probe.report import Telemetry, log
 
 MAX_BODY_BYTES = 1 << 20
+TICK_STALE_SECONDS = 60     # the loop ticks every second; this long without one = stuck
 
 
 def make_handler(checks: Checks, cfg: config_mod.Config, telemetry: Telemetry):
@@ -42,7 +43,10 @@ def make_handler(checks: Checks, cfg: config_mod.Config, telemetry: Telemetry):
 
         def do_GET(self):
             if self.path == "/healthz":
-                self._reply(200, checks.snapshot())
+                snap = checks.snapshot()
+                age = snap["last_tick_age_seconds"]
+                stuck = age is not None and age > TICK_STALE_SECONDS
+                self._reply(503 if stuck else 200, {**snap, "healthy": not stuck})
             else:
                 self._reply(404, {"error": "not found"})
 

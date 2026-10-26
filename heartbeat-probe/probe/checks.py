@@ -9,6 +9,11 @@ Alert promises (metrics_alert, logs_alert): the owner writes a signal carrying
 Query promises (logs_query, traces_query): the owner writes `count` items and
     reads them back through Grafana until all are visible or the deadline passes.
 
+If the latest OTLP export for the check's tenant and signal failed (rejected
+credential, throttling, unreachable entry point), the verdict is
+failed/export_failed with the HTTP status, instead of a less precise
+timeout / not_found.
+
 Measurement faults are not platform verdicts:
 - A process starts measuring at the NEXT cycle boundary; a cycle that was in
   progress before a restart produces no verdict (void), not a failure.
@@ -34,14 +39,17 @@ QUERY_LOOKBACK_SECONDS = 60
 class Checks:
     def __init__(self, cfg: Config, telemetry: Telemetry, gauge: AlertGauge | None = None,
                  pipelines: dict | None = None, grafana=None, clock=time.time,
-                 stop: threading.Event | None = None, max_workers: int = 16):
+                 stop: threading.Event | None = None, max_workers: int | None = None):
         self.cfg, self.telemetry = cfg, telemetry
         self.gauge = gauge or AlertGauge()
         self.pipelines = pipelines or {}
         self.grafana = grafana
         self.clock = clock
         self.stop = stop or threading.Event()
-        self.pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="check")
+        # One worker per check, so a slow backend can never queue checks behind each other.
+        n_checks = sum(1 for _ in cfg.tenant_promises())
+        self.pool = ThreadPoolExecutor(max_workers=max_workers or n_checks + 2, thread_name_prefix="check")
+        self.last_tick: float | None = None       # time.monotonic() of the latest tick
         self.lock = threading.Lock()
         self.cycle: int | None = None             # None until the first tick
         self.pending: dict[tuple, float] = {}     # (promise, tenant, probe_id) -> sent_at
@@ -64,7 +72,15 @@ class Checks:
 
     # ------------------------------------------------------------- schedule --
 
+    def _export_failure(self, tenant: str, signal: str) -> dict | None:
+        pl = self.pipelines.get(tenant)
+        st = pl.export_status(signal) if pl is not None and hasattr(pl, "export_status") else None
+        if not st or st.get("ok"):
+            return None
+        return {"export_status_code": st.get("status_code"), "export_error": st.get("reason")}
+
     def tick(self, now: float) -> None:
+        self.last_tick = time.monotonic()
         cycle = int(now - (now % self.cfg.period_seconds))
         start = False
         with self.lock:
@@ -89,8 +105,10 @@ class Checks:
                     del self.pending[key]
                     expired.append((key, now - sent_at))
         for (promise, tenant, pid), waited in expired:
-            self._result(self.cfg.promises[promise], tenant, pid, False, "timeout",
-                         waited_seconds=round(waited, 3))
+            p = self.cfg.promises[promise]
+            ef = self._export_failure(tenant, p.signal)
+            self._result(p, tenant, pid, False, "export_failed" if ef else "timeout",
+                         waited_seconds=round(waited, 3), **(ef or {}))
 
     def _start_cycle(self, cycle: int, now: float) -> None:
         checks = list(self.cfg.tenant_promises())
@@ -109,11 +127,14 @@ class Checks:
     def _emit_logs_alert(self, p: Promise, t: Tenant, probe_id: int) -> None:
         try:
             self.pipelines[t.name].emit_logs("logs_alert", probe_id, 1)
+            reason, extra = ("export_failed", ef) if (ef := self._export_failure(t.name, "logs")) else (None, {})
         except Exception as e:  # noqa: BLE001 - exporter errors must not kill the loop
+            reason, extra = "emit_error", {"error": f"{type(e).__name__}: {e}"[:300]}
+        if reason:
             with self.lock:
                 owned = self.pending.pop((p.name, t.name, probe_id), None) is not None
             if owned:
-                self._result(p, t.name, probe_id, False, "emit_error", error=f"{type(e).__name__}: {e}"[:300])
+                self._result(p, t.name, probe_id, False, reason, **extra)
 
     # --------------------------------------------------------- query checks --
 
@@ -129,6 +150,9 @@ class Checks:
         except Exception as e:  # noqa: BLE001
             return self._result(p, t.name, probe_id, False, "emit_error",
                                 error=f"{type(e).__name__}: {e}"[:300])
+        ef = self._export_failure(t.name, p.signal)
+        if ef:   # the write itself was rejected: no point polling until the deadline
+            return self._result(p, t.name, probe_id, False, "export_failed", expected=p.count, **ef)
         extra = {"expected": p.count}
         if "trace_id" in vars_:
             extra["trace_id"] = vars_["trace_id"]
@@ -207,7 +231,8 @@ class Checks:
     def snapshot(self) -> dict:
         state, pid = self.gauge.read()
         with self.lock:
-            return {"instance": self.cfg.instance, "cycle": self.cycle,
+            age = None if self.last_tick is None else round(time.monotonic() - self.last_tick, 1)
+            return {"instance": self.cfg.instance, "cycle": self.cycle, "last_tick_age_seconds": age,
                     "pending_alert_checks": len(self.pending),
                     "metrics_alert_state": state, "metrics_alert_probe_id": pid, **self.stats}
 

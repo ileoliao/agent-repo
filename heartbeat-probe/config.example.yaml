@@ -76,11 +76,14 @@ promises:
 
 gcp:
   project_id: my-gcp-project
-  page_channel_id: "1234567890"     # must not depend on the platform being tested
-  ticket_channel_id: "1234567891"   # optional, defaults to page_channel_id
+  # Cloud Monitoring notification channels (email, SMS, PagerDuty, webhook, Pub/Sub ...).
+  # They must not depend on the platform being tested.
+  critical_channel_id: "1234567890"   # CRITICAL policies (platform broken)
+  warning_channel_id: "1234567891"    # WARNING policies; optional, defaults to critical_channel_id
   log_scope: resource.type="k8s_container" AND resource.labels.container_name="heartbeat-probe"
   alerting:
-    broken_window_seconds: 900      # page: no instance passed and at least one failed
-    degraded_failures: 3            # ticket: this many failed checks ...
-    degraded_window_seconds: 3600   # ... within this window
-    silent_window_seconds: 900      # ticket: an instance produced no results
+    # broken_window_seconds: 600      # CRITICAL when no instance passed and at least one failed in
+    #                                 # this window. Default 2 x period. Detection time ~ this value.
+    degraded_failures: 3              # WARNING when one instance failed this many checks ...
+    degraded_window_seconds: 3600     # ... within this window
+    # silent_window_seconds: 900      # WARNING when an instance produced no verdict. Default 3 x period

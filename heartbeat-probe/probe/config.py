@@ -43,11 +43,12 @@ DEFAULT_QUERIES = {
     "traces_query": "/api/traces/${trace_id}",
 }
 
+# None = derived from period_seconds (see from_dict)
 ALERTING_DEFAULTS = {
-    "broken_window_seconds": 900,      # page: no instance passed, at least one failed
-    "degraded_failures": 3,            # ticket: this many failures ...
+    "broken_window_seconds": None,     # CRITICAL: no instance passed, at least one failed. Default 2 periods
+    "degraded_failures": 3,            # WARNING: an instance failed this many checks ...
     "degraded_window_seconds": 3600,   # ... within this window
-    "silent_window_seconds": 900,      # ticket: an instance produced no results
+    "silent_window_seconds": None,     # WARNING: an instance produced no verdict. Default 3 periods
 }
 
 NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
@@ -227,7 +228,29 @@ def from_dict(raw: dict, env=os.environ, runtime: bool = True) -> Config:
         raise ConfigError(f"probe.self_metrics_tenant {self_tenant!r} is not a tenant")
 
     gcp = dict(raw.get("gcp") or {})
+    for old, new in (("page_channel_id", "critical_channel_id"), ("ticket_channel_id", "warning_channel_id")):
+        if old in gcp:
+            raise ConfigError(f"gcp.{old} was renamed to gcp.{new}")
     alerting = {**ALERTING_DEFAULTS, **(gcp.pop("alerting", None) or {})}
+    unknown_keys = set(alerting) - set(ALERTING_DEFAULTS)
+    if unknown_keys:
+        raise ConfigError(f"gcp.alerting: unknown settings {sorted(unknown_keys)}")
+    if alerting["broken_window_seconds"] is None:
+        alerting["broken_window_seconds"] = 2 * period
+    if alerting["silent_window_seconds"] is None:
+        alerting["silent_window_seconds"] = 3 * period
+    alerting = {k: int(v) for k, v in alerting.items()}
+    max_deadline = max(p.deadline_seconds for p in promises.values())
+    # A healthy instance yields a verdict at most period + deadline after the previous one;
+    # across a restart (resume at the next boundary) the gap can reach 2 periods + deadline.
+    if alerting["broken_window_seconds"] < period + max_deadline:
+        raise ConfigError(f"gcp.alerting.broken_window_seconds must be >= period + longest deadline "
+                          f"({period + max_deadline}), or healthy gaps page")
+    if alerting["silent_window_seconds"] < 2 * period + max_deadline:
+        raise ConfigError(f"gcp.alerting.silent_window_seconds must be >= 2 x period + longest deadline "
+                          f"({2 * period + max_deadline}), or every restart looks silent")
+    if alerting["degraded_failures"] < 1 or alerting["degraded_window_seconds"] < period:
+        raise ConfigError("gcp.alerting: degraded_failures >= 1 and degraded_window_seconds >= period_seconds")
 
     return Config(
         instance=instance,
@@ -243,7 +266,7 @@ def from_dict(raw: dict, env=os.environ, runtime: bool = True) -> Config:
         self_metrics_tenant=self_tenant,
         tenants=tenants,
         promises=promises,
-        alerting={k: int(v) for k, v in alerting.items()},
+        alerting=alerting,
         gcp=gcp,
         disable_export=env.get("PROBE_DISABLE_EXPORT", "") == "1",
     )

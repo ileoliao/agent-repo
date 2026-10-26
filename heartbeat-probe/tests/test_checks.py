@@ -43,8 +43,12 @@ class RecTelemetry(Telemetry):
 
 
 class FakePipeline:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, export=None):
         self.logs, self.traces, self.fail = [], [], fail
+        self.export = export or {}          # signal -> export status dict
+
+    def export_status(self, signal):
+        return self.export.get(signal)
 
     def emit_logs(self, check, probe_id, count):
         if self.fail:
@@ -306,3 +310,49 @@ def test_count_spans_handles_v1_and_v2_shapes():
     v2 = {"trace": {"resourceSpans": [{"scopeSpans": [{"spans": [{"spanId": "a", "name": "x",
                                                                   "links": [{"spanId": "z"}]}]}]}]}}
     assert _count_spans(v1) == 2 and _count_spans(v2) == 1
+
+
+# ------------------------------------------------- export failures, sizing ----
+
+REJECTED = {"ok": False, "since": 0, "status_code": 401, "reason": "Unauthorized"}
+
+
+def test_query_check_fails_fast_when_write_is_rejected(logs):
+    cfg = load("e2e-a")
+    g = ScriptedGrafana(loki=[0])
+    c = checks_mod.Checks(cfg, RecTelemetry(), pipelines={"team-a": FakePipeline(export={"logs": REJECTED})},
+                          grafana=g, clock=Clock(T0), stop=StepStop(Clock(T0)))
+    c._run_query(cfg.promises["logs_query"], cfg.tenants["team-a"], T0)
+    (r,) = verdicts(logs)
+    assert (r["ok"], r["reason"], r["export_status_code"], r["export_error"]) == (False, "export_failed", 401, "Unauthorized")
+    assert g.seen == []                                     # no polling until the deadline
+
+
+def test_logs_alert_rejected_write_is_export_failed_once(logs):
+    cfg = load(promises=["logs_alert"], tenants=["team-a"])
+    c = checks_mod.Checks(cfg, RecTelemetry(), pipelines={"team-a": FakePipeline(export={"logs": REJECTED})})
+    c.tick(T0 - 1)
+    c.tick(T0)
+    c.pool.shutdown(wait=True)
+    c.tick(T0 + 299)
+    assert [(v["reason"], v["export_status_code"]) for v in verdicts(logs)] == [("export_failed", 401)]
+
+
+def test_alert_timeout_names_export_failure(logs):
+    cfg = load(promises=["metrics_alert"], tenants=["team-a"])
+    pipe = FakePipeline(export={"metrics": {"ok": True, "since": 0}})
+    c = checks_mod.Checks(cfg, RecTelemetry(), pipelines={"team-a": pipe})
+    c.tick(T0 - 1)
+    c.tick(T0)
+    pipe.export["metrics"] = dict(REJECTED, status_code=429, reason="Too Many Requests")
+    c.tick(T0 + 181)
+    (r,) = verdicts(logs)
+    assert (r["reason"], r["export_status_code"]) == ("export_failed", 429)
+
+
+def test_pool_has_a_worker_per_check_and_snapshot_reports_tick_age(logs):
+    c = checks_mod.Checks(load(), RecTelemetry())
+    assert c.pool._max_workers == 8 + 2                      # 4 promises x 2 tenants
+    assert c.snapshot()["last_tick_age_seconds"] is None
+    c.tick(T0)
+    assert 0 <= c.snapshot()["last_tick_age_seconds"] < 5

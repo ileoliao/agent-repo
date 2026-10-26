@@ -55,7 +55,7 @@ flowchart LR
   B -- "read-back queries" --> GR
   A -. "stdout: one verdict per check" .-> CL
   B -. "stdout" .-> CL
-  POL --> ONCALL["On-call / ticket channels<br/>independent of the platform"]
+  POL --> ONCALL["Incidents + notification channels<br/>independent of the platform"]
 ```
 
 Every instance runs every enabled check for every tenant once per `period_seconds`. `probe_id` is the cycle start (epoch seconds). A process that starts mid-cycle waits for the next boundary.
@@ -80,7 +80,7 @@ sequenceDiagram
   alt matches a pending check within deadline_seconds
     I->>L: check_result ok=true, latency
   else no webhook by deadline_seconds
-    I->>L: check_result ok=false, reason=timeout
+    I->>L: check_result ok=false, reason=timeout<br/>(export_failed + HTTP status if the write was rejected)
   end
   Note over I: duplicates, other instances' alerts and<br/>unknown IDs are ignored (no verdict)
 ```
@@ -136,11 +136,11 @@ flowchart LR
   F3["Rule error or no data<br/>execErrState and noDataState = OK"] --> V
   F4["Grafana down or<br/>webhook delivery fails"] --> V
   F5["Partial loss, throttling, slow index"] --> V
-  V["Owner emits ok=false<br/>timeout / incomplete / not_found / query_error"]
+  V["Owner emits ok=false<br/>export_failed / timeout / incomplete / not_found / query_error"]
   V --> B{"any instance passed<br/>the same promise and tenant?"}
-  B -- no --> P1["platform broken: page"]
-  B -- yes --> P2["promise degraded: ticket<br/>after N failures"]
-  D["Instance down, cannot schedule,<br/>or its logs miss Cloud Logging"] --> Z["no verdicts at all"] --> P3["instance silent: ticket"]
+  B -- no --> P1["platform broken<br/>CRITICAL"]
+  B -- yes --> P2["probe instance degraded<br/>WARNING after N failures"]
+  D["Instance down, stuck, cannot schedule,<br/>or its logs miss Cloud Logging"] --> Z["no verdicts at all"] --> P3["probe instance silent<br/>WARNING"]
 ```
 
 ## Where verdicts are made
@@ -178,11 +178,14 @@ Consequences of this path:
 
 | Policy | Severity / channel | Fires when |
 |---|---|---|
-| platform broken | CRITICAL / page | For a promise and tenant, at least one instance failed and **no instance passed** within `broken_window_seconds` |
-| promise degraded | WARNING / ticket | At least `degraded_failures` failed checks for a promise and tenant within `degraded_window_seconds` |
-| probe instance silent | WARNING / ticket | An instance produced no verdict within `silent_window_seconds` |
+| platform broken | CRITICAL → `critical_channel_id` | For a promise and tenant, at least one instance failed and **no instance passed** within `broken_window_seconds` (default 2 periods) |
+| probe instance degraded | WARNING → `warning_channel_id` | One instance failed at least `degraded_failures` checks within `degraded_window_seconds` |
+| probe instance silent | WARNING → `warning_channel_id` | An instance produced no verdict within `silent_window_seconds` (default 3 periods) |
 
-"No instance passed" keeps a single instance's own trouble (its node or zone) from paging, and still pages while one instance is down, since a missing instance cannot pass.
+Each policy opens an incident in Cloud Monitoring (Alerting page) and notifies its channel. A channel is any Cloud Monitoring notification channel type (email, SMS, PagerDuty, webhook, Pub/Sub); none of them may depend on the platform being tested. `warning_channel_id` defaults to `critical_channel_id`.
+
+- **Detection time.** *platform broken* fires once the last success has left the window, so a total break is reported about `broken_window_seconds` after it starts, plus log ingestion (a few minutes). The default of 2 periods is the shortest window that never fires on healthy timing; config validation enforces `broken_window_seconds >= period + longest deadline`.
+- **Attribution.** "No instance passed" keeps one instance's own trouble (its node or zone) from paging, and still pages while one instance is down, since a missing instance cannot pass. *degraded* is grouped by instance, so one sick instance opens one incident rather than one per promise and tenant; the incident text points at the Logs Explorer query that shows which promises and tenants failed.
 
 ### Where to look
 
@@ -199,7 +202,7 @@ Consequences of this path:
 **Covers**
 
 - Quantified platform reliability: an exact SLO per promise and tenant, usable for reporting, capacity requests and change freezes.
-- Silent failures of the alerting path itself (Grafana down, rule errors, webhook delivery, expired credentials), detected from outside the platform.
+- Silent failures of the alerting path itself (Grafana down, rule errors, Grafana's notification dispatch, expired or revoked credentials), detected from outside the platform. Rejected writes are named as such (`export_failed` with the HTTP status).
 - Blast radius: which tenants and promises an incident affected, from when and for how long.
 - Before/after comparison for platform changes (sampling layer, scaling, upgrades).
 - Freshness and completeness numbers: time to queryable logs, complete traces.
@@ -209,7 +212,8 @@ Consequences of this path:
 - **Prevention.** It detects impact, not causes; overload still needs quotas, isolation, sampling and per-service footprint visibility.
 - **Root cause.** It names the broken promise and tenant, not the failing component.
 - **Problems outside the probe's own data.** Probe traffic is tiny and well-formed: high-cardinality rejections, a single throttled stream, real traces dropped by sampling and low-rate partial loss can go unnoticed. Each instance usually reuses one connection, so it exercises few Collector replicas.
-- **Teams' own alert rules and contact points.** It proves the platform can deliver an alert, not that each team's rule is correct.
+- **External notification delivery.** Alert checks end at an in-cluster webhook. They prove Grafana evaluates rules and dispatches notifications; they do not prove that teams' external channels (IM, email, SMS) or the cluster's egress work.
+- **Teams' own alert rules and contact points.** It does not check that each team's rules are correct.
 - **Query performance under load.** Probe queries are small.
 - **Derived metrics.** Recording rules are not yet a promise (a natural next one: "a written metric shows up in the recording-rule output within N minutes").
 
@@ -225,14 +229,14 @@ One YAML file; see [`config.example.yaml`](config.example.yaml). Secrets are ref
 | `grafana` | `url`, `token_env`, `ca_file`, `alert_folder` |
 | `tenants[]` | `name`, `otlp.endpoint`, `otlp.headers_env`, `datasources.{mimir,loki,tempo}` (Grafana datasource UIDs) |
 | `promises.<name>` | `enabled`, `tenants`, `deadline_seconds`, `slo_target`, `slo_window_days`; alert: `firing_seconds`; query: `count`, `poll_interval_seconds`, `query` |
-| `gcp` | `project_id`, `page_channel_id`, `ticket_channel_id`, `log_scope`, `alerting.{broken_window_seconds, degraded_failures, degraded_window_seconds, silent_window_seconds}` |
+| `gcp` | `project_id`, `critical_channel_id`, `warning_channel_id`, `log_scope`, `alerting.{broken_window_seconds, degraded_failures, degraded_window_seconds, silent_window_seconds}` |
 
 `query` templates use `${service_name}`, `${probe_id}`, `${instance}`, `${tenant}` and, for traces, `${trace_id}`. Defaults:
 
 - `logs_query`: `{service_name="${service_name}"} | probe_check="logs_query" | probe_id="${probe_id}" | probe_instance="${instance}"`
 - `traces_query`: `/api/traces/${trace_id}`
 
-Start-up and `render.py` reject unknown promises or settings, an unlisted `$PROBE_INSTANCE`, missing datasources, `deadline_seconds > period_seconds`, `firing_seconds >= period_seconds`, targets outside (0, 1) and similar mistakes.
+Alert windows default from the period (`broken` 2 periods, `silent` 3 periods). Start-up and `render.py` reject windows that would fire on healthy timing (`broken_window_seconds < period + longest deadline`, `silent_window_seconds < 2 x period + longest deadline`), unknown promises or settings, an unlisted `$PROBE_INSTANCE`, missing datasources, `deadline_seconds > period_seconds`, `firing_seconds >= period_seconds`, targets outside (0, 1) and similar mistakes.
 
 ## Generated Grafana and GCP objects
 
@@ -257,11 +261,12 @@ python render.py apply  --config config.yaml --replace-policies --prune    # als
 
 | Event | Fields |
 |---|---|
-| `check_result` | promise, signal, tenant, instance, probe_id, ok, reason, latency_seconds; query checks add expected, observed (and trace_id); timeouts add waited_seconds |
+| `check_result` | promise, signal, tenant, instance, probe_id, ok, reason, latency_seconds; query checks add expected, observed (and trace_id); timeouts add waited_seconds; `export_failed` adds export_status_code, export_error |
+| `export_status` | tenant, signal, ok, status_code, reason: logged once whenever a tenant's OTLP export for a signal starts failing or recovers |
 | `webhook_ignored` | reason (`other_instance`, `unknown_promise_or_tenant`, `bad_probe_id`, `unmatched`), label values |
 | `cycle_started`, `waiting_for_next_cycle`, `started`, `stopped`, `config_error` | operational |
 
-Failure `reason` values: `timeout`, `incomplete`, `not_found`, `query_error`, `emit_error`.
+Failure `reason` values: `export_failed` (the write itself was rejected or unreachable; HTTP status attached), `timeout`, `incomplete`, `not_found`, `query_error`, `emit_error`. The HTTP status comes from the OTel exporter's internal client (OTel is pinned; `test_export_and_health.py` breaks if an upgrade changes that); success/failure itself uses the public API.
 
 ### Self-observability metrics (standard OTel SDK, to `self_metrics_tenant`)
 
@@ -289,8 +294,9 @@ sum by (promise, reason, probe_instance) (increase(heartbeat_probe_checks_total{
 1. **Write `config.yaml`** from `config.example.yaml`, listing every instance and its Service URL.
 2. **Render and review** `python render.py render --config config.yaml`, then put `build/grafana/*.yaml` into Grafana's provisioning/alerting directory.
 3. **Create GCP objects** `python render.py apply --config config.yaml --replace-policies --prune`, **before** step 4: log metrics do not count entries from before they existed. Channels must not depend on the platform being tested.
-4. **Build and deploy** `docker build -t REGISTRY/heartbeat-probe:3.0.0 .`, put the same config into the ConfigMap in `k8s/deployment.yaml`, fill the Secret, `kubectl apply -f k8s/`.
-   - One single-replica Deployment per instance, `strategy: Recreate`, so two processes never own the same identity.
+4. **Build and deploy** `docker build -t REGISTRY/heartbeat-probe:3.1.0 .`, put the same config into the ConfigMap in `k8s/deployment.yaml`, fill the Secret, `kubectl apply -f k8s/`.
+   - One single-replica Deployment per instance, `strategy: Recreate`, so two processes do not own the same identity during rollouts. (Kubernetes Deployments cannot guarantee this during a node network partition: a replacement Pod can start while the old one still runs. Rare; duplicates would then be possible for that window.)
+   - `/healthz` returns 503 when the scheduler loop has not ticked for 60 s, so the liveness probe restarts a stuck process; *probe instance silent* covers the gap.
    - Required pod anti-affinity on `topology.kubernetes.io/zone`. With three zones, an instance in a failed zone reschedules into the free one (after the usual ~5 minute eviction delay).
    - One Service per instance; Grafana must reach them, and the probes must reach Grafana.
    - stdout must reach Cloud Logging directly, never through your OTel/Loki pipeline.
@@ -299,6 +305,8 @@ sum by (promise, reason, probe_instance) (increase(heartbeat_probe_checks_total{
 ### Migrating from 2.x
 
 Identity moved from replica (`REPLICA_ID`) to instance (`PROBE_INSTANCE`); the StatefulSet becomes one Deployment per instance; the webhook token is gone; the log metrics, policies and SLOs are replaced. Run `apply --replace-policies --prune` to remove the 2.x GCP objects, re-provision Grafana (delete the old `heartbeat-e2e` rule group and contact point), then deploy.
+
+From 3.0: `gcp.page_channel_id` / `gcp.ticket_channel_id` are now `gcp.critical_channel_id` / `gcp.warning_channel_id` (the old keys are rejected with a message), and *promise degraded* became *probe instance degraded*; re-run `apply --replace-policies`.
 
 ## Pre-launch checklist
 
@@ -315,14 +323,14 @@ Identity moved from replica (`REPLICA_ID`) to instance (`PROBE_INSTANCE`); the S
 ## Operations
 
 - **Restarts and deploys** never count against the platform: the interrupted cycle is void, measuring resumes at the next boundary.
-- **Adding an instance**: add it to `instances`, add its Deployment and Service, re-render Grafana, re-run `apply`. Removing one: the reverse, plus `--prune`; expect one *silent* ticket for it until the policy is replaced.
+- **Adding an instance**: add it to `instances`, add its Deployment and Service, re-render Grafana, re-run `apply`. Removing one: the reverse, plus `--prune`; expect one *silent* incident for it until the policy is replaced.
 - **Adding a tenant or promise**: edit the config, re-render Grafana, `apply --replace-policies --prune`, roll the instances.
 
 ## Post-launch drills
 
 1. Delete one instance's Pod → no alert (it resumes at the next cycle). Keep it unschedulable for 15 min → *probe instance silent* only.
-2. Pause one instance's generated rule → that instance times out → *promise degraded* after N failures, no page (the other instance still passes).
-3. Revoke a tenant's OTLP credential → every promise of that tenant fails on both instances → *platform broken* pages; other tenants stay green.
+2. Pause one instance's generated rule → that instance times out → one *probe instance degraded* after N failures, no CRITICAL (the other instance still passes).
+3. Revoke a tenant's OTLP credential → every promise of that tenant fails on both instances with `export_failed` / 401 → *platform broken*; other tenants stay green.
 4. Drop `heartbeat-probe` logs in the Collector → `logs_query` and `logs_alert` break; metrics and traces stay green.
 5. Record time-to-alert for each drill as the baseline.
 
@@ -333,7 +341,8 @@ pip install -r requirements.txt pytest
 python -m pytest -q tests
 ```
 
-- `test_checks.py`: owner verdicts, including the four accuracy scenarios (normal, duplicate webhook, duplicate hiding a failure, restart mid-cycle), webhook filtering, timeouts, query polling with a fake clock, shutdown voiding.
+- `test_checks.py`: owner verdicts, including the four accuracy scenarios (normal, duplicate webhook, duplicate hiding a failure, restart mid-cycle), webhook filtering, timeouts, `export_failed`, query polling with a fake clock, shutdown voiding, pool sizing.
 - `test_config.py`: validation, identity and secret handling.
 - `test_integration.py`: two instances × two tenants against a fake OTLP endpoint (decodes metrics, logs and traces protobuf, separates tenants by Basic auth) and a fake Grafana proxy answering Loki and Tempo reads from what was ingested. The test plays Grafana alerting, sends each notification to its owner plus a duplicate and a misrouted copy, and asserts exactly one verdict per check.
 - `test_render.py`: generated Grafana and GCP objects, and `apply` (upsert, prune, replace) against a fake GCP API.
+- `test_export_and_health.py`: real OTel exporters against an endpoint that rejects then accepts writes (HTTP status captured, one event per change), and `/healthz` turning 503 when the loop stops.

@@ -47,12 +47,15 @@ def test_gcp_objects(tmp_path):
     policies = sorted((v for k, v in gcp.items() if k.startswith("policy-")), key=lambda p: p["displayName"])
     assert [(p["displayName"], p["severity"], p["notificationChannels"][0].rsplit("/", 1)[-1]) for p in policies] == [
         ("[heartbeat-probe] platform broken", "CRITICAL", "1234567890"),
-        ("[heartbeat-probe] probe instance silent", "WARNING", "1234567891"),
-        ("[heartbeat-probe] promise degraded", "WARNING", "1234567891")]
+        ("[heartbeat-probe] probe instance degraded", "WARNING", "1234567891"),
+        ("[heartbeat-probe] probe instance silent", "WARNING", "1234567891")]
     q = {p["displayName"]: p["conditions"][0]["conditionPrometheusQueryLanguage"]["query"] for p in policies}
     broken = q["[heartbeat-probe] platform broken"]
     assert 'ok="false"' in broken and "unless on (promise, tenant)" in broken and 'ok="true"' in broken
-    assert ">= 3" in q["[heartbeat-probe] promise degraded"] and "[3600s]" in q["[heartbeat-probe] promise degraded"]
+    assert "[600s]" in broken                                       # default: 2 x period
+    degraded = q["[heartbeat-probe] probe instance degraded"]
+    assert degraded.startswith("sum by (probe_instance)")           # one incident per sick instance
+    assert ">= 3" in degraded and "[3600s]" in degraded
     silent = q["[heartbeat-probe] probe instance silent"]
     assert silent.count("absent_over_time") == 2 and 'probe_instance="e2e-b"' in silent
 
@@ -63,6 +66,15 @@ def test_gcp_objects(tmp_path):
     assert s["goal"] == 0.999 and s["rollingPeriod"] == f"{28 * 86400}s"
     assert ratio["goodServiceFilter"] == ratio["totalServiceFilter"] + ' AND metric.label.ok="true"'
     assert 'tenant="team-a"' in ratio["totalServiceFilter"] and "heartbeat_check" in ratio["totalServiceFilter"]
+
+
+def test_warning_channel_defaults_to_critical(tmp_path):
+    raw = yaml.safe_load(open(EXAMPLE))
+    del raw["gcp"]["warning_channel_id"]
+    path = tmp_path / "c.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    objs = render.gcp_objects(render.build(str(path)))
+    assert {p["notificationChannels"][0].rsplit("/", 1)[-1] for p in objs["policies"]} == {"1234567890"}
 
 
 def test_long_names_get_short_unique_uids():
