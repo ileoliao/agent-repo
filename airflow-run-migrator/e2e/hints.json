@@ -1,0 +1,15 @@
+{
+  "producer_a.count": "int",
+  "producer_b.when": "datetime",
+  "producer_b.when_str": "str",
+  "producer_c.flag": "bool",
+  "producer_c.numstr": "str",
+  "producer_c.ratio": "float",
+  "producer_c.return_value": "int",
+  "producer_d.date": "date",
+  "producer_d.dec": "decimal",
+  "producer_d.dt": "datetime",
+  "producer_d.s7": "str",
+  "producer_d.sTrue": "str",
+  "producer_d.sNone": "str"
+}
