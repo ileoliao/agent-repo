@@ -1,14 +1,14 @@
 """
-heartbeat-probe entry point: HTTP webhook receiver + check scheduler.
+heartbeat-probe entry point: one probe instance = one process.
 
 Configuration: YAML file at $PROBE_CONFIG (see config.example.yaml).
-Replica identity: $REPLICA_ID (StatefulSet pod name), else $HOSTNAME.
-Run several replicas: checks are per replica, webhook validation is stateless.
+Identity:      $PROBE_INSTANCE, one of `instances[].name` in the config.
+Run each instance as a single-replica Deployment; run two or more independent
+instances (in different zones) for measurer availability and attribution.
 """
 
 from __future__ import annotations
 
-import hmac
 import json
 import signal
 import sys
@@ -26,8 +26,6 @@ MAX_BODY_BYTES = 1 << 20
 
 
 def make_handler(checks: Checks, cfg: config_mod.Config, telemetry: Telemetry):
-    expected = f"Bearer {cfg.webhook_token}".encode()
-
     class Handler(BaseHTTPRequestHandler):
         server_version = "heartbeat-probe"
 
@@ -51,11 +49,6 @@ def make_handler(checks: Checks, cfg: config_mod.Config, telemetry: Telemetry):
         def do_POST(self):
             if self.path != "/webhook":
                 return self._reply(404, {"error": "not found"})
-            if not hmac.compare_digest(self.headers.get("Authorization", "").encode(), expected):
-                log("WARNING", "webhook_unauthorized", client=self.client_address[0],
-                    received_by=cfg.replica)
-                telemetry.rejected("unauthorized")
-                return self._reply(401, {"error": "unauthorized"})
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
@@ -72,6 +65,7 @@ def make_handler(checks: Checks, cfg: config_mod.Config, telemetry: Telemetry):
             for alert in alerts:
                 if isinstance(alert, dict):
                     checks.handle_alert(alert, now)
+            # Always 200 for well-formed requests: a retry could never turn into a verdict.
             self._reply(200, {"ok": True})
 
     return Handler
@@ -87,10 +81,9 @@ def main() -> int:
     gauge = AlertGauge()
     pipelines, telemetry = {}, Telemetry()
     if not cfg.disable_export:
+        metrics_tenants = set(cfg.promises["metrics_alert"].tenants) if "metrics_alert" in cfg.promises else set()
         for name, tenant in cfg.tenants.items():
-            pl = TenantPipeline(cfg, tenant, gauge,
-                                with_alert_gauge=any(p.name == "metrics_alert" and name in p.tenants
-                                                     for p in cfg.promises.values()),
+            pl = TenantPipeline(cfg, tenant, gauge, with_alert_gauge=name in metrics_tenants,
                                 with_self_metrics=name == cfg.self_metrics_tenant)
             pipelines[name] = pl
             if pl.telemetry:
@@ -104,7 +97,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    log("INFO", "started", probe=cfg.probe_name, replica=cfg.replica, period=cfg.period_seconds,
+    log("INFO", "started", instance=cfg.instance, period=cfg.period_seconds,
         tenants=sorted(cfg.tenants), promises=sorted(cfg.promises), port=cfg.listen_port)
 
     while not stop.is_set():
@@ -115,7 +108,7 @@ def main() -> int:
     checks.shutdown()
     for pl in pipelines.values():
         pl.shutdown()
-    log("INFO", "stopped", probe=cfg.probe_name, replica=cfg.replica)
+    log("INFO", "stopped", instance=cfg.instance)
     return 0
 
 

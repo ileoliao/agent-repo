@@ -7,7 +7,7 @@ import yaml
 from probe import config
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV = {"WEBHOOK_TOKEN": "t", "GRAFANA_TOKEN": "g", "REPLICA_ID": "heartbeat-probe-0",
+ENV = {"GRAFANA_TOKEN": "g", "PROBE_INSTANCE": "e2e-a",
        "OTLP_HEADERS_TEAM_A": "Authorization=Basic%20YQ==", "OTLP_HEADERS_TEAM_B": "Authorization=Basic%20Yg=="}
 
 
@@ -19,13 +19,31 @@ def raw():
 
 def test_example_loads(raw):
     c = config.from_dict(raw, ENV)
-    assert c.replica == "heartbeat-probe-0"
+    assert c.instance == "e2e-a" and list(c.instances) == ["e2e-a", "e2e-b"]
     assert set(c.promises) == {"metrics_alert", "logs_alert", "logs_query", "traces_query"}
     assert c.tenants["team-b"].otlp_headers == {"Authorization": "Basic Yg=="}
     assert len(list(c.tenant_promises())) == 8
-    assert c.promises["logs_query"].count == 10
-    assert c.promises["metrics_alert"].slo_target == 0.999      # explicit
-    assert c.promises["logs_query"].absent_for_seconds == 900   # default
+    assert c.promises["logs_query"].deadline_seconds == 60
+    assert c.promises["traces_query"].slo_window_days == 28       # default
+    assert c.alerting["degraded_failures"] == 3
+    assert "alerting" not in c.gcp
+
+
+@pytest.mark.parametrize("instance", ["", "e2e-z"])
+def test_instance_identity_must_be_listed(raw, instance):
+    with pytest.raises(config.ConfigError, match="PROBE_INSTANCE"):
+        config.from_dict(raw, {**ENV, "PROBE_INSTANCE": instance})
+
+
+def test_render_mode_needs_no_identity_or_secrets(raw):
+    c = config.from_dict(raw, {}, runtime=False)
+    assert c.instance == "" and c.tenants["team-a"].otlp_headers == {} and c.grafana_token == ""
+
+
+def test_secrets_required_at_runtime(raw):
+    env = {k: v for k, v in ENV.items() if k != "OTLP_HEADERS_TEAM_B"}
+    with pytest.raises(config.ConfigError, match="OTLP_HEADERS_TEAM_B"):
+        config.from_dict(raw, env)
 
 
 def test_promise_limited_to_tenants_and_disabled(raw):
@@ -38,6 +56,7 @@ def test_promise_limited_to_tenants_and_disabled(raw):
 
 @pytest.mark.parametrize("mutate, msg", [
     (lambda r: r["promises"].update(bogus={}), "unknown promise"),
+    (lambda r: r["promises"]["logs_query"].update(latency_objective_seconds=5), "unknown settings"),
     (lambda r: r["promises"]["metrics_alert"].update(firing_seconds=300), "firing_seconds"),
     (lambda r: r["promises"]["logs_query"].update(deadline_seconds=301), "deadline_seconds"),
     (lambda r: r["promises"]["logs_query"].update(slo_target=1), "slo_target"),
@@ -46,19 +65,16 @@ def test_promise_limited_to_tenants_and_disabled(raw):
     (lambda r: r["tenants"][1]["datasources"].pop("tempo"), "datasources.tempo"),
     (lambda r: r["grafana"].pop("url"), "grafana.url"),
     (lambda r: r["tenants"].append(copy.deepcopy(r["tenants"][0])), "duplicated"),
+    (lambda r: r["instances"].append(copy.deepcopy(r["instances"][0])), "listed twice"),
+    (lambda r: r["instances"][0].update(name="E2E_A"), "lowercase"),
+    (lambda r: r["instances"][1].pop("webhook_url"), "webhook_url"),
+    (lambda r: r.pop("instances"), "instances"),
     (lambda r: r["probe"].update(self_metrics_tenant="x"), "self_metrics_tenant"),
 ])
 def test_invalid(raw, mutate, msg):
     mutate(raw)
     with pytest.raises(config.ConfigError, match=msg):
         config.from_dict(raw, ENV)
-
-
-def test_secrets_required_at_runtime_but_not_for_render(raw):
-    env = {k: v for k, v in ENV.items() if k != "OTLP_HEADERS_TEAM_B"}
-    with pytest.raises(config.ConfigError, match="OTLP_HEADERS_TEAM_B"):
-        config.from_dict(raw, env)
-    assert config.from_dict(raw, {}, require_secrets=False).tenants["team-b"].otlp_headers == {}
 
 
 def test_header_parsing():

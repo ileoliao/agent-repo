@@ -1,13 +1,13 @@
-# GKE example. stdout goes straight to Cloud Logging - NOT through your OTel/Loki pipeline.
-# StatefulSet gives stable replica names (heartbeat-probe-0, -1, ...), which keeps
-# Mimir series and the per-replica GCP absence alerts stable across restarts.
+# GKE example: two independent probe instances, one Pod each, in different zones.
+# The two Deployments/Services differ only in the instance name (e2e-a / e2e-b).
+# stdout goes straight to Cloud Logging - NOT through your OTel/Loki pipeline.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: heartbeat-probe
 data:
   config.yaml: |
-    # paste your config.yaml here (same file you pass to render.py)
+    # paste your config.yaml here (the same file you pass to render.py)
 ---
 apiVersion: v1
 kind: Secret
@@ -15,42 +15,38 @@ metadata:
   name: heartbeat-probe
 type: Opaque
 stringData:
-  WEBHOOK_TOKEN: "change-me"          # same value as HEARTBEAT_WEBHOOK_TOKEN on Grafana
   GRAFANA_TOKEN: "change-me"          # Grafana service account, Viewer on the probe datasources
   OTLP_HEADERS_TEAM_A: "Authorization=Basic%20BASE64_TEAM_A"   # %20 = space (OTel header format)
   OTLP_HEADERS_TEAM_B: "Authorization=Basic%20BASE64_TEAM_B"
 ---
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
-  name: heartbeat-probe
+  name: heartbeat-probe-e2e-a
 spec:
-  replicas: 2
-  serviceName: heartbeat-probe-headless
-  podManagementPolicy: Parallel
+  replicas: 1                         # one process per instance: it owns its checks
+  strategy:
+    type: Recreate                    # never two Pods of the same instance at once
   selector:
-    matchLabels: { app: heartbeat-probe }
+    matchLabels: { app: heartbeat-probe, probe-instance: e2e-a }
   template:
     metadata:
-      labels: { app: heartbeat-probe }
+      labels: { app: heartbeat-probe, probe-instance: e2e-a }
     spec:
       affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                topologyKey: kubernetes.io/hostname
-                labelSelector:
-                  matchLabels: { app: heartbeat-probe }
+        podAntiAffinity:              # every instance in a different zone
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: topology.kubernetes.io/zone
+              labelSelector:
+                matchLabels: { app: heartbeat-probe }
+      terminationGracePeriodSeconds: 30
       containers:
-        - name: heartbeat-probe   # GCP filters on this container name (gcp.log_scope)
-          image: REGISTRY/heartbeat-probe:2.0.0
+        - name: heartbeat-probe       # GCP filters on this container name (gcp.log_scope)
+          image: REGISTRY/heartbeat-probe:3.0.0
           ports:
             - containerPort: 8080
           env:
-            - name: REPLICA_ID
-              valueFrom:
-                fieldRef: { fieldPath: metadata.name }
+            - { name: PROBE_INSTANCE, value: e2e-a }
             - { name: PROBE_CONFIG, value: /etc/heartbeat-probe/config.yaml }
           envFrom:
             - secretRef: { name: heartbeat-probe }
@@ -72,33 +68,91 @@ spec:
         - name: config
           configMap: { name: heartbeat-probe }
 ---
-apiVersion: v1
-kind: Service
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: heartbeat-probe-headless
+  name: heartbeat-probe-e2e-b
 spec:
-  clusterIP: None
-  selector: { app: heartbeat-probe }
-  ports:
-    - port: 8080
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: heartbeat-probe, probe-instance: e2e-b }
+  template:
+    metadata:
+      labels: { app: heartbeat-probe, probe-instance: e2e-b }
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: topology.kubernetes.io/zone
+              labelSelector:
+                matchLabels: { app: heartbeat-probe }
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: heartbeat-probe
+          image: REGISTRY/heartbeat-probe:3.0.0
+          ports:
+            - containerPort: 8080
+          env:
+            - { name: PROBE_INSTANCE, value: e2e-b }
+            - { name: PROBE_CONFIG, value: /etc/heartbeat-probe/config.yaml }
+          envFrom:
+            - secretRef: { name: heartbeat-probe }
+          volumeMounts:
+            - { name: config, mountPath: /etc/heartbeat-probe, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: config
+          configMap: { name: heartbeat-probe }
 ---
-# Webhook entry point: load-balanced across all replicas (any replica validates any alert).
+# Each instance has its own Service = its own webhook URL (instances[].webhook_url).
 apiVersion: v1
 kind: Service
 metadata:
-  name: heartbeat-probe
+  name: heartbeat-probe-e2e-a
 spec:
-  selector: { app: heartbeat-probe }
+  selector: { app: heartbeat-probe, probe-instance: e2e-a }
   ports:
     - port: 80
       targetPort: 8080
 ---
-apiVersion: policy/v1
-kind: PodDisruptionBudget
+apiVersion: v1
+kind: Service
 metadata:
-  name: heartbeat-probe
+  name: heartbeat-probe-e2e-b
 spec:
-  minAvailable: 1
-  selector:
-    matchLabels: { app: heartbeat-probe }
-# Expose the `heartbeat-probe` Service to the Grafana alerting instances (internal LB / Ingress) - not shown.
+  selector: { app: heartbeat-probe, probe-instance: e2e-b }
+  ports:
+    - port: 80
+      targetPort: 8080
+# Optional: the webhook has no authentication. If other workloads share the
+# cluster, allow only Grafana to reach it (adjust the selectors to your Grafana):
+# ---
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: heartbeat-probe-webhook
+# spec:
+#   podSelector:
+#     matchLabels: { app: heartbeat-probe }
+#   policyTypes: [Ingress]
+#   ingress:
+#     - from:
+#         - namespaceSelector:
+#             matchLabels: { kubernetes.io/metadata.name: grafana }
+#           podSelector:
+#             matchLabels: { app.kubernetes.io/name: grafana }
+#       ports:
+#         - port: 8080

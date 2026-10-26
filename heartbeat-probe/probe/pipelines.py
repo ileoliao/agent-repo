@@ -49,7 +49,7 @@ class TenantPipeline:
     def __init__(self, cfg: Config, tenant: Tenant, gauge: AlertGauge, with_alert_gauge: bool,
                  with_self_metrics: bool):
         self.cfg, self.tenant = cfg, tenant
-        attrs = {"service.instance.id": cfg.replica, "probe.tenant": tenant.name}
+        attrs = {"service.instance.id": cfg.instance, "probe.tenant": tenant.name}
         if not os.environ.get("OTEL_SERVICE_NAME"):
             attrs["service.name"] = cfg.service_name
         resource = Resource.create(attrs)
@@ -63,10 +63,10 @@ class TenantPipeline:
                     aggregation=ExplicitBucketHistogramAggregation(LATENCY_BUCKETS))
         self.meter_provider = MeterProvider(resource=resource, metric_readers=[reader], views=[view])
         meter = self.meter_provider.get_meter("heartbeat-probe")
-        self.telemetry = OtelTelemetry(meter, cfg.probe_name, cfg.replica) if with_self_metrics else None
+        self.telemetry = OtelTelemetry(meter, cfg.instance) if with_self_metrics else None
 
         if with_alert_gauge:
-            gauge_attrs = {"probe": cfg.probe_name, "replica": cfg.replica}
+            gauge_attrs = {"probe_instance": cfg.instance}
 
             def observe_state(_: CallbackOptions):
                 state, _pid = gauge.read()
@@ -99,16 +99,15 @@ class TenantPipeline:
             self.logger.emit(
                 body=f"heartbeat probe {check} {probe_id} {seq + 1}/{count}",
                 severity_number=SeverityNumber.INFO, severity_text="INFO",
-                attributes={"probe.name": self.cfg.probe_name, "probe.check": check,
-                            "probe.id": probe_id, "probe.replica": self.cfg.replica,
+                attributes={"probe.check": check, "probe.id": probe_id,
+                            "probe.instance": self.cfg.instance,
                             "probe.seq": seq + 1, "probe.count": count})
         self.logger_provider.force_flush(5000)
 
     def emit_trace(self, probe_id: int, span_count: int) -> str:
         """Root span plus span_count-1 children; returns the trace ID (hex)."""
-        attrs = {"probe.name": self.cfg.probe_name, "probe.check": "traces_query",
-                 "probe.id": probe_id, "probe.replica": self.cfg.replica,
-                 "probe.count": span_count}
+        attrs = {"probe.check": "traces_query", "probe.id": probe_id,
+                 "probe.instance": self.cfg.instance, "probe.count": span_count}
         with self.tracer.start_as_current_span("heartbeat-probe", attributes=attrs) as root:
             for i in range(span_count - 1):
                 with self.tracer.start_as_current_span(f"heartbeat-probe.child.{i + 1}", attributes=attrs):

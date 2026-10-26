@@ -1,25 +1,29 @@
-# heartbeat-probe configuration. One file drives both the probe (runtime) and
-# render.py (Grafana rules, GCP log metrics, alert policies, SLOs).
+# heartbeat-probe configuration. One file drives every probe instance (runtime)
+# and render.py (Grafana rules and contact points, GCP log metrics, alerts, SLOs).
 # Fields ending in `_env` name an environment variable; secrets never live here.
 
 probe:
-  name: e2e                     # label `probe` on everything
   service_name: heartbeat-probe # OTel service.name (OTEL_SERVICE_NAME overrides)
-  period_seconds: 300           # one check per promise per tenant per replica per period
+  period_seconds: 300           # one check per promise per tenant per instance per period
   export_interval_seconds: 15   # OTel metric export interval
   self_metrics_tenant: team-a   # where the probe's own metrics go (default: first tenant)
 
+# Independent probe instances. Each process sets $PROBE_INSTANCE to one name.
+# Run each as a single-replica Deployment, in different zones.
+instances:
+  - name: e2e-a
+    webhook_url: http://heartbeat-probe-e2e-a.observability.svc/webhook
+  - name: e2e-b
+    webhook_url: http://heartbeat-probe-e2e-b.observability.svc/webhook
+
 webhook:
-  listen_port: 8080
-  token_env: WEBHOOK_TOKEN      # Grafana sends "Authorization: Bearer <token>"
+  listen_port: 8080             # $LISTEN_PORT overrides; no auth (cluster-internal)
 
 grafana:
   url: https://grafana.example.internal
   token_env: GRAFANA_TOKEN      # service account token, Viewer on the probe datasources
   # ca_file: /etc/ssl/internal-ca.pem
   alert_folder: Platform Heartbeat      # used by render.py
-  contact_point: heartbeat-probe-webhook
-  webhook_url: https://heartbeat-probe.example.internal/webhook
 
 # Each tenant is probed through its own ingest path and credentials.
 tenants:
@@ -40,42 +44,43 @@ tenants:
       loki: loki-team-b
       tempo: tempo-team-b
 
-# Promises the platform makes. Every number below is configurable per promise.
-# Defaults: deadline_seconds 300, latency_objective_seconds 120,
-# absent_for_seconds 900, slo_target 0.999, slo_window_days 28.
+# Promises the platform makes. deadline_seconds IS the promise: a check passes
+# only if it completes within it. Defaults: deadline_seconds 300,
+# slo_target 0.999, slo_window_days 28.
 promises:
-  metrics_alert:                # "an alert on my metrics reaches me"
+  metrics_alert:                # "an alert on my metrics reaches me within N s"
     firing_seconds: 120         # how long the probe gauge stays 1
-    deadline_seconds: 300       # webhook must arrive within this time
-    latency_objective_seconds: 120
+    deadline_seconds: 180
     slo_target: 0.999
 
-  logs_alert:                   # "an alert on my logs reaches me"
+  logs_alert:                   # "an alert on my logs reaches me within N s"
     firing_seconds: 120         # LogQL lookback window of the generated rule
-    deadline_seconds: 300
-    latency_objective_seconds: 150
+    deadline_seconds: 240
     slo_target: 0.995
 
   logs_query:                   # "my logs are completely searchable within N s"
     count: 10                   # lines written per check; all must be found
-    deadline_seconds: 120
+    deadline_seconds: 60
     poll_interval_seconds: 5
-    latency_objective_seconds: 30
     slo_target: 0.999
-    # string.Template variables: ${service_name} ${probe} ${probe_id} ${replica} ${tenant}
-    # query: '{service_name="${service_name}"} | probe_check="logs_query" | probe_id="${probe_id}" | probe_replica="${replica}"'
+    # ${service_name} ${probe_id} ${instance} ${tenant}
+    # query: '{service_name="${service_name}"} | probe_check="logs_query" | probe_id="${probe_id}" | probe_instance="${instance}"'
 
   traces_query:                 # "my traces are completely retrievable by ID within N s"
     count: 5                    # spans per trace; all must be returned
-    deadline_seconds: 180
+    deadline_seconds: 120
     poll_interval_seconds: 10
-    latency_objective_seconds: 60
     slo_target: 0.999
     # tenants: [team-a]         # limit a promise to some tenants
     # query: /api/traces/${trace_id}
 
 gcp:
   project_id: my-gcp-project
-  notification_channel_id: "1234567890"   # must not depend on the monitored stack
+  page_channel_id: "1234567890"     # must not depend on the platform being tested
+  ticket_channel_id: "1234567891"   # optional, defaults to page_channel_id
   log_scope: resource.type="k8s_container" AND resource.labels.container_name="heartbeat-probe"
-  fast_burn_rate: 10            # SLO burn-rate alert threshold over 1h
+  alerting:
+    broken_window_seconds: 900      # page: no instance passed and at least one failed
+    degraded_failures: 3            # ticket: this many failed checks ...
+    degraded_window_seconds: 3600   # ... within this window
+    silent_window_seconds: 900      # ticket: an instance produced no results

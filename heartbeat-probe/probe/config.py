@@ -1,52 +1,56 @@
 """Configuration: one YAML file is the single source of truth.
 
-The same file drives the probe at runtime and `render.py` (Grafana rules,
-GCP log metrics, alert policies and SLOs), so thresholds never drift apart.
-Secrets are never written in the file: fields ending in `_env` name an
-environment variable that holds the value.
+The same file drives every probe instance at runtime and `render.py`
+(Grafana rules and contact points, GCP log metrics, alert policies, SLOs).
+Each running process picks its identity from $PROBE_INSTANCE, which must be
+one of `instances[].name`. Secrets never live in the file: fields ending in
+`_env` name an environment variable that holds the value.
 """
 
 from __future__ import annotations
 
 import os
-import socket
+import re
 import urllib.parse
 from dataclasses import dataclass, field
 
 import yaml
 
-# promise name -> (kind, signal)
+# promise name -> (kind, signal, datasource it reads through)
 PROMISE_TYPES = {
-    "metrics_alert": ("alert", "metrics"),
-    "logs_alert": ("alert", "logs"),
-    "logs_query": ("query", "logs"),
-    "traces_query": ("query", "traces"),
+    "metrics_alert": ("alert", "metrics", "mimir"),
+    "logs_alert": ("alert", "logs", "loki"),
+    "logs_query": ("query", "logs", "loki"),
+    "traces_query": ("query", "traces", "tempo"),
 }
 
 PROMISE_DEFAULTS = {
-    # common
     "enabled": True,
-    "tenants": None,                 # None = all tenants
-    "deadline_seconds": 300,         # result must arrive within this time
-    "latency_objective_seconds": 120,  # GCP "slow" alert threshold (p95)
-    "absent_for_seconds": 900,       # GCP "broken" alert: no success for this long
-    "slo_target": 0.999,             # GCP SLO: share of checks that succeed
+    "tenants": None,              # None = all tenants
+    "deadline_seconds": 300,      # THE promise: a check passes only within this time
+    "slo_target": 0.999,          # share of checks that pass
     "slo_window_days": 28,
-    # alert loops
-    "firing_seconds": 120,           # metrics: how long the gauge stays 1; logs: rule lookback window
-    # query checks
-    "count": 10,                     # log lines / spans written per check
+    "firing_seconds": 120,        # alert promises: gauge stays 1 / LogQL lookback
+    "count": 10,                  # query promises: items written and expected back
     "poll_interval_seconds": 5,
-    "query": None,                   # logs: LogQL template; traces: path template
+    "query": None,                # query promises: template, see DEFAULT_QUERIES
 }
 
-# string.Template syntax (${var}) so LogQL braces need no escaping.
-# Variables: service_name, probe, probe_id, replica, tenant, trace_id
+# string.Template syntax (${var}); variables: service_name, probe_id, instance, tenant, trace_id
 DEFAULT_QUERIES = {
     "logs_query": '{service_name="${service_name}"} | probe_check="logs_query" '
-                  '| probe_id="${probe_id}" | probe_replica="${replica}"',
+                  '| probe_id="${probe_id}" | probe_instance="${instance}"',
     "traces_query": "/api/traces/${trace_id}",
 }
+
+ALERTING_DEFAULTS = {
+    "broken_window_seconds": 900,      # page: no instance passed, at least one failed
+    "degraded_failures": 3,            # ticket: this many failures ...
+    "degraded_window_seconds": 3600,   # ... within this window
+    "silent_window_seconds": 900,      # ticket: an instance produced no results
+}
+
+NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
 
 
 class ConfigError(ValueError):
@@ -65,6 +69,12 @@ def parse_otlp_headers(raw: str) -> dict:
 
 
 @dataclass
+class Instance:
+    name: str
+    webhook_url: str
+
+
+@dataclass
 class Tenant:
     name: str
     otlp_endpoint: str
@@ -77,10 +87,9 @@ class Promise:
     name: str
     kind: str
     signal: str
+    datasource: str
     tenants: list
     deadline_seconds: int
-    latency_objective_seconds: int
-    absent_for_seconds: int
     slo_target: float
     slo_window_days: int
     firing_seconds: int
@@ -91,19 +100,20 @@ class Promise:
 
 @dataclass
 class Config:
-    probe_name: str
-    replica: str
+    instance: str                      # this process's identity ("" when rendering)
+    instances: dict
     service_name: str
     period_seconds: int
-    listen_port: int
-    webhook_token: str
     export_interval_seconds: int
+    listen_port: int
     grafana_url: str
     grafana_token: str
     grafana_ca_file: str | None
+    grafana: dict
     self_metrics_tenant: str
     tenants: dict = field(default_factory=dict)
     promises: dict = field(default_factory=dict)
+    alerting: dict = field(default_factory=dict)
     gcp: dict = field(default_factory=dict)
     disable_export: bool = False
 
@@ -126,76 +136,89 @@ def _secret(section: dict, key: str, env, required: bool, where: str) -> str:
     return value
 
 
-def load(path: str | None = None, env=os.environ, require_secrets: bool = True) -> Config:
+def load(path: str | None = None, env=os.environ) -> Config:
+    """Runtime load: requires $PROBE_INSTANCE and all secrets."""
     path = path or env.get("PROBE_CONFIG", "/etc/heartbeat-probe/config.yaml")
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    return from_dict(raw, env, require_secrets)
+    return from_dict(raw, env, runtime=True)
 
 
-def from_dict(raw: dict, env=os.environ, require_secrets: bool = True) -> Config:
+def from_dict(raw: dict, env=os.environ, runtime: bool = True) -> Config:
     probe = raw.get("probe") or {}
     webhook = raw.get("webhook") or {}
     grafana = raw.get("grafana") or {}
 
+    instances = {}
+    for i in raw.get("instances") or []:
+        name = (i or {}).get("name", "")
+        if not NAME_RE.match(name):
+            raise ConfigError(f"instance name {name!r} must be lowercase letters, digits and '-' (max 40)")
+        if name in instances:
+            raise ConfigError(f"instance {name!r} is listed twice")
+        if not i.get("webhook_url"):
+            raise ConfigError(f"instances[{name}].webhook_url is required")
+        instances[name] = Instance(name, i["webhook_url"])
+    if not instances:
+        raise ConfigError("at least one entry in `instances` is required")
+
+    instance = ""
+    if runtime:
+        instance = env.get("PROBE_INSTANCE", "")
+        if instance not in instances:
+            raise ConfigError(f"PROBE_INSTANCE={instance!r} is not one of {sorted(instances)}")
+
     tenants = {}
     for t in raw.get("tenants") or []:
-        name = t.get("name")
-        if not name or name in tenants:
-            raise ConfigError(f"tenant name missing or duplicated: {name!r}")
+        name = (t or {}).get("name", "")
+        if not NAME_RE.match(name) or name in tenants:
+            raise ConfigError(f"tenant name invalid or duplicated: {name!r}")
         otlp = t.get("otlp") or {}
         if not otlp.get("endpoint"):
             raise ConfigError(f"tenants[{name}].otlp.endpoint is required")
-        headers = parse_otlp_headers(_secret(otlp, "headers_env", env, require_secrets, f"tenants[{name}].otlp"))
+        headers = parse_otlp_headers(_secret(otlp, "headers_env", env, runtime, f"tenants[{name}].otlp"))
         tenants[name] = Tenant(name, otlp["endpoint"].rstrip("/"), headers, dict(t.get("datasources") or {}))
     if not tenants:
         raise ConfigError("at least one tenant is required")
 
+    period = int(probe.get("period_seconds", 300))
     promises = {}
     for name, opts in (raw.get("promises") or {}).items():
         if name not in PROMISE_TYPES:
             raise ConfigError(f"unknown promise {name!r}; valid: {sorted(PROMISE_TYPES)}")
-        merged = {**PROMISE_DEFAULTS, **(opts or {})}
-        if not merged["enabled"]:
+        unknown_keys = set(opts or {}) - set(PROMISE_DEFAULTS)
+        if unknown_keys:
+            raise ConfigError(f"promise {name}: unknown settings {sorted(unknown_keys)}")
+        m = {**PROMISE_DEFAULTS, **(opts or {})}
+        if not m["enabled"]:
             continue
-        kind, signal = PROMISE_TYPES[name]
-        p_tenants = merged["tenants"] or list(tenants)
+        kind, signal, ds = PROMISE_TYPES[name]
+        p_tenants = list(m["tenants"] or tenants)
         unknown = set(p_tenants) - set(tenants)
         if unknown:
             raise ConfigError(f"promise {name} references unknown tenants {sorted(unknown)}")
-        need_ds = {"logs_alert": "loki", "logs_query": "loki", "traces_query": "tempo",
-                   "metrics_alert": "mimir"}[name]
         for t in p_tenants:
-            if not tenants[t].datasources.get(need_ds):
-                raise ConfigError(f"promise {name} needs tenants[{t}].datasources.{need_ds}")
-        promises[name] = Promise(
-            name=name, kind=kind, signal=signal, tenants=list(p_tenants),
-            deadline_seconds=int(merged["deadline_seconds"]),
-            latency_objective_seconds=int(merged["latency_objective_seconds"]),
-            absent_for_seconds=int(merged["absent_for_seconds"]),
-            slo_target=float(merged["slo_target"]),
-            slo_window_days=int(merged["slo_window_days"]),
-            firing_seconds=int(merged["firing_seconds"]),
-            count=int(merged["count"]),
-            poll_interval_seconds=int(merged["poll_interval_seconds"]),
-            query=merged["query"] or DEFAULT_QUERIES.get(name),
-        )
+            if not tenants[t].datasources.get(ds):
+                raise ConfigError(f"promise {name} needs tenants[{t}].datasources.{ds}")
+        p = Promise(name=name, kind=kind, signal=signal, datasource=ds, tenants=p_tenants,
+                    deadline_seconds=int(m["deadline_seconds"]), slo_target=float(m["slo_target"]),
+                    slo_window_days=int(m["slo_window_days"]), firing_seconds=int(m["firing_seconds"]),
+                    count=int(m["count"]), poll_interval_seconds=int(m["poll_interval_seconds"]),
+                    query=m["query"] or DEFAULT_QUERIES.get(name))
+        if not 0 < p.deadline_seconds <= period:
+            raise ConfigError(f"{name}: need 0 < deadline_seconds <= period_seconds")
+        if kind == "alert" and not 0 < p.firing_seconds < period:
+            raise ConfigError(f"{name}: need 0 < firing_seconds < period_seconds")
+        if kind == "query" and (p.count < 1 or p.poll_interval_seconds < 1):
+            raise ConfigError(f"{name}: count and poll_interval_seconds must be >= 1")
+        if not 0 < p.slo_target < 1:
+            raise ConfigError(f"{name}: slo_target must be between 0 and 1")
+        promises[name] = p
     if not promises:
         raise ConfigError("no promise is enabled")
 
-    period = int(probe.get("period_seconds", 300))
-    for p in promises.values():
-        if p.kind == "alert" and not 0 < p.firing_seconds < period:
-            raise ConfigError(f"{p.name}: need 0 < firing_seconds < period_seconds")
-        if not 0 < p.deadline_seconds <= period:
-            raise ConfigError(f"{p.name}: need 0 < deadline_seconds <= period_seconds")
-        if p.kind == "query" and p.count < 1:
-            raise ConfigError(f"{p.name}: count must be >= 1")
-        if not 0 < p.slo_target < 1:
-            raise ConfigError(f"{p.name}: slo_target must be between 0 and 1")
-
-    needs_grafana = any(p.kind == "query" for p in promises.values())
     grafana_url = (grafana.get("url") or "").rstrip("/")
+    needs_grafana = any(p.kind == "query" for p in promises.values())
     if needs_grafana and not grafana_url:
         raise ConfigError("grafana.url is required for query promises")
 
@@ -203,21 +226,24 @@ def from_dict(raw: dict, env=os.environ, require_secrets: bool = True) -> Config
     if self_tenant not in tenants:
         raise ConfigError(f"probe.self_metrics_tenant {self_tenant!r} is not a tenant")
 
-    replica = env.get("REPLICA_ID") or env.get("HOSTNAME") or socket.gethostname()
+    gcp = dict(raw.get("gcp") or {})
+    alerting = {**ALERTING_DEFAULTS, **(gcp.pop("alerting", None) or {})}
+
     return Config(
-        probe_name=probe.get("name", "e2e"),
-        replica=replica,
+        instance=instance,
+        instances=instances,
         service_name=probe.get("service_name", "heartbeat-probe"),
         period_seconds=period,
-        listen_port=int(env.get("LISTEN_PORT") or webhook.get("listen_port", 8080)),
-        webhook_token=_secret(webhook, "token_env", env, require_secrets, "webhook"),
         export_interval_seconds=int(probe.get("export_interval_seconds", 15)),
+        listen_port=int(env.get("LISTEN_PORT") or webhook.get("listen_port", 8080)),
         grafana_url=grafana_url,
-        grafana_token=_secret(grafana, "token_env", env, require_secrets and needs_grafana, "grafana"),
+        grafana_token=_secret(grafana, "token_env", env, runtime and needs_grafana, "grafana"),
         grafana_ca_file=grafana.get("ca_file"),
+        grafana=grafana,
         self_metrics_tenant=self_tenant,
         tenants=tenants,
         promises=promises,
-        gcp=dict(raw.get("gcp") or {}),
+        alerting={k: int(v) for k, v in alerting.items()},
+        gcp=gcp,
         disable_export=env.get("PROBE_DISABLE_EXPORT", "") == "1",
     )

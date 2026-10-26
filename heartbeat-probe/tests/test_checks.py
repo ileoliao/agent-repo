@@ -10,17 +10,18 @@ from probe.grafana import QueryError, _count_spans
 from probe.report import Telemetry
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV = {"WEBHOOK_TOKEN": "t", "GRAFANA_TOKEN": "g", "REPLICA_ID": "heartbeat-probe-1",
-       "OTLP_HEADERS_TEAM_A": "a=b", "OTLP_HEADERS_TEAM_B": "a=c"}
+ENV = {"GRAFANA_TOKEN": "g", "OTLP_HEADERS_TEAM_A": "a=b", "OTLP_HEADERS_TEAM_B": "a=c"}
 T0 = 1_760_538_000  # aligned to 300 s
 
 
-def load(mutate=None):
+def load(instance="e2e-a", promises=None, tenants=None):
     with open(os.path.join(ROOT, "config.example.yaml")) as f:
         raw = yaml.safe_load(f)
-    if mutate:
-        mutate(raw)
-    return config.from_dict(raw, ENV)
+    if promises:
+        raw["promises"] = {k: v for k, v in raw["promises"].items() if k in promises}
+    if tenants:
+        raw["tenants"] = [t for t in raw["tenants"] if t["name"] in tenants]
+    return config.from_dict(raw, {**ENV, "PROBE_INSTANCE": instance})
 
 
 @pytest.fixture
@@ -34,18 +35,20 @@ class RecTelemetry(Telemetry):
     def __init__(self):
         self.calls = []
 
-    def started(self, promise, tenant):
-        self.calls.append(("started", promise, tenant))
+    def result(self, promise, tenant, ok, reason, latency):
+        self.calls.append(("result", promise, tenant, ok, reason))
 
-    def result(self, promise, tenant, origin, ok, reason, latency):
-        self.calls.append(("result", promise, tenant, origin, ok, reason))
+    def ignored(self, reason):
+        self.calls.append(("ignored", reason))
 
 
 class FakePipeline:
-    def __init__(self):
-        self.logs, self.traces = [], []
+    def __init__(self, fail=False):
+        self.logs, self.traces, self.fail = [], [], fail
 
     def emit_logs(self, check, probe_id, count):
+        if self.fail:
+            raise ConnectionError("collector down")
         self.logs.append((check, probe_id, count))
 
     def emit_trace(self, probe_id, count):
@@ -53,85 +56,157 @@ class FakePipeline:
         return "ab" * 16
 
 
-def results(logs, **match):
+def verdicts(logs, **match):
     return [l for l in logs if l["event"] == "check_result" and all(l.get(k) == v for k, v in match.items())]
 
 
-def alert(promise, pid, status="firing", tenant="team-a", replica="heartbeat-probe-0", label="replica"):
-    return {"status": status, "labels": {"probe": "e2e", "promise": promise, "tenant": tenant, label: replica},
+def ignored(logs):
+    return [l["reason"] for l in logs if l["event"] == "webhook_ignored"]
+
+
+def alert(pid, promise="metrics_alert", tenant="team-a", instance="e2e-a", status="firing"):
+    return {"status": status, "labels": {"promise": promise, "tenant": tenant, "probe_instance": instance},
             "annotations": {"probe_id": str(pid)}}
 
 
-# ------------------------------------------------------------ webhooks ----
-
-def test_alert_from_another_replica_validates(logs):
-    tel = RecTelemetry()
-    c = checks_mod.Checks(load(), tel)
-    c.handle_alert(alert("metrics_alert", T0), T0 + 42)
-    c.handle_alert(alert("logs_alert", T0, label="probe_replica", tenant="team-b"), T0 + 70)
-    r = results(logs)
-    assert [(x["promise"], x["tenant"], x["replica"], x["ok"], x["latency_seconds"]) for x in r] == [
-        ("metrics_alert", "team-a", "heartbeat-probe-0", True, 42),
-        ("logs_alert", "team-b", "heartbeat-probe-0", True, 70)]
-    assert all(x["received_by"] == "heartbeat-probe-1" for x in r)
-    assert ("result", "metrics_alert", "team-a", "heartbeat-probe-0", True, None) in tel.calls
+def metrics_only(instance="e2e-a", tel=None):
+    """An instance that has already passed its first (skipped) tick."""
+    c = checks_mod.Checks(load(instance, ["metrics_alert"], ["team-a"]), tel or RecTelemetry())
+    c.tick(T0 - 1)       # joins mid-cycle: waits
+    return c
 
 
-@pytest.mark.parametrize("pid, now, reason", [
-    (T0, T0 + 301, "late"),
-    (T0 + 300, T0 - 100, "from_future"),
-    ("1.76054e+09", T0 + 5, "probe_id_not_aligned"),
-    ("", T0 + 5, "missing_or_bad_probe_id"),
-])
-def test_bad_firing_is_explicit_failure(logs, pid, now, reason):
-    checks_mod.Checks(load(), RecTelemetry()).handle_alert(alert("metrics_alert", pid), now)
-    (r,) = results(logs)
-    assert r["ok"] is False and r["reason"] == reason
+# ------------------------------------------- the four accuracy scenarios ----
+# Previously: duplicates counted twice, a duplicate hid a failure, and a restart
+# counted as a failure. Now every check yields exactly one verdict from its owner.
 
-
-def test_duplicate_resolved_and_unknown(logs):
-    c = checks_mod.Checks(load(), RecTelemetry())
-    c.handle_alert(alert("metrics_alert", T0), T0 + 30)
-    c.handle_alert(alert("metrics_alert", T0), T0 + 60)                     # duplicate
-    c.handle_alert(alert("metrics_alert", T0, "resolved"), T0 + 150)        # cleared at +120
-    c.handle_alert(alert("logs_query", T0), T0 + 30)                        # not an alert promise
-    c.handle_alert(alert("metrics_alert", T0, tenant="team-z"), T0 + 30)
-    c.handle_alert({**alert("metrics_alert", T0), "labels": {"probe": "other"}}, T0 + 30)  # other probe
-    assert len(results(logs)) == 1
-    ignored = [l["reason"] for l in logs if l["event"] == "webhook_ignored"]
-    assert ignored == ["duplicate", "unknown_promise", "unknown_tenant"]
-    (res,) = [l for l in logs if l["event"] == "alert_resolved"]
-    assert res["ok"] is True and res["latency_seconds"] == 30
-
-
-# ------------------------------------------------------------ schedule ----
-
-def test_cycle_starts_every_check_and_drives_gauge(logs):
-    cfg = load()
-    pipes = {"team-a": FakePipeline(), "team-b": FakePipeline()}
-    tel = RecTelemetry()
-    c = checks_mod.Checks(cfg, tel, pipelines=pipes, grafana=None)
-    c._run_query = lambda p, t, pid: None          # query loop tested separately
+def test_scenario_normal(logs):
+    c = metrics_only()
     c.tick(T0)
-    c.pool.shutdown(wait=True)
-    started = [(l["promise"], l["tenant"]) for l in logs if l["event"] == "check_started"]
-    assert len(started) == 8 and len(set(started)) == 8
-    assert c.gauge.read() == (1, T0)
-    assert pipes["team-a"].logs == [("logs_alert", T0, 1)]
-    c.tick(T0 + 120)
-    assert c.gauge.read() == (0, T0)
-    assert [l["event"] for l in logs].count("probe_cleared") == 1
+    c.handle_alert(alert(T0), T0 + 40)
+    assert [(v["ok"], v["latency_seconds"]) for v in verdicts(logs)] == [(True, 40)]
 
 
-def test_restart_late_in_cycle_skips_what_cannot_finish(logs):
+def test_scenario_duplicate_webhook_counts_once(logs):
+    c = metrics_only()
+    c.tick(T0)
+    c.handle_alert(alert(T0), T0 + 40)
+    c.handle_alert(alert(T0), T0 + 41)
+    assert len(verdicts(logs)) == 1 and ignored(logs) == ["unmatched"]
+
+
+def test_scenario_duplicate_cannot_hide_a_failure(logs):
+    c = metrics_only()
+    c.tick(T0)                                   # cycle A: webhook never arrives
+    c.tick(T0 + 181)                             # deadline 180 s passed
+    c.tick(T0 + 300)                             # cycle B
+    c.handle_alert(alert(T0 + 300), T0 + 340)
+    c.handle_alert(alert(T0 + 300), T0 + 341)    # duplicate
+    assert [(v["probe_id"], v["ok"], v.get("reason")) for v in verdicts(logs)] == [
+        (T0, False, "timeout"), (T0 + 300, True, None)]
+
+
+def test_scenario_restart_mid_cycle_is_void_not_failure(logs):
+    old = metrics_only()
+    old.tick(T0)                                 # started cycle A ...
+    old.shutdown()                               # ... then killed: no verdict
+    new = checks_mod.Checks(load("e2e-a", ["metrics_alert"], ["team-a"]), RecTelemetry())
+    new.tick(T0 + 30)                            # same instance, fresh memory: waits
+    new.handle_alert(alert(T0), T0 + 60)         # webhook for the old process's probe
+    new.tick(T0 + 200)
+    assert verdicts(logs) == [] and ignored(logs) == ["unmatched"]
+    new.tick(T0 + 300)                           # next boundary: measures normally
+    new.handle_alert(alert(T0 + 300), T0 + 330)
+    assert [(v["probe_id"], v["ok"]) for v in verdicts(logs)] == [(T0 + 300, True)]
+
+
+# ------------------------------------------------------------- webhooks ----
+
+def test_other_instances_webhook_is_ignored(logs):
+    c = metrics_only("e2e-a")
+    c.tick(T0)
+    c.handle_alert(alert(T0, instance="e2e-b"), T0 + 30)
+    assert verdicts(logs) == [] and ignored(logs) == ["other_instance"]
+    assert c.snapshot()["pending_alert_checks"] == 1     # still waiting for its own
+
+
+@pytest.mark.parametrize("a, reason", [
+    (alert("1.76054e+09"), "unmatched"),                 # lossy rendering never matches
+    (alert(""), "bad_probe_id"),
+    (alert(T0, promise="logs_query"), "unknown_promise_or_tenant"),
+    (alert(T0, tenant="team-z"), "unknown_promise_or_tenant"),
+])
+def test_bad_webhooks_never_produce_verdicts(logs, a, reason):
+    c = metrics_only()
+    c.tick(T0)
+    c.handle_alert(a, T0 + 30)
+    assert verdicts(logs) == [] and ignored(logs) == [reason]
+
+
+def test_resolved_is_ignored_silently(logs):
+    c = metrics_only()
+    c.tick(T0)
+    c.handle_alert(alert(T0, status="resolved"), T0 + 30)
+    assert verdicts(logs) == [] and ignored(logs) == []
+
+
+def test_webhook_after_deadline_before_sweep_is_timeout(logs):
+    c = metrics_only()
+    c.tick(T0)
+    c.handle_alert(alert(T0), T0 + 200)          # deadline 180, sweep has not run yet
+    c.tick(T0 + 201)
+    assert [(v["ok"], v["reason"]) for v in verdicts(logs)] == [(False, "timeout")]
+
+
+def test_telemetry_mirrors_verdicts(logs):
+    tel = RecTelemetry()
+    c = metrics_only(tel=tel)
+    c.tick(T0)
+    c.handle_alert(alert(T0), T0 + 10)
+    c.handle_alert(alert(T0), T0 + 11)
+    assert tel.calls == [("result", "metrics_alert", "team-a", True, None), ("ignored", "unmatched")]
+
+
+# ------------------------------------------------------------- schedule ----
+
+def test_first_tick_waits_for_next_boundary(logs):
     cfg = load()
     c = checks_mod.Checks(cfg, RecTelemetry(), pipelines={"team-a": FakePipeline(), "team-b": FakePipeline()})
-    c._run_query = lambda p, t, pid: None
-    c.tick(T0 + 150)   # past firing (120 s) and past 300-180 for traces, before 300-120 for logs_query
+    c._run_query = lambda *a: None
+    c.tick(T0 + 10)
+    assert [l["event"] for l in logs] == ["waiting_for_next_cycle"] and c.gauge.read() == (0, 0)
+    c.tick(T0 + 300)
     c.pool.shutdown(wait=True)
-    started = {l["promise"] for l in logs if l["event"] == "check_started"}
-    assert started == {"logs_query"}
-    assert c.gauge.read() == (0, 0)
+    assert c.gauge.read() == (1, T0 + 300)
+    assert c.snapshot()["pending_alert_checks"] == 4            # 2 alert promises x 2 tenants
+    c.tick(T0 + 420)                                            # firing_seconds = 120
+    assert c.gauge.read() == (0, T0 + 300)
+
+
+def test_every_pending_check_times_out_exactly_once(logs):
+    cfg = load()
+    c = checks_mod.Checks(cfg, RecTelemetry(), pipelines={"team-a": FakePipeline(), "team-b": FakePipeline()})
+    c._run_query = lambda *a: None
+    c.tick(T0 - 1)
+    for t in range(T0, T0 + 300):
+        c.tick(t)
+    c.pool.shutdown(wait=True)
+    v = verdicts(logs)
+    assert sorted((x["promise"], x["tenant"]) for x in v) == sorted(
+        (p, t) for p in ("metrics_alert", "logs_alert") for t in ("team-a", "team-b"))
+    assert all(x["reason"] == "timeout" for x in v)
+    # deadlines are per promise: metrics 180 s, logs 240 s
+    assert {x["promise"]: x["waited_seconds"] for x in v} == {"metrics_alert": 181, "logs_alert": 241}
+
+
+def test_logs_alert_emit_error_is_a_failure_once(logs):
+    cfg = load(promises=["logs_alert"], tenants=["team-a"])
+    c = checks_mod.Checks(cfg, RecTelemetry(), pipelines={"team-a": FakePipeline(fail=True)})
+    c.tick(T0 - 1)
+    c.tick(T0)
+    c.pool.shutdown(wait=True)
+    c.tick(T0 + 299)          # past the 240 s deadline, same cycle: no second (timeout) verdict
+    assert [(v["ok"], v["reason"]) for v in verdicts(logs)] == [(False, "emit_error")]
 
 
 # --------------------------------------------------------- query checks ----
@@ -159,7 +234,7 @@ class StepStop(threading.Event):
 class ScriptedGrafana:
     def __init__(self, loki=(), tempo=()):
         self.loki, self.tempo = list(loki), list(tempo)
-        self.seen_queries = []
+        self.seen = []
 
     def _next(self, seq):
         v = seq.pop(0) if len(seq) > 1 else seq[0]
@@ -168,53 +243,62 @@ class ScriptedGrafana:
         return v
 
     def loki_count(self, uid, logql, start, end):
-        self.seen_queries.append((uid, logql))
+        self.seen.append((uid, logql))
         return self._next(self.loki)
 
     def tempo_span_count(self, uid, path):
-        self.seen_queries.append((uid, path))
+        self.seen.append((uid, path))
         return self._next(self.tempo)
 
 
-def run_query(promise, grafana, logs_fixture):
-    cfg = load()
+def run_query(promise, grafana, stop_after=None):
+    cfg = load("e2e-b")
     clock = Clock(T0)
+    stop = StepStop(clock)
+    if stop_after:
+        stop.set()
     c = checks_mod.Checks(cfg, RecTelemetry(), pipelines={"team-a": FakePipeline()},
-                          grafana=grafana, clock=clock, stop=StepStop(clock))
+                          grafana=grafana, clock=clock, stop=stop)
     c._run_query(cfg.promises[promise], cfg.tenants["team-a"], T0)
-    return results(logs_fixture)
 
 
 def test_logs_query_ok_after_partial(logs):
     g = ScriptedGrafana(loki=[0, 4, 10])
-    (r,) = run_query("logs_query", g, logs)
-    assert r["ok"] is True and r["observed"] == 10 and r["latency_seconds"] == 15
-    uid, q = g.seen_queries[0]
-    assert uid == "loki-team-a"
-    assert q == ('{service_name="heartbeat-probe"} | probe_check="logs_query" '
-                 f'| probe_id="{T0}" | probe_replica="heartbeat-probe-1"')
+    run_query("logs_query", g)
+    (r,) = verdicts(logs)
+    assert r["ok"] is True and r["observed"] == 10 and r["latency_seconds"] == 15 and r["instance"] == "e2e-b"
+    assert g.seen[0] == ("loki-team-a", '{service_name="heartbeat-probe"} | probe_check="logs_query" '
+                                        f'| probe_id="{T0}" | probe_instance="e2e-b"')
 
 
 def test_logs_query_incomplete_at_deadline(logs):
-    (r,) = run_query("logs_query", ScriptedGrafana(loki=[7]), logs)
+    run_query("logs_query", ScriptedGrafana(loki=[7]))
+    (r,) = verdicts(logs)
     assert (r["ok"], r["reason"], r["observed"], r["expected"]) == (False, "incomplete", 7, 10)
 
 
 def test_logs_query_error_reason(logs):
-    (r,) = run_query("logs_query", ScriptedGrafana(loki=[QueryError("HTTP 502")]), logs)
+    run_query("logs_query", ScriptedGrafana(loki=[QueryError("HTTP 502")]))
+    (r,) = verdicts(logs)
     assert r["reason"] == "query_error" and "502" in r["error"]
+
+
+def test_query_check_on_shutdown_is_void(logs):
+    run_query("logs_query", ScriptedGrafana(loki=[10]), stop_after=True)
+    assert verdicts(logs) == []
 
 
 def test_traces_query_not_found_then_ok(logs):
     g = ScriptedGrafana(tempo=[None, None, 5])
-    (r,) = run_query("traces_query", g, logs)
+    run_query("traces_query", g)
+    (r,) = verdicts(logs)
     assert r["ok"] is True and r["trace_id"] == "ab" * 16 and r["latency_seconds"] == 30
-    assert g.seen_queries[0] == ("tempo-team-a", "/api/traces/" + "ab" * 16)
+    assert g.seen[0] == ("tempo-team-a", "/api/traces/" + "ab" * 16)
 
 
 def test_traces_query_not_found(logs):
-    (r,) = run_query("traces_query", ScriptedGrafana(tempo=[None]), logs)
-    assert r["reason"] == "not_found"
+    run_query("traces_query", ScriptedGrafana(tempo=[None]))
+    assert verdicts(logs)[0]["reason"] == "not_found"
 
 
 def test_count_spans_handles_v1_and_v2_shapes():

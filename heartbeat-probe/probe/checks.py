@@ -1,14 +1,19 @@
-"""Checks, one per (promise, tenant) per cycle.
+"""Checks. Every check is owned by the instance that started it, and the owner
+produces exactly one verdict (`check_result`) per check:
 
-Alert loops  (metrics_alert, logs_alert): write a signal carrying probe_id; a
-    Grafana rule fires and its webhook may land on ANY replica, which validates
-    it statelessly (probe_id is the cycle start, so latency = now - probe_id).
-Query checks (logs_query, traces_query): write `count` items, then read them
-    back through Grafana until all are visible or the deadline passes.
+    emit  ->  observe  ->  verdict (ok, or failed with a reason)
 
-Every check produces exactly one `check_started` (sender) and, if it gets that
-far, one `check_result`. GCP alerts on the ABSENCE of ok results, so any
-failure that produces silence is still caught.
+Alert promises (metrics_alert, logs_alert): the owner writes a signal carrying
+    probe_id and waits for Grafana's webhook, which is routed to this instance's
+    own contact point. Match -> ok; deadline passed -> failed/timeout.
+Query promises (logs_query, traces_query): the owner writes `count` items and
+    reads them back through Grafana until all are visible or the deadline passes.
+
+Measurement faults are not platform verdicts:
+- A process starts measuring at the NEXT cycle boundary; a cycle that was in
+  progress before a restart produces no verdict (void), not a failure.
+- On shutdown, pending checks are dropped without a verdict (void).
+- Duplicate or unknown webhooks never create a verdict.
 """
 
 from __future__ import annotations
@@ -23,14 +28,13 @@ from .grafana import QueryError
 from .pipelines import AlertGauge
 from .report import Telemetry, log
 
-CLOCK_SKEW_SECONDS = 60
 QUERY_LOOKBACK_SECONDS = 60
 
 
 class Checks:
     def __init__(self, cfg: Config, telemetry: Telemetry, gauge: AlertGauge | None = None,
-                 pipelines: dict | None = None, grafana=None,
-                 clock=time.time, stop: threading.Event | None = None, max_workers: int = 16):
+                 pipelines: dict | None = None, grafana=None, clock=time.time,
+                 stop: threading.Event | None = None, max_workers: int = 16):
         self.cfg, self.telemetry = cfg, telemetry
         self.gauge = gauge or AlertGauge()
         self.pipelines = pipelines or {}
@@ -39,102 +43,102 @@ class Checks:
         self.stop = stop or threading.Event()
         self.pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="check")
         self.lock = threading.Lock()
-        self.current_cycle = 0
-        self.seen: dict[tuple, float] = {}
-        self.stats = {"started": 0, "ok": 0, "failed": 0}
+        self.cycle: int | None = None             # None until the first tick
+        self.pending: dict[tuple, float] = {}     # (promise, tenant, probe_id) -> sent_at
+        self.stats = {"ok": 0, "failed": 0, "ignored_webhooks": 0}
 
-    # ----------------------------------------------------------- reporting --
+    # -------------------------------------------------------------- verdict --
 
-    def _base(self, p: Promise, tenant: str, replica: str) -> dict:
-        return {"probe": self.cfg.probe_name, "promise": p.name, "signal": p.signal,
-                "tenant": tenant, "replica": replica}
-
-    def _started(self, p: Promise, t: Tenant, probe_id: int) -> None:
-        with self.lock:
-            self.stats["started"] += 1
-        log("INFO", "check_started", probe_id=probe_id, **self._base(p, t.name, self.cfg.replica))
-        self.telemetry.started(p.name, t.name)
-
-    def _result(self, p: Promise, tenant: str, origin: str, probe_id, ok: bool,
-                reason=None, latency=None, **extra) -> None:
+    def _result(self, p: Promise, tenant: str, probe_id: int, ok: bool,
+                reason: str | None = None, latency: float | None = None, **extra) -> None:
         with self.lock:
             self.stats["ok" if ok else "failed"] += 1
-        fields = {**self._base(p, tenant, origin), "received_by": self.cfg.replica,
-                  "probe_id": probe_id, "ok": ok, **extra}
+        fields = {"promise": p.name, "signal": p.signal, "tenant": tenant,
+                  "instance": self.cfg.instance, "probe_id": probe_id, "ok": ok, **extra}
         if reason:
             fields["reason"] = reason
         if latency is not None:
             fields["latency_seconds"] = round(latency, 3)
         log("INFO" if ok else "WARNING", "check_result", **fields)
-        self.telemetry.result(p.name, tenant, origin, ok, reason, latency)
+        self.telemetry.result(p.name, tenant, ok, reason, latency if ok else None)
 
-    # ---------------------------------------------------------------- send --
+    # ------------------------------------------------------------- schedule --
 
     def tick(self, now: float) -> None:
         cycle = int(now - (now % self.cfg.period_seconds))
-        into = now - cycle
-        new_cycle = False
+        start = False
         with self.lock:
-            if cycle != self.current_cycle:
-                self.current_cycle, new_cycle = cycle, True
-
-        if new_cycle:
-            for p, t in self.cfg.tenant_promises():
-                # Start late (process restart) only if the check can still finish in this cycle.
-                if p.kind == "alert" and into >= p.firing_seconds:
-                    continue
-                if p.kind == "query" and into > self.cfg.period_seconds - p.deadline_seconds:
-                    continue
-                self._started(p, t, cycle)
-                if p.name == "logs_alert":
-                    self.pool.submit(self._emit_logs_alert, p, t, cycle)
-                elif p.kind == "query":
-                    self.pool.submit(self._run_query, p, t, cycle)
-            m = self.cfg.promises.get("metrics_alert")
-            if m and into < m.firing_seconds:
-                self.gauge.set(1, cycle)
+            if self.cycle is None:
+                self.cycle = cycle        # joined mid-cycle: wait for the next boundary
+                log("INFO", "waiting_for_next_cycle", instance=self.cfg.instance,
+                    next_cycle=cycle + self.cfg.period_seconds)
+            elif cycle != self.cycle:
+                self.cycle, start = cycle, True
+        if start:
+            self._start_cycle(cycle, now)
 
         m = self.cfg.promises.get("metrics_alert")
         state, pid = self.gauge.read()
         if m and state == 1 and now - pid >= m.firing_seconds:
             self.gauge.set(0, pid)
-            log("INFO", "probe_cleared", probe=self.cfg.probe_name, promise=m.name,
-                replica=self.cfg.replica, probe_id=pid)
 
-        horizon = now - 2 * self.cfg.period_seconds
+        expired = []
         with self.lock:
-            for k, ts in list(self.seen.items()):
-                if ts < horizon:
-                    del self.seen[k]
+            for key, sent_at in list(self.pending.items()):
+                if now - sent_at > self.cfg.promises[key[0]].deadline_seconds:
+                    del self.pending[key]
+                    expired.append((key, now - sent_at))
+        for (promise, tenant, pid), waited in expired:
+            self._result(self.cfg.promises[promise], tenant, pid, False, "timeout",
+                         waited_seconds=round(waited, 3))
+
+    def _start_cycle(self, cycle: int, now: float) -> None:
+        checks = list(self.cfg.tenant_promises())
+        log("INFO", "cycle_started", instance=self.cfg.instance, probe_id=cycle, checks=len(checks))
+        if "metrics_alert" in self.cfg.promises:
+            self.gauge.set(1, cycle)
+        for p, t in checks:
+            if p.kind == "alert":
+                with self.lock:
+                    self.pending[(p.name, t.name, cycle)] = now
+                if p.name == "logs_alert":
+                    self.pool.submit(self._emit_logs_alert, p, t, cycle)
+            else:
+                self.pool.submit(self._run_query, p, t, cycle)
 
     def _emit_logs_alert(self, p: Promise, t: Tenant, probe_id: int) -> None:
         try:
             self.pipelines[t.name].emit_logs("logs_alert", probe_id, 1)
         except Exception as e:  # noqa: BLE001 - exporter errors must not kill the loop
-            log("ERROR", "emit_error", error=f"{type(e).__name__}: {e}"[:300],
-                **self._base(p, t.name, self.cfg.replica))
+            with self.lock:
+                owned = self.pending.pop((p.name, t.name, probe_id), None) is not None
+            if owned:
+                self._result(p, t.name, probe_id, False, "emit_error", error=f"{type(e).__name__}: {e}"[:300])
 
     # --------------------------------------------------------- query checks --
 
     def _run_query(self, p: Promise, t: Tenant, probe_id: int) -> None:
         started = self.clock()
-        vars_ = {"service_name": self.cfg.service_name, "probe": self.cfg.probe_name,
-                 "probe_id": str(probe_id), "replica": self.cfg.replica, "tenant": t.name}
+        vars_ = {"service_name": self.cfg.service_name, "probe_id": str(probe_id),
+                 "instance": self.cfg.instance, "tenant": t.name}
         try:
             if p.signal == "logs":
                 self.pipelines[t.name].emit_logs("logs_query", probe_id, p.count)
             else:
                 vars_["trace_id"] = self.pipelines[t.name].emit_trace(probe_id, p.count)
         except Exception as e:  # noqa: BLE001
-            return self._result(p, t.name, self.cfg.replica, probe_id, False, "emit_error",
+            return self._result(p, t.name, probe_id, False, "emit_error",
                                 error=f"{type(e).__name__}: {e}"[:300])
+        extra = {"expected": p.count}
+        if "trace_id" in vars_:
+            extra["trace_id"] = vars_["trace_id"]
 
         query = string.Template(p.query).safe_substitute(vars_)
         deadline = started + p.deadline_seconds
         observed, last_error = 0, None
         while True:
             if self.stop.wait(p.poll_interval_seconds):
-                return  # shutting down: leave no result; GCP treats it as absence
+                return  # shutting down: void, no verdict
             now = self.clock()
             try:
                 if p.signal == "logs":
@@ -146,85 +150,66 @@ class Checks:
                 last_error = None
             except QueryError as e:
                 last_error = str(e)[:300]
-            if observed >= p.count:
-                return self._result(p, t.name, self.cfg.replica, probe_id, True, None,
-                                    now - started, expected=p.count, observed=observed,
-                                    **({"trace_id": vars_["trace_id"]} if "trace_id" in vars_ else {}))
+            if observed >= p.count and now - started <= p.deadline_seconds:
+                return self._result(p, t.name, probe_id, True, None, now - started,
+                                    observed=observed, **extra)
             if now >= deadline:
                 break
         reason = "incomplete" if observed > 0 else ("query_error" if last_error else "not_found")
-        extra = {"expected": p.count, "observed": observed}
         if last_error:
             extra["error"] = last_error
-        if "trace_id" in vars_:
-            extra["trace_id"] = vars_["trace_id"]
-        self._result(p, t.name, self.cfg.replica, probe_id, False, reason, **extra)
+        self._result(p, t.name, probe_id, False, reason, observed=observed, **extra)
 
     # ------------------------------------------------------- alert receiver --
 
     def handle_alert(self, alert: dict, now: float) -> None:
+        """Only a webhook that matches one of THIS instance's pending checks counts.
+        The webhook is unauthenticated (cluster-internal); restrict who can reach it
+        with a NetworkPolicy if other workloads share the cluster."""
         labels = alert.get("labels") or {}
-        if labels.get("probe") not in (None, self.cfg.probe_name):
+        if alert.get("status") != "firing":
             return
+        why = None
+        inst = labels.get("probe_instance")
         p = self.cfg.promises.get(labels.get("promise", ""))
         tenant = labels.get("tenant", "")
-        status = alert.get("status", "unknown")
-        if not p or p.kind != "alert":
-            return log("WARNING", "webhook_ignored", reason="unknown_promise",
-                       promise=str(labels.get("promise"))[:64], received_by=self.cfg.replica)
-        if tenant not in p.tenants:
-            return log("WARNING", "webhook_ignored", reason="unknown_tenant", promise=p.name,
-                       tenant=tenant[:64], received_by=self.cfg.replica)
-        origin = str(labels.get("replica") or labels.get("probe_replica") or "unknown")[:64]
-
         raw_id = (alert.get("annotations") or {}).get("probe_id", "")
         try:
             pid = int(float(raw_id))
         except (TypeError, ValueError):
-            if status == "firing":
-                self._result(p, tenant, origin, None, False, "missing_or_bad_probe_id",
-                             raw_probe_id=str(raw_id)[:64])
-            return
-        if status not in ("firing", "resolved"):
-            return log("WARNING", "webhook_ignored", reason="unknown_status", status=str(status)[:32],
-                       **self._base(p, tenant, origin))
-        if pid % self.cfg.period_seconds != 0:
-            # e.g. a lossy "1.76054e+09" rendering - never count it as success
-            if status == "firing":
-                self._result(p, tenant, origin, pid, False, "probe_id_not_aligned")
-            return
+            pid = None
 
-        reference = pid if status == "firing" else pid + p.firing_seconds
-        latency = now - reference
-        if latency < -CLOCK_SKEW_SECONDS:
-            reason = "from_future"
-        elif latency > p.deadline_seconds:
-            reason = "late"
+        if inst != self.cfg.instance:
+            why = "other_instance"      # misrouted contact point
+        elif not p or p.kind != "alert" or tenant not in p.tenants:
+            why = "unknown_promise_or_tenant"
+        elif pid is None:
+            why = "bad_probe_id"
         else:
-            reason = None
+            with self.lock:
+                sent_at = self.pending.pop((p.name, tenant, pid), None)
+            if sent_at is None:
+                why = "unmatched"       # duplicate, after timeout, or lossy probe_id
+            elif now - sent_at > p.deadline_seconds:
+                return self._result(p, tenant, pid, False, "timeout", waited_seconds=round(now - sent_at, 3))
+            else:
+                return self._result(p, tenant, pid, True, None, now - sent_at)
 
-        if status == "resolved":
-            return log("INFO", "alert_resolved", probe_id=pid, received_by=self.cfg.replica,
-                       latency_seconds=round(latency, 3), ok=reason is None,
-                       **({"reason": reason} if reason else {}), **self._base(p, tenant, origin))
-        if reason:
-            return self._result(p, tenant, origin, pid, False, reason, latency)
-
-        key = (p.name, tenant, origin, pid)
         with self.lock:
-            duplicate = key in self.seen
-            self.seen.setdefault(key, now)
-        if duplicate:
-            return log("INFO", "webhook_ignored", reason="duplicate", probe_id=pid,
-                       received_by=self.cfg.replica, **self._base(p, tenant, origin))
-        self._result(p, tenant, origin, pid, True, None, max(latency, 0.0))
+            self.stats["ignored_webhooks"] += 1
+        log("INFO", "webhook_ignored", reason=why, instance=self.cfg.instance,
+            label_instance=str(inst)[:64], promise=str(labels.get("promise"))[:64],
+            tenant=str(tenant)[:64], probe_id=pid if pid is not None else str(raw_id)[:64])
+        self.telemetry.ignored(why)
+
+    # ---------------------------------------------------------------- misc --
 
     def snapshot(self) -> dict:
         state, pid = self.gauge.read()
         with self.lock:
-            return {"probe": self.cfg.probe_name, "replica": self.cfg.replica,
-                    "cycle": self.current_cycle, "metrics_alert_state": state,
-                    "metrics_alert_probe_id": pid, **self.stats}
+            return {"instance": self.cfg.instance, "cycle": self.cycle,
+                    "pending_alert_checks": len(self.pending),
+                    "metrics_alert_state": state, "metrics_alert_probe_id": pid, **self.stats}
 
     def shutdown(self) -> None:
         self.stop.set()
