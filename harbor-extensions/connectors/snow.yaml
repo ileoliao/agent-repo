@@ -1,0 +1,34 @@
+name: snow
+title: ServiceNow
+description: Change requests and incidents
+owner: platform-team
+upstream: ${MOCK_BASE}/snow
+auth:
+  type: service-account
+  secret: SNOW_TOKEN
+
+capabilities:
+  change.read:
+    description: Query and read change requests
+    allow:
+      - GET /api/now/table/change_request
+      - GET /api/now/table/change_request/*
+    groups: [APP-SNOW-READ]
+    data_class: internal
+
+  change.write:
+    description: Create change requests and update their status (e.g. approve)
+    allow:
+      - POST /api/now/table/change_request
+      - PATCH /api/now/table/change_request/*
+    groups: [APP-SNOW-CHANGE-MGR]
+    data_class: internal
+    write: true
+
+  incident.read:
+    description: Read incidents (may contain customer information; not open in phase 1)
+    allow:
+      - GET /api/now/table/incident
+      - GET /api/now/table/incident/*
+    groups: [APP-SNOW-INCIDENT]
+    data_class: confidential

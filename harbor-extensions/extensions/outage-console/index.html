@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Outage Console</title>
+    <link rel="stylesheet" href="/sdk/harbor.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="hx-page">
+      <header class="hx-header">
+        <div>
+          <h1>Outage Console</h1>
+          <p class="hx-muted">Data comes from the Ops team's outage service; same-day change requests for the same system come from ServiceNow.</p>
+        </div>
+        <div id="actions" class="hx-row"></div>
+      </header>
+      <div id="messages" class="hx-stack"></div>
+      <section id="declare" class="hx-card declare" hidden></section>
+      <div class="layout">
+        <aside class="hx-stack">
+          <section>
+            <h2 class="section-title">Ongoing</h2>
+            <div id="active" class="list"></div>
+          </section>
+          <section>
+            <h2 class="section-title">Recently resolved</h2>
+            <div id="resolved" class="list"></div>
+          </section>
+        </aside>
+        <section id="detail" class="hx-card detail"></section>
+      </div>
+    </main>
+    <script src="/sdk/harbor.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

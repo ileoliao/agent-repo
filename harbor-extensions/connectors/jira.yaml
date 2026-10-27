@@ -1,0 +1,25 @@
+name: jira
+title: Jira
+description: Requirements, defects and sprints
+owner: platform-team
+upstream: ${MOCK_BASE}/jira
+auth:
+  type: service-account
+  secret: JIRA_TOKEN
+
+capabilities:
+  issue.read:
+    description: Query issues with JQL; read a single issue
+    allow:
+      - GET /rest/api/2/search
+      - GET /rest/api/2/issue/*
+    groups: [APP-JIRA-READ]
+    data_class: internal
+
+  issue.comment:
+    description: Add a comment to an issue
+    allow:
+      - POST /rest/api/2/issue/*/comment
+    groups: [APP-JIRA-WRITE]
+    data_class: internal
+    write: true

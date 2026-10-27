@@ -1,0 +1,17 @@
+name: harbor-release
+title: Harbor Release
+description: Release plans, release windows and approvers
+owner: platform-team
+upstream: ${MOCK_BASE}/harbor
+auth:
+  type: service-account
+  secret: HARBOR_RELEASE_TOKEN
+
+capabilities:
+  release.read:
+    description: Query release plans by time range; read a single release
+    allow:
+      - GET /api/releases
+      - GET /api/releases/*
+    groups: [APP-HARBOR-READ]
+    data_class: internal

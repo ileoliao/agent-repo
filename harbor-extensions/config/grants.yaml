@@ -1,0 +1,20 @@
+# Write-capability grants (approved by the platform team)
+#
+# Read capabilities: granted automatically once declared in extension.yaml; the real gate is the user's AD group.
+# Write capabilities: must be recorded here and merged after platform-team review in a PR.
+#
+# Format:
+#   <extension-name>:
+#     - capability: <connector>.<capability>
+#       approved_by: <approver>
+#       pr: <PR number>
+
+release-calendar:
+  - capability: snow.change.write
+    approved_by: platform-team
+    pr: "#12"
+
+outage-console:
+  - capability: outage.manage
+    approved_by: platform-team
+    pr: "#15"
