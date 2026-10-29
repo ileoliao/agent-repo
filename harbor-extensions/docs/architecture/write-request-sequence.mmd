@@ -1,0 +1,18 @@
+sequenceDiagram
+  autonumber
+  participant E as Extension iframe
+  participant B as Portal bridge
+  participant G as Gateway
+  participant T as PAT service
+  participant O as Outage service
+  E->>B: postMessage {connector: outage, POST /outages/42/resolve}
+  B->>G: POST /gw/outage/outages/42/resolve<br/>cookie + X-Harbor-Extension: outage-console
+  G->>T: POST /introspect (skipped if cached, 60 s)
+  T-->>G: user, scope, AD groups, exp
+  G->>G: check_path, match outage.manage (write)<br/>authorize: AD group, declared, granted, rate limit
+  G->>O: POST /outages/42/resolve<br/>X-Harbor-Identity: JWT aud=outage, exp 60 s
+  O->>O: verify JWT, is sub the commander?
+  O-->>G: 200, or 403 not_commander
+  G-->>B: status and body unchanged, Set-Cookie dropped
+  B-->>E: postMessage response
+  Note over G: one audit line per decision

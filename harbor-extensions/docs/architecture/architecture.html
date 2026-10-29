@@ -1,0 +1,343 @@
+<title>Harbor Extensions Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one wide system map, then the request sequence, then reference tables engineers look things up in */
+:root{
+  --bg:#f4f5f3; --surface:#ffffff; --fg:#14212b; --muted:#56636f; --line:#cfd5da;
+  --zone:#e9edef; --gate:#0c2233; --gate-step:#16354f; --gate-fg:#eef3f6; --gate-muted:#a9bccb;
+  --accent:#0f6b74; --accent-soft:#d8eef0; --warn:#b4581d; --warn-soft:#fbeadf;
+  --sans:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e161d; --surface:#15212b; --fg:#e6ecf0; --muted:#9aa9b5; --line:#2c3c49;
+  --zone:#121d26; --gate:#071722; --gate-step:#13324a; --gate-fg:#eef3f6; --gate-muted:#9fb4c4;
+  --accent:#5cc3cc; --accent-soft:#123a40; --warn:#f0a06a; --warn-soft:#3a2416; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e161d; --surface:#15212b; --fg:#e6ecf0; --muted:#9aa9b5; --line:#2c3c49;
+  --zone:#121d26; --gate:#071722; --gate-step:#13324a; --gate-fg:#eef3f6; --gate-muted:#9fb4c4;
+  --accent:#5cc3cc; --accent-soft:#123a40; --warn:#f0a06a; --warn-soft:#3a2416; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:15px;line-height:1.55}
+.wrap{max-width:1280px;margin:0 auto;padding-block:40px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:40px}
+header{display:flex;flex-direction:column;gap:8px;max-width:72ch}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+h1{font-size:32px;line-height:1.15;font-weight:600;margin:0;text-wrap:balance}
+h2{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
+p{margin:0}
+.lede{color:var(--muted);font-size:16px}
+section{display:flex;flex-direction:column;gap:14px;min-width:0}
+.scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px}
+svg.map{display:block;min-width:1080px;width:100%;height:auto}
+svg text{font-family:var(--mono)}
+.t-zone{font-size:12px;letter-spacing:.1em;fill:var(--muted);font-weight:600}
+.t-h{font-size:14px;font-weight:600;fill:var(--fg)}
+.t-d{font-size:12px;fill:var(--muted)}
+.t-gh{font-size:13px;font-weight:600;fill:var(--gate-fg)}
+.t-gd{font-size:12px;fill:var(--gate-muted)}
+.t-lbl{font-size:11.5px;fill:var(--accent);font-weight:500}
+.t-warn{font-size:12px;fill:var(--warn);font-weight:600}
+.zone{fill:var(--zone);stroke:var(--line)}
+.box{fill:var(--surface);stroke:var(--line)}
+.box-accent{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.5}
+.box-untrusted{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.5;stroke-dasharray:6 4}
+.gate{fill:var(--gate)}
+.step{fill:var(--gate-step)}
+.step-hi{fill:var(--accent)}
+.flow{stroke:var(--accent);stroke-width:2;fill:none}
+.flow-dash{stroke:var(--muted);stroke-width:1.5;fill:none;stroke-dasharray:5 4}
+.ah{fill:var(--accent)} .ah-m{fill:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:13px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.sw{width:22px;height:12px;border-radius:3px;display:inline-block}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:24px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:7px 10px 7px 0;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+td code,p code,li code{font-family:var(--mono);font-size:12.5px;background:var(--zone);padding:1px 5px;border-radius:4px;white-space:nowrap}
+pre.mermaid{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin:0;overflow-x:auto}
+ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px}
+.note{font-size:13px;color:var(--muted)}
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">Harbor Extensions · engineering view</p>
+  <h1>System architecture</h1>
+  <p class="lede">Every call from an extension or an agent goes through one gateway route, <code>/gw/{connector}/{path}</code>, is checked in seven steps, and is forwarded unchanged with the caller's identity attached. Configuration comes from Git and hot-reloads. The platform stores no business data.</p>
+</header>
+
+<section>
+  <h2>Component map</h2>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--warn-soft);border:1.5px dashed var(--warn)"></i>Untrusted code</span>
+    <span><i class="sw" style="background:var(--gate)"></i>Gateway pipeline</span>
+    <span><i class="sw" style="background:var(--accent-soft);border:1.5px solid var(--accent)"></i>Team-built service</span>
+    <span><i class="sw" style="height:2px;background:var(--accent)"></i>Request path</span>
+    <span><i class="sw" style="height:0;border-top:1.5px dashed var(--muted)"></i>Code or config load</span>
+  </div>
+  <div class="scroll">
+  <svg class="map" viewBox="0 0 1240 940" role="img" aria-label="Component map: browser portal and sandboxed extension, CLI, Harbor gateway pipeline, platform dependencies, upstream systems, and the Git control plane">
+    <defs>
+      <marker id="a" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" class="ah"/></marker>
+      <marker id="am" orient="auto" markerWidth="5" markerHeight="5" refX="2" refY="2" overflow="visible"><path d="M0 0 L4 2 L0 4 Z" class="ah-m"/></marker>
+    </defs>
+
+    <!-- Browser zone -->
+    <rect class="zone" x="20" y="40" width="320" height="470" rx="12"/>
+    <text class="t-zone" x="36" y="64">BROWSER · USER SESSION</text>
+    <rect class="box" x="40" y="80" width="280" height="410" rx="10"/>
+    <text class="t-h" x="56" y="104">Portal SPA (React)</text>
+    <text class="t-d" x="56" y="120">origin: harbor · connect-src 'self'</text>
+    <rect class="box-untrusted" x="60" y="134" width="240" height="140" rx="8"/>
+    <text class="t-h" x="74" y="156">Extension iframe</text>
+    <text class="t-d" x="74" y="176">sandbox="allow-scripts</text>
+    <text class="t-d" x="74" y="192">  allow-forms allow-popups"</text>
+    <text class="t-d" x="74" y="210">opaque origin, no cookies</text>
+    <text class="t-d" x="74" y="228">CSP connect-src 'none'</text>
+    <text class="t-d" x="74" y="246">calls harbor.js SDK only</text>
+    <text class="t-d" x="74" y="264">lint: no fetch/XHR/storage</text>
+    <path class="flow" d="M180 274 V318" marker-end="url(#a)"/>
+    <text class="t-lbl" x="190" y="300">postMessage</text>
+    <rect class="box" x="60" y="326" width="240" height="150" rx="8"/>
+    <text class="t-h" x="74" y="348">bridge.ts</text>
+    <text class="t-d" x="74" y="368">extension = which iframe</text>
+    <text class="t-d" x="74" y="384">  (message body not trusted)</text>
+    <text class="t-d" x="74" y="402">+ X-Harbor-Extension</text>
+    <text class="t-d" x="74" y="420">cookie harbor_session:</text>
+    <text class="t-d" x="74" y="436">  httpOnly, SameSite=Strict</text>
+    <text class="t-d" x="74" y="454">401 → re-login overlay</text>
+
+    <!-- CLI zone -->
+    <rect class="zone" x="20" y="540" width="320" height="120" rx="12"/>
+    <text class="t-zone" x="36" y="564">CLI · AGENTS</text>
+    <text class="t-h" x="36" y="590">harbor CLI / Copilot agent</text>
+    <text class="t-d" x="36" y="610">Authorization: Bearer &lt;PAT&gt;</text>
+    <text class="t-d" x="36" y="628">no extension: visibility and</text>
+    <text class="t-d" x="36" y="644">grant terms drop out</text>
+
+    <!-- Harbor platform -->
+    <rect class="zone" x="380" y="40" width="480" height="620" rx="12"/>
+    <text class="t-zone" x="396" y="64">HARBOR PLATFORM · FASTAPI · STATELESS</text>
+    <rect class="box" x="400" y="80" width="210" height="84" rx="8"/>
+    <text class="t-h" x="414" y="102">/ext/{name}/*</text>
+    <text class="t-d" x="414" y="120">static files +</text>
+    <text class="t-d" x="414" y="136">EXTENSION_CSP header</text>
+    <text class="t-d" x="414" y="152">/sdk/harbor.js</text>
+    <rect class="box" x="630" y="80" width="210" height="84" rx="8"/>
+    <text class="t-h" x="644" y="102">/api/*</text>
+    <text class="t-d" x="644" y="120">me · can · extensions</text>
+    <text class="t-d" x="644" y="136">connectors · audit</text>
+    <text class="t-d" x="644" y="152">/auth/dev-login|logout</text>
+
+    <rect class="gate" x="400" y="182" width="440" height="458" rx="10"/>
+    <text class="t-gh" x="416" y="206">/gw/{connector}/{path}</text>
+    <text class="t-warn" x="640" y="206" style="fill:#f0a06a">deny → 4xx + reason</text>
+    <rect class="step" x="416" y="218" width="408" height="52" rx="6"/>
+    <text class="t-gh" x="430" y="239">1  auth.Introspector</text>
+    <text class="t-gd" x="430" y="257">cookie | PAT → PAT /introspect · 60 s TTL, stale ok</text>
+    <rect class="step" x="416" y="278" width="408" height="52" rx="6"/>
+    <text class="t-gh" x="430" y="299">2  paths.check_path</text>
+    <text class="t-gd" x="430" y="317">reject .. // %2e %2f %5c %00 \ control chars</text>
+    <rect class="step" x="416" y="338" width="408" height="52" rx="6"/>
+    <text class="t-gh" x="430" y="359">3  connector match</text>
+    <text class="t-gd" x="430" y="377">METHOD /path → capability (* = 1 seg, ** = many)</text>
+    <rect class="step" x="416" y="398" width="408" height="52" rx="6"/>
+    <text class="t-gh" x="430" y="419">4  authz.authorize</text>
+    <text class="t-gd" x="430" y="437">scope ∩ AD ∩ visibility ∩ declared ∩ grant</text>
+    <rect class="step" x="416" y="458" width="408" height="52" rx="6"/>
+    <text class="t-gh" x="430" y="479">5  observe.RateLimiter</text>
+    <text class="t-gd" x="430" y="497">60 / 10 s per user × extension × connector</text>
+    <rect class="step-hi" x="416" y="518" width="408" height="52" rx="6"/>
+    <text class="t-gh" x="430" y="539">6  forward (httpx)</text>
+    <text class="t-gd" x="430" y="557" style="fill:#e3f3f4">header allowlist + credential + X-Harbor-Identity</text>
+    <rect class="step" x="416" y="578" width="408" height="52" rx="6"/>
+    <text class="t-gh" x="430" y="599">7  observe.Audit</text>
+    <text class="t-gd" x="430" y="617">every decision · JSON lines · OTel field names</text>
+
+    <!-- Dependencies -->
+    <rect class="zone" x="910" y="40" width="310" height="240" rx="12"/>
+    <text class="t-zone" x="926" y="64">PLATFORM DEPENDENCIES</text>
+    <rect class="box" x="930" y="80" width="270" height="55" rx="8"/>
+    <text class="t-h" x="944" y="102">PAT service</text>
+    <text class="t-d" x="944" y="122">/introspect · /session · /revoke</text>
+    <rect class="box" x="930" y="145" width="270" height="55" rx="8"/>
+    <text class="t-h" x="944" y="167">Secrets service</text>
+    <text class="t-d" x="944" y="187">service-account creds → step 6</text>
+    <rect class="box" x="930" y="210" width="270" height="55" rx="8"/>
+    <text class="t-h" x="944" y="232">OTel Collector</text>
+    <text class="t-d" x="944" y="252">audit spans/logs ← step 7</text>
+
+    <!-- Upstreams -->
+    <rect class="zone" x="910" y="300" width="310" height="360" rx="12"/>
+    <text class="t-zone" x="926" y="324">UPSTREAMS · NATIVE APIS</text>
+    <rect class="box" x="930" y="340" width="270" height="55" rx="8"/>
+    <text class="t-h" x="944" y="362">harbor-release</text>
+    <text class="t-d" x="944" y="382">auth: service-account</text>
+    <rect class="box" x="930" y="405" width="270" height="55" rx="8"/>
+    <text class="t-h" x="944" y="427">snow (ServiceNow)</text>
+    <text class="t-d" x="944" y="447">auth: service-account</text>
+    <rect class="box" x="930" y="470" width="270" height="55" rx="8"/>
+    <text class="t-h" x="944" y="492">jira</text>
+    <text class="t-d" x="944" y="512">auth: service-account</text>
+    <rect class="box-accent" x="930" y="535" width="270" height="105" rx="8"/>
+    <text class="t-h" x="944" y="557">outage (team service)</text>
+    <text class="t-d" x="944" y="577">auth: identity-only</text>
+    <text class="t-d" x="944" y="595">verifies JWT sig · aud · exp</text>
+    <text class="t-d" x="944" y="613">owns rules (commander only</text>
+    <text class="t-d" x="944" y="629">  may resolve)</text>
+
+    <!-- Control plane -->
+    <rect class="zone" x="20" y="700" width="1200" height="220" rx="12"/>
+    <text class="t-zone" x="36" y="724">CONTROL PLANE · GIT IS THE RELEASE SYSTEM</text>
+    <rect class="box" x="40" y="745" width="220" height="150" rx="8"/>
+    <text class="t-h" x="54" y="768">Contributor PR</text>
+    <text class="t-d" x="54" y="790">extensions/{name}/</text>
+    <text class="t-d" x="54" y="808">  extension.yaml</text>
+    <text class="t-d" x="54" y="826">  index.html, *.js, *.css</text>
+    <text class="t-d" x="54" y="848">built with Copilot from</text>
+    <text class="t-d" x="54" y="864">  the extension template</text>
+    <rect class="box" x="300" y="745" width="280" height="150" rx="8"/>
+    <text class="t-h" x="314" y="768">CI · validate.py + lint.py</text>
+    <text class="t-d" x="314" y="790">schema, references, code rules</text>
+    <text class="t-d" x="314" y="812">exit 0 → auto-merge</text>
+    <text class="t-d" x="314" y="830">exit 2 → platform review</text>
+    <text class="t-d" x="314" y="848">  (write cap, wider visibility,</text>
+    <text class="t-d" x="314" y="864">   innerHTML)</text>
+    <text class="t-d" x="314" y="882">exit 1 → blocked</text>
+    <rect class="box" x="620" y="745" width="280" height="150" rx="8"/>
+    <text class="t-h" x="634" y="768">main branch</text>
+    <text class="t-d" x="634" y="790">connectors/*.yaml   platform</text>
+    <text class="t-d" x="634" y="808">config/grants.yaml  platform</text>
+    <text class="t-d" x="634" y="826">extensions/*/       contributors</text>
+    <text class="t-d" x="634" y="848">every permission traces to</text>
+    <text class="t-d" x="634" y="864">  a PR and an approver</text>
+    <rect class="box" x="940" y="745" width="260" height="150" rx="8"/>
+    <text class="t-h" x="954" y="768">registry.py</text>
+    <text class="t-d" x="954" y="790">reloads when file mtimes</text>
+    <text class="t-d" x="954" y="808">  change</text>
+    <text class="t-d" x="954" y="826">no restart, next request</text>
+    <text class="t-d" x="954" y="844">  sees the new config</text>
+
+    <!-- Request flows -->
+    <path class="flow" d="M300 401 H392" marker-end="url(#a)"/>
+    <path class="flow" d="M340 600 H392" marker-end="url(#a)"/>
+    <text class="t-lbl" x="346" y="592">PAT</text>
+    <!-- iframe loads code from static host -->
+    <path class="flow-dash" d="M400 122 H360 V150 H308" marker-end="url(#am)"/>
+    <text class="t-lbl" x="346" y="114" style="fill:var(--muted)">code</text>
+    <!-- step 1 to PAT service -->
+    <path class="flow" d="M824 244 H880 V107 H922" marker-end="url(#a)"/>
+    <text class="t-lbl" x="852" y="96">introspect</text>
+    <!-- step 6 bus to upstreams -->
+    <path class="flow" d="M824 544 H895"/>
+    <path class="flow" d="M895 367 V587"/>
+    <path class="flow" d="M895 367 H922" marker-end="url(#a)"/>
+    <path class="flow" d="M895 432 H922" marker-end="url(#a)"/>
+    <path class="flow" d="M895 497 H922" marker-end="url(#a)"/>
+    <path class="flow" d="M895 587 H922" marker-end="url(#a)"/>
+    <!-- control plane -->
+    <path class="flow-dash" d="M260 820 H292" marker-end="url(#am)"/>
+    <path class="flow-dash" d="M580 820 H612" marker-end="url(#am)"/>
+    <path class="flow-dash" d="M900 820 H932" marker-end="url(#am)"/>
+    <path class="flow-dash" d="M1070 745 V680 H620 V648" marker-end="url(#am)"/>
+    <text class="t-lbl" x="630" y="674" style="fill:var(--muted)">connectors · extensions · grants</text>
+  </svg>
+  </div>
+  <p class="note">The browser request leaves the bridge as <code>fetch("/gw/…")</code> with the session cookie and <code>X-Harbor-Extension</code>; cookie requests without that header are rejected, which also blocks CSRF.</p>
+</section>
+
+<section>
+  <h2>A write request, end to end</h2>
+  <p class="note">Outage Console declares recovery on outage 42. The gateway decides whether the endpoint may be called; the outage service decides whether this person may do it.</p>
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant E as Extension iframe
+  participant B as Portal bridge
+  participant G as Gateway
+  participant T as PAT service
+  participant O as Outage service
+  E->>B: postMessage {connector: outage, POST /outages/42/resolve}
+  B->>G: POST /gw/outage/outages/42/resolve<br/>cookie + X-Harbor-Extension: outage-console
+  G->>T: POST /introspect (skipped if cached, 60 s)
+  T-->>G: user, scope, AD groups, exp
+  G->>G: check_path, match outage.manage (write)<br/>authorize: AD group, declared, granted, rate limit
+  G->>O: POST /outages/42/resolve<br/>X-Harbor-Identity: JWT aud=outage, exp 60 s
+  O->>O: verify JWT, is sub the commander?
+  O-->>G: 200, or 403 not_commander
+  G-->>B: status and body unchanged, Set-Cookie dropped
+  B-->>E: postMessage response
+  Note over G: one audit line per decision
+</pre>
+</section>
+
+<section class="grid2">
+  <div class="card">
+    <h2>Authorization</h2>
+    <p class="note">All terms must allow. A capability whose <code>data_class</code> is not enabled is denied outright; <code>cli_only</code> capabilities are refused from the browser.</p>
+    <div class="tbl"><table>
+      <tr><th>Term</th><th>Source</th><th>Browser</th><th>CLI</th></tr>
+      <tr><td>Credential scope</td><td>PAT service</td><td>✓</td><td>✓</td></tr>
+      <tr><td>Principal AD groups</td><td><code>groups:</code> in connector YAML</td><td>✓</td><td>✓</td></tr>
+      <tr><td>Extension visibility</td><td><code>visibility:</code> in extension.yaml</td><td>✓</td><td>–</td></tr>
+      <tr><td>Declared capability</td><td><code>capabilities:</code> in extension.yaml</td><td>✓</td><td>–</td></tr>
+      <tr><td>Write grant</td><td><code>config/grants.yaml</code></td><td>writes only</td><td>–</td></tr>
+    </table></div>
+  </div>
+  <div class="card">
+    <h2>Headers at the gateway</h2>
+    <div class="tbl"><table>
+      <tr><th>Direction</th><th>What happens</th></tr>
+      <tr><td>Caller → gateway</td><td><code>harbor_session</code> cookie or <code>Authorization: Bearer</code>; browser also sends <code>X-Harbor-Extension</code></td></tr>
+      <tr><td>Gateway → upstream</td><td>Allowlist only: <code>accept</code>, <code>accept-language</code>, <code>content-type</code>, <code>if-match</code>, <code>if-none-match</code>. Adds <code>Authorization</code> (service account), <code>X-Harbor-Identity</code>, <code>X-Request-Id</code>. Caller cookie and auth never pass.</td></tr>
+      <tr><td>Upstream → caller</td><td>Status and body unchanged; headers allowlisted (<code>content-type</code>, <code>etag</code>, <code>last-modified</code>, <code>cache-control</code>, <code>x-total-count</code>), plus <code>X-Harbor-Capability</code></td></tr>
+      <tr><td>Gateway denial</td><td>4xx with <code>X-Harbor-Gateway-Error: &lt;code&gt;</code> and a JSON reason and <code>need</code>, so the SDK can tell it from an upstream error</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<section class="grid2">
+  <div class="card">
+    <h2>X-Harbor-Identity claims</h2>
+    <p class="note">HS256 in the prototype; asymmetric keys and JWKS in production. Downstream services must check signature, <code>aud</code> and <code>exp</code>, and accept traffic only from the gateway.</p>
+    <div class="tbl"><table>
+      <tr><th>Claim</th><th>Meaning</th></tr>
+      <tr><td><code>iss</code></td><td><code>harbor-gateway</code></td></tr>
+      <tr><td><code>aud</code></td><td>connector name, e.g. <code>outage</code></td></tr>
+      <tr><td><code>sub</code> · <code>name</code></td><td>the real operator</td></tr>
+      <tr><td><code>ext</code></td><td>calling extension, empty for CLI</td></tr>
+      <tr><td><code>cap</code></td><td>capability matched, e.g. <code>outage.manage</code></td></tr>
+      <tr><td><code>via</code></td><td><code>cookie</code> or <code>bearer</code></td></tr>
+      <tr><td><code>rid</code> · <code>exp</code></td><td>request id · issued + 60 s</td></tr>
+    </table></div>
+  </div>
+  <div class="card">
+    <h2>Code map</h2>
+    <div class="tbl"><table>
+      <tr><th>Path</th><th>Role</th></tr>
+      <tr><td><code>backend/harbor_platform/app.py</code></td><td>routes, gateway handler, identity token, CSP</td></tr>
+      <tr><td><code>auth.py</code></td><td>Introspector: cache, stale fallback, size cap, forget on logout</td></tr>
+      <tr><td><code>authz.py</code> · <code>paths.py</code></td><td>authorization formula · path safety</td></tr>
+      <tr><td><code>connectors.py</code> · <code>extensions.py</code></td><td>YAML parsing, capability rules, grants</td></tr>
+      <tr><td><code>registry.py</code> · <code>observe.py</code></td><td>hot reload · rate limiter and audit</td></tr>
+      <tr><td><code>validate.py</code> · <code>lint.py</code> · <code>cli.py</code></td><td>CI gate · extension code rules · CLI</td></tr>
+      <tr><td><code>portal/src/bridge.ts</code></td><td>postMessage bridge, 401 handling</td></tr>
+      <tr><td><code>sdk/harbor.js</code></td><td><code>harbor.me</code>, <code>harbor.can</code>, <code>harbor.connector(name).get/post/…</code></td></tr>
+      <tr><td><code>backend/mocks/app.py</code></td><td>mock PAT/AD, Harbor Release, SNOW, Jira, outage</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Before production</h2>
+  <ul>
+    <li>Portal login through the PAT service's Kerberos entry point; turn off dev login; HTTPS and secure cookies.</li>
+    <li>Identity token: asymmetric signing plus JWKS, agreed with every system owner before its connector goes live.</li>
+    <li>Credentials from the secrets service; rate limiter and introspect cache in shared storage (such as Redis) for multiple instances.</li>
+    <li>Audit as OTel spans; response body size limit or streaming; CI wiring for <code>validate.py</code> exit codes.</li>
+  </ul>
+</section>
+</div>
