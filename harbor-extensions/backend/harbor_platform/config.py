@@ -60,6 +60,9 @@ class Settings:
     upstream_timeout: float = 15.0
     allowed_data_classes: list[str] = field(default_factory=lambda: ["internal"])
     dev_login: bool = True
+    # Host login page used when there is no session and dev login is off, e.g. Harbor's "/login?next={next}";
+    # {next} is replaced with the URL-encoded page to return to
+    login_url: str = ""
     cookie_secure: bool = False
     # "file": JSON Lines under data_dir (local); "stdout": one JSON line per decision (containers: picked up by the log agent)
     audit_sink: str = "file"
@@ -76,6 +79,10 @@ class Settings:
     @property
     def grants_file(self) -> Path:
         return self.root / "config" / "grants.yaml"
+
+    @property
+    def nav_file(self) -> Path:
+        return self.root / "config" / "nav.yaml"
 
     @property
     def sdk_dir(self) -> Path:
@@ -101,6 +108,7 @@ _ENV = {
     "HARBOR_ALLOWED_DATA_CLASSES": ("allowed_data_classes", _list),
     "HARBOR_DEV_LOGIN": ("dev_login", _bool),
     "HARBOR_COOKIE_SECURE": ("cookie_secure", _bool),
+    "HARBOR_LOGIN_URL": ("login_url", str),
     "HARBOR_AUDIT_SINK": ("audit_sink", str),
 }
 

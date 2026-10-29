@@ -47,6 +47,21 @@ Connectors, extensions and grants are synced from git at runtime, so a merged PR
 | `audit_sink` | `HARBOR_AUDIT_SINK` | `file` | `stdout` |
 | `session_cookie` | `HARBOR_SESSION_COOKIE` | `harbor_session` | a name Harbor itself does not use |
 | `dev_login` | `HARBOR_DEV_LOGIN` | `true` | `false`; then `HARBOR_IDENTITY_KEY` is required and `secrets.dev.yaml` is ignored |
+| `login_url` | `HARBOR_LOGIN_URL` | `""` | Harbor's login page, e.g. `/login?next={next}` |
+
+## Inside Harbor's navigation
+
+Harbor keeps its own left sidebar and workspace switcher; the extensions show up inside it.
+`integrations/harbor-react/` has the three files to copy into Harbor's React app (details in its README):
+
+- **Sidebar data**: `GET /extensions/api/nav?workspace=…` returns what this user may open in this workspace.
+  Harbor renders a bounded "Extensions" group (the user's pins + up to `max_featured` featured picks + "All extensions (N)"),
+  and official extensions promoted with `nav.section` appear under an existing Harbor group (keys in `config/nav.yaml`).
+  Promotions are official-tier only and always go through platform-team review.
+- **Embed mode**: Harbor's route `/ext/:name` frames `/extensions/x/<name>?embed=1&ws=<workspace>`. The portal drops its top bar,
+  passes the workspace to the extension (`harbor.context()`), and reports `navigate` and `auth-required` to Harbor.
+- **One login**: set `session_cookie` to Harbor's session cookie and `pat_service_url` to Harbor's auth service, turn off `dev_login`,
+  and set `login_url` to Harbor's login page. The portal then never shows its own login.
 
 ## Tests
 
@@ -103,7 +118,7 @@ Extension code never touches any credential.
 ## Layout
 
 ```
-config/          platform.yaml (runtime config), grants.yaml (write-capability grants, approved by the platform team), secrets.dev.yaml
+config/          platform.yaml (runtime config), grants.yaml (write-capability grants) and nav.yaml (sidebar sections, featured cap), both platform-team owned; secrets.dev.yaml
 connectors/      connectors: upstream address, auth method, allow lists grouped by capability, AD groups, data class
 extensions/      extensions: outage-console (team-built service + SNOW), release-calendar (Harbor Release + SNOW, includes write operations)
 sdk/             harbor.js (extension SDK), harbor.css (design tokens)
@@ -111,6 +126,7 @@ portal/          portal (React + Vite): extension catalog, extension container a
 backend/         gateway and platform (FastAPI), mock systems, tests
 templates/       template for new extensions
 deploy/          GKE manifests (kustomize base) and deployment notes; Dockerfile at the top level
+integrations/    harbor-react: sidebar group, nav hook and extension frame to copy into Harbor's React app
 .github/copilot-instructions.md   extension development rules for Copilot
 ```
 

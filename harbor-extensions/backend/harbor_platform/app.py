@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from .auth import AuthUnavailable, Introspector, Principal
 from .authz import authorize, check_extension_access
 from .config import Settings, load_settings
-from .extensions import Extension
+from .extensions import SLUG_RE, Extension
 from .observe import Audit, RateLimiter
 from .paths import BadPath, check_path
 from .registry import Registry
@@ -66,7 +66,8 @@ PORTAL_CSP = "; ".join(
         "connect-src 'self'",
         "object-src 'none'",
         "base-uri 'self'",
-        "frame-ancestors 'none'",
+        # Same-origin hosts (Harbor's shell, served from the same host) may frame the portal in embed mode
+        "frame-ancestors 'self'",
     ]
 )
 
@@ -353,6 +354,53 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
         if not d.allowed:
             raise GatewayError(403, d.code, d.reason, d.need)
         return extension_view(ext, ctx.principal)
+
+    @r.get("/api/portal-config")
+    def portal_config() -> dict[str, Any]:
+        """Unauthenticated: what the portal needs before anyone signs in."""
+        return {"dev_login": settings.dev_login, "login_url": settings.login_url}
+
+    @r.get("/api/nav")
+    async def nav(request: Request, workspace: str | None = None) -> dict[str, Any]:
+        """Navigation entries for a host shell such as Harbor's sidebar: only what this user may open, in this workspace.
+
+        The host decides the layout; the platform supplies the data and the promotion decisions
+        (sections and featured come from reviewed extension.yaml files, featured is capped by config/nav.yaml).
+        """
+        ctx = await resolve(request, require_extension=False)
+        if workspace is not None and not SLUG_RE.match(workspace):
+            raise GatewayError(400, "bad_workspace", "Invalid workspace key")
+        cfg = registry.nav
+        visible = [
+            e
+            for e in registry.extensions.values()
+            if check_extension_access(ctx.principal, e).allowed
+            and (not e.nav.workspaces or (workspace is not None and workspace in e.nav.workspaces))
+        ]
+        visible.sort(key=lambda e: (e.nav.order, e.title.lower()))
+        # Cap in sort order, so the sidebar never grows past max_featured however many extensions ask
+        featured = {e.name for e in visible if e.nav.featured}
+        featured = {name for name in [e.name for e in visible if e.name in featured][: cfg.max_featured]}
+        return {
+            "catalog_href": f"{mount}/",
+            "max_featured": cfg.max_featured,
+            "sections": [{"key": k, "title": t} for k, t in cfg.sections.items()],
+            "items": [
+                {
+                    "name": e.name,
+                    "title": e.title,
+                    "description": e.description,
+                    "tier": e.tier,
+                    "owner": e.owner,
+                    "section": e.nav.section if e.nav.section in cfg.sections else None,
+                    "featured": e.name in featured,
+                    "order": e.nav.order,
+                    "href": f"{mount}/x/{e.name}",
+                    "embed_src": f"{mount}/x/{e.name}?embed=1",
+                }
+                for e in visible
+            ],
+        }
 
     @r.get("/api/connectors")
     async def list_connectors(request: Request) -> dict[str, Any]:

@@ -60,6 +60,11 @@ export interface AuditEntry {
   latency_ms?: number;
 }
 
+export interface PortalConfig {
+  dev_login: boolean;
+  login_url: string;
+}
+
 export interface DevUser {
   user: string;
   display_name: string;

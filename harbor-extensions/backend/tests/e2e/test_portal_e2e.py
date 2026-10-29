@@ -325,3 +325,39 @@ def test_extension_file_cannot_run_outside_portal(page, servers):
     page.goto(f"{servers}ext/outage-console/index.html")
     origin = page.evaluate("window.origin")
     assert origin == "null"
+
+
+def test_embedded_in_harbor_shell(page, servers):
+    """Harbor's shell (same origin) frames the portal in embed mode: no portal chrome, sidebar from /api/nav,
+    workspace reaches the extension, navigation and session loss are reported to the shell."""
+    login(page, "alice")
+    prefix = servers.split("://", 1)[1].split("/", 1)[1].rstrip("/")
+    prefix = "/" + prefix if prefix else ""
+    shell = (Path(__file__).parent / "harbor_shell.html").read_text(encoding="utf-8")
+    page.goto(f"{servers}api/portal-config")  # any same-origin page without a CSP, to host the stand-in shell
+    page.set_content(shell.replace("__BASE__", prefix).replace("__START__", "outage-console"))
+
+    portal = page.frame_locator("#frame")
+    portal.frame_locator("iframe.ext-frame").locator('[data-outage-id="OUT-1042"]').wait_for()
+    assert portal.locator(".topbar").count() == 0  # Harbor provides the chrome
+    page.locator('aside a.active[data-ext="outage-console"]').first.wait_for()
+    page.wait_for_function("window.hostEvents.some(e => e.type === 'navigate' && e.extension === 'outage-console')")
+
+    ext = next(f for f in page.frames if "/ext/outage-console/" in f.url)
+    assert ext.evaluate("harbor.context()") == {"workspace": "payments", "embedded": True}
+    shot(page, "13-harbor-shell-embedded")
+
+    # Inside the portal: catalog, then another extension; the shell follows
+    page.locator('aside a[data-ext=""]').click()
+    portal.locator('[data-extension="release-calendar"]').click()
+    page.wait_for_function("window.hostEvents.some(e => e.type === 'navigate' && e.extension === 'release-calendar')")
+    page.locator('aside a.active[data-ext="release-calendar"]').first.wait_for()
+    portal.frame_locator("iframe.ext-frame").locator('[data-id="CHG0031001"]').wait_for()
+    shot(page, "14-harbor-shell-release")
+
+    # Session gone (e.g. signed out of Harbor): the portal asks the shell to re-authenticate
+    page.context.clear_cookies()
+    cal = next(f for f in page.frames if "/ext/release-calendar/" in f.url)
+    cal.evaluate("harbor.me().catch(() => null)")
+    page.wait_for_function("window.hostEvents.some(e => e.type === 'auth-required')")
+    assert page.errors == []

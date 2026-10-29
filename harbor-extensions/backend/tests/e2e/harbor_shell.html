@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- Test stand-in for Harbor's shell: workspace switcher on top, sidebar on the left, the portal framed in embed mode.
+     Loaded same-origin by the e2e test; mirrors what integrations/harbor-react does. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Harbor (test shell)</title>
+<style>
+  body { margin: 0; font: 13px/1.4 system-ui, sans-serif; color: #1f2933; background: #f4f6f8; height: 100vh; display: grid;
+         grid-template-rows: 48px 1fr; grid-template-columns: 220px 1fr; }
+  header { grid-column: 1 / 3; background: #0f2233; color: #fff; display: flex; align-items: center; gap: 12px; padding: 0 16px; }
+  header b { font-size: 15px; }
+  header select { margin-left: 8px; }
+  aside { background: #fff; border-right: 1px solid #e3e8ee; padding: 12px 8px; overflow: auto; }
+  .grp { margin-bottom: 14px; }
+  .grp-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #6b7785; padding: 4px 8px; }
+  aside a { display: block; padding: 6px 8px; border-radius: 6px; color: inherit; text-decoration: none; cursor: pointer; }
+  aside a.own { color: #6b7785; }
+  aside a.active { background: #e6f2f3; color: #0f6b74; font-weight: 600; }
+  main { min-height: 0; }
+  iframe { display: block; width: 100%; height: 100%; border: 0; }
+</style>
+</head>
+<body>
+<header><b>Harbor</b> Workspace <select id="ws"><option>payments</option><option>lending</option></select></header>
+<aside id="side"></aside>
+<main><iframe id="frame" title="Harbor Extensions"></iframe></main>
+<script>
+  var BASE = "__BASE__";              // e.g. /extensions or ""
+  var events = (window.hostEvents = []);
+  var current = "__START__";          // extension name, or "" for the catalog
+  var navData = null;
+
+  function src(name, ws) {
+    return BASE + (name ? "/x/" + encodeURIComponent(name) : "/") + "?embed=1&ws=" + encodeURIComponent(ws);
+  }
+  function link(label, name, cls) {
+    var a = document.createElement("a");
+    a.textContent = label;
+    a.className = (cls || "") + (current === name ? " active" : "");
+    a.dataset.ext = name;
+    a.onclick = function () { open(name); };
+    return a;
+  }
+  function group(title, children) {
+    var g = document.createElement("div"); g.className = "grp";
+    var t = document.createElement("div"); t.className = "grp-title"; t.textContent = title; g.appendChild(t);
+    children.forEach(function (c) { g.appendChild(c); });
+    return g;
+  }
+  function render() {
+    var side = document.getElementById("side"); side.replaceChildren();
+    if (!navData) return;
+    var own = { release: ["Pipelines", "Environments"], operations: ["Feature toggles"], observability: ["Sense"] };
+    navData.sections.forEach(function (s) {
+      var items = (own[s.key] || []).map(function (l) { var a = document.createElement("a"); a.className = "own"; a.textContent = l; return a; });
+      navData.items.filter(function (i) { return i.section === s.key; }).forEach(function (i) { items.push(link(i.title, i.name)); });
+      side.appendChild(group(s.title, items));
+    });
+    var quick = navData.items.filter(function (i) { return i.featured && !i.section; }).map(function (i) { return link(i.title, i.name); });
+    quick.push(link("All extensions (" + navData.items.length + ")", ""));
+    side.appendChild(group("Extensions", quick));
+  }
+  function load() {
+    var ws = document.getElementById("ws").value;
+    fetch(BASE + "/api/nav?workspace=" + ws, { credentials: "same-origin" }).then(function (r) { return r.json(); })
+      .then(function (d) { navData = d; render(); });
+    document.getElementById("frame").src = src(current, ws);
+  }
+  function open(name) { current = name; render(); document.getElementById("frame").src = src(name, document.getElementById("ws").value); }
+
+  window.addEventListener("message", function (e) {
+    if (e.origin !== location.origin || e.source !== document.getElementById("frame").contentWindow) return;
+    if (!e.data || e.data.source !== "harbor-extensions") return;
+    events.push(e.data);
+    if (e.data.type === "navigate") { current = e.data.extension || ""; render(); }
+  });
+  document.getElementById("ws").onchange = load;
+  load();
+</script>
+</body>
+</html>

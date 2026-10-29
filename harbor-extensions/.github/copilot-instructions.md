@@ -30,6 +30,10 @@ These rules are checked automatically by CI (`python -m harbor_platform.validate
 ```js
 const me = await harbor.me();                       // { user, display_name, groups }
 
+// The Harbor workspace the user is in (null if none); scope your queries to it when it matters.
+// Harbor reloads the extension when the workspace changes, so read it once at start-up.
+const { workspace } = await harbor.context();
+
 // Connector: pass-through calls to the upstream system's native API; paths and query strings match the upstream docs
 const snow = harbor.connector("snow");
 const res = await snow.get("/api/now/table/change_request", { query: { sysparm_limit: 20 } });

@@ -1,0 +1,14 @@
+# Navigation config (platform team). Changes need platform-team review.
+#
+# sections: Harbor sidebar groups an official extension may be listed under (extension.yaml nav.section).
+#           Keys must match the groups Harbor's sidebar renders; titles are what the sidebar shows.
+# max_featured: how many featured extensions the sidebar's Extensions group shows directly;
+#           everything else is one click away in the catalog ("All extensions").
+max_featured: 5
+sections:
+  release:
+    title: Release
+  observability:
+    title: Observability
+  operations:
+    title: Operations

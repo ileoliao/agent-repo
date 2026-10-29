@@ -36,7 +36,7 @@ COPY --from=portal /src/portal/dist /app/portal/dist
 # Fallback content; secrets.dev.yaml is deliberately not copied
 COPY connectors /content/connectors
 COPY extensions /content/extensions
-COPY config/grants.yaml /content/config/grants.yaml
+COPY config/grants.yaml config/nav.yaml /content/config/
 
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin harbor
 USER 10001

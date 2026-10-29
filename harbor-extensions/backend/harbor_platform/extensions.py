@@ -6,12 +6,34 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import re
+
 import yaml
 
 from .connectors import CAP_KEY_RE, NAME_RE, ConfigError, Connector, split_capability_id
 
 TIERS = ("experimental", "community", "official")
-ALLOWED_FIELDS = {"name", "title", "description", "owner", "contact", "tier", "visibility", "capabilities", "entry"}
+ALLOWED_FIELDS = {"name", "title", "description", "owner", "contact", "tier", "visibility", "capabilities", "entry", "nav"}
+NAV_FIELDS = {"section", "featured", "order", "workspaces"}
+SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+@dataclass(frozen=True)
+class Nav:
+    """How the extension appears in the host's navigation (Harbor's sidebar). All optional.
+
+    section    key of a section in config/nav.yaml: list the extension under that Harbor module instead of only in the catalog
+    featured   ask to be shown directly in the sidebar's Extensions group (the platform caps how many are shown)
+    order      sort key within a section / the featured list (lower first)
+    workspaces only offer it in these Harbor workspaces; empty = every workspace
+
+    section and featured are promotions: official tier only, and CI routes any change to platform-team review.
+    """
+
+    section: str | None = None
+    featured: bool = False
+    order: int = 100
+    workspaces: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -26,6 +48,32 @@ class Extension:
     capabilities: tuple[str, ...]
     entry: str
     path: Path
+    nav: Nav = Nav()
+
+
+def parse_nav(data: Any, tier: str, err) -> Nav:
+    if data is None:
+        return Nav()
+    if not isinstance(data, dict):
+        raise err("nav must be a mapping")
+    unknown = sorted(set(data) - NAV_FIELDS)
+    if unknown:
+        raise err(f"Unknown nav field {', '.join(map(str, unknown))} (allowed: {', '.join(sorted(NAV_FIELDS))})")
+    section = data.get("section")
+    if section is not None and (not isinstance(section, str) or not SLUG_RE.match(section)):
+        raise err("nav.section must be a section key from config/nav.yaml")
+    featured = data.get("featured", False)
+    if not isinstance(featured, bool):
+        raise err("nav.featured must be true or false")
+    if (section or featured) and tier != "official":
+        raise err("nav.section and nav.featured are only for official-tier extensions")
+    order = data.get("order", 100)
+    if not isinstance(order, int) or isinstance(order, bool) or not 0 <= order <= 10_000:
+        raise err("nav.order must be an integer between 0 and 10000")
+    workspaces = data.get("workspaces") or []
+    if not isinstance(workspaces, list) or not all(isinstance(w, str) and SLUG_RE.match(w) for w in workspaces):
+        raise err("nav.workspaces must be a list of workspace keys")
+    return Nav(section=section, featured=featured, order=order, workspaces=frozenset(workspaces))
 
 
 def parse_extension(data: Any, directory: Path) -> Extension:
@@ -75,6 +123,7 @@ def parse_extension(data: Any, directory: Path) -> Extension:
         capabilities=tuple(str(c) for c in caps),
         entry=entry,
         path=directory,
+        nav=parse_nav(data.get("nav"), tier, err),
     )
 
 
@@ -110,6 +159,35 @@ def load_grants(path: Path) -> tuple[dict[str, frozenset[str]], list[str]]:
             caps.add(str(item["capability"]))
         grants[str(ext_name)] = frozenset(caps)
     return grants, errors
+
+
+@dataclass(frozen=True)
+class NavConfig:
+    """config/nav.yaml, maintained by the platform team: the Harbor sections extensions may join, and the sidebar cap."""
+
+    sections: dict[str, str]  # key -> title
+    max_featured: int = 5
+
+
+def load_nav_config(path: Path) -> tuple[NavConfig, list[str]]:
+    if not path.exists():
+        return NavConfig({}), []
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        return NavConfig({}), [f"config/nav.yaml: {e}"]
+    errors: list[str] = []
+    sections: dict[str, str] = {}
+    for key, item in (raw.get("sections") or {}).items():
+        if not SLUG_RE.match(str(key)) or not isinstance(item, dict) or not item.get("title"):
+            errors.append(f"config/nav.yaml: section {key} needs a key of letters/digits and a title")
+            continue
+        sections[str(key)] = str(item["title"])
+    max_featured = raw.get("max_featured", 5)
+    if not isinstance(max_featured, int) or not 0 <= max_featured <= 20:
+        errors.append("config/nav.yaml: max_featured must be an integer between 0 and 20")
+        max_featured = 5
+    return NavConfig(sections, max_featured), errors
 
 
 def reference_errors(ext: Extension, connectors: dict[str, Connector]) -> list[str]:

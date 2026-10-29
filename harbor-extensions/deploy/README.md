@@ -16,7 +16,7 @@ https://<harbor-host>/extensions/ ──▶ Service harbor-extensions ──▶ 
 | | Where | Changes via |
 |---|---|---|
 | Gateway, portal, SDK (`/app`) | Container image (`Dockerfile`) | Image build + rollout |
-| Connectors, extensions, grants (`HARBOR_ROOT`) | Content git repo, synced by the git-sync sidecar every 30 s | Merging a PR; no rollout |
+| Connectors, extensions, grants, nav (`HARBOR_ROOT`) | Content git repo, synced by the git-sync sidecar every 30 s | Merging a PR; no rollout |
 | Runtime settings (`platform.yaml`) | ConfigMap, mounted at `HARBOR_CONFIG` | `kubectl apply` + restart |
 | Signing key, connector credentials | k8s Secret `harbor-extensions-secrets` from Secret Manager | Secret rotation |
 
@@ -26,7 +26,7 @@ The image also carries a copy of the content in `/content`, so it runs on its ow
 ## Steps
 
 1. **Build**: `docker build -t REGION-docker.pkg.dev/PROJECT/harbor/harbor-extensions:<sha> .` from `harbor-extensions/`, push to Artifact Registry.
-2. **Content repo**: put `connectors/`, `extensions/`, `config/grants.yaml` at the root of a repo (or set git-sync's subpath and point `HARBOR_ROOT` at it). CI runs `python -m harbor_platform.validate` on PRs.
+2. **Content repo**: put `connectors/`, `extensions/`, `config/grants.yaml`, `config/nav.yaml` at the root of a repo (or set git-sync's subpath and point `HARBOR_ROOT` at it). CI runs `python -m harbor_platform.validate` on PRs.
 3. **Secret** `harbor-extensions-secrets`, keys:
    - `HARBOR_IDENTITY_KEY`: the service refuses to start without it when `dev_login` is off
    - `HARBOR_SECRET_<NAME>` for each `auth.secret` in the connectors (e.g. `HARBOR_SECRET_SNOW_TOKEN`)
