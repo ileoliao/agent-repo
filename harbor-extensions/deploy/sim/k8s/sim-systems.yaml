@@ -1,0 +1,100 @@
+# Simulation-only stand-ins for things that exist outside this package in a real Harbor cluster:
+# the PAT service + upstream systems (mocks), the content git repo, and Harbor itself (stub behind the same ingress).
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: mocks}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: mocks}}
+  template:
+    metadata: {labels: {app: mocks}}
+    spec:
+      containers:
+        - name: mocks
+          image: harbor-sim-mocks:sim
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 9001}]
+          env:
+            # Downstream systems verify the gateway's identity claim with the same key (as they would via JWKS in production)
+            - name: HARBOR_IDENTITY_KEY
+              valueFrom: {secretKeyRef: {name: harbor-extensions-secrets, key: HARBOR_IDENTITY_KEY}}
+          readinessProbe: {httpGet: {path: /pat/users, port: http}, periodSeconds: 5}
+---
+# Names the base ConfigMap expects: http://pat-service.harbor.svc.cluster.local/pat
+apiVersion: v1
+kind: Service
+metadata: {name: pat-service}
+spec:
+  selector: {app: mocks}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: upstream-mocks}
+spec:
+  selector: {app: mocks}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: content-git}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: content-git}}
+  template:
+    metadata: {labels: {app: content-git}}
+    spec:
+      containers:
+        - name: git
+          image: harbor-sim-content-git:sim
+          imagePullPolicy: IfNotPresent
+          ports: [{name: git, containerPort: 9418}]
+          readinessProbe: {tcpSocket: {port: git}, periodSeconds: 3}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: content-git}
+spec:
+  selector: {app: content-git}
+  ports: [{name: git, port: 9418, targetPort: git}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: harbor-stub}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: harbor-stub}}
+  template:
+    metadata: {labels: {app: harbor-stub}}
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{name: http, containerPort: 80}]
+          volumeMounts: [{name: page, mountPath: /usr/share/nginx/html}]
+      initContainers:
+        - name: page
+          image: nginx:1.27-alpine
+          command: [sh, -c, "echo '<h1>Harbor (stub)</h1>' > /page/index.html"]
+          volumeMounts: [{name: page, mountPath: /page}]
+      volumes: [{name: page, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: harbor-stub}
+spec:
+  selector: {app: harbor-stub}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+# Harbor's existing ingress, with the one extra path from deploy/README.md step 6 (no prefix rewriting).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: harbor}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: harbor.sim.internal
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: harbor-stub, port: {number: 80}}}}
+          - {path: /extensions, pathType: Prefix, backend: {service: {name: harbor-extensions, port: {number: 80}}}}
