@@ -1,0 +1,61 @@
+<section id="architecture" data-transition="fade" style="background:#f6f5f1;color:#14212b;font-family:'IBM Plex Sans', Arial, sans-serif;padding:104px 128px 104px;display:flex;flex-direction:column;gap:32px">
+<p style="font-size:24px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:#0f6b74">Architecture</p>
+<h2 style="font-size:56px;font-weight:600;line-height:1.12;color:#14212b">Every call passes through one gate</h2>
+<div style="display:flex;flex-direction:row;align-items:stretch;gap:16px">
+<div style="width:400px;display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#4a5866">Who calls</p>
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:12px;background:#ffffff;border:1px solid #dcdfe2;border-radius:16px;padding:28px 32px">
+<x-icon name="Users" style="width:44px;height:44px;color:#0f6b74"></x-icon>
+<h3 style="font-size:32px;font-weight:600;color:#14212b">Engineers</h3>
+<p style="font-size:26px;line-height:1.4;color:#4a5866">Small tools in the Harbor portal, built with Copilot</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:12px;background:#ffffff;border:1px solid #dcdfe2;border-radius:16px;padding:28px 32px">
+<x-icon name="Lightning" style="width:44px;height:44px;color:#0f6b74"></x-icon>
+<h3 style="font-size:32px;font-weight:600;color:#14212b">AI agents</h3>
+<p style="font-size:26px;line-height:1.4;color:#4a5866">Copilot acting through the Harbor CLI</p>
+</div>
+</div>
+<x-shape kind="arrow-right" style="width:60px;height:34px;background:#9aa6b0;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#0f6b74">Harbor governance layer</p>
+<div style="flex:1;display:flex;flex-direction:column;justify-content:space-between;gap:14px;background:#0c2233;border-radius:16px;padding:32px 36px">
+<div style="display:flex;flex-direction:row;align-items:center;gap:20px">
+<p style="width:56px;font-size:32px;font-weight:700;color:#7fd0d6">1</p>
+<p style="flex:1;font-size:28px;line-height:1.35;color:#f2f4f1"><b>Who are you?</b> Identity from the existing PAT service</p>
+</div>
+<hr style="border-top:1px solid #2a4458">
+<div style="display:flex;flex-direction:row;align-items:center;gap:20px">
+<p style="width:56px;font-size:32px;font-weight:700;color:#7fd0d6">2</p>
+<p style="flex:1;font-size:28px;line-height:1.35;color:#f2f4f1"><b>May you do this?</b> Permission per capability, by AD group</p>
+</div>
+<hr style="border-top:1px solid #2a4458">
+<div style="display:flex;flex-direction:row;align-items:center;gap:20px">
+<p style="width:56px;font-size:32px;font-weight:700;color:#7fd0d6">3</p>
+<p style="flex:1;font-size:28px;line-height:1.35;color:#f2f4f1"><b>Pass it on.</b> Call forwarded unchanged, with the caller’s identity attached</p>
+</div>
+<hr style="border-top:1px solid #2a4458">
+<div style="display:flex;flex-direction:row;align-items:center;gap:20px">
+<p style="width:56px;font-size:32px;font-weight:700;color:#7fd0d6">4</p>
+<p style="flex:1;font-size:28px;line-height:1.35;color:#f2f4f1"><b>Record it.</b> Every decision audited</p>
+</div>
+</div>
+</div>
+<x-shape kind="arrow-right" style="width:60px;height:34px;background:#9aa6b0;align-self:center"></x-shape>
+<div style="width:400px;display:flex;flex-direction:column;gap:16px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#4a5866">Our systems</p>
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:14px;background:#ffffff;border:1px solid #dcdfe2;border-radius:16px;padding:28px 32px">
+<p style="font-size:28px;line-height:1.3;color:#14212b">Harbor Release &amp; Sense</p>
+<p style="font-size:28px;line-height:1.3;color:#14212b">Jira</p>
+<p style="font-size:28px;line-height:1.3;color:#14212b">ServiceNow</p>
+<p style="font-size:28px;line-height:1.3;color:#14212b">GitLab</p>
+<p style="font-size:28px;line-height:1.3;color:#0f6b74;font-weight:600">Team-built services, e.g. outage</p>
+</div>
+</div>
+</div>
+<div style="display:flex;flex-direction:row;gap:28px">
+<p style="flex:1;font-size:24px;line-height:1.4;color:#4a5866;border-top:3px solid #0f6b74;padding-top:14px">Tools run sandboxed: no credentials, no backend of their own</p>
+<p style="flex:1;font-size:24px;line-height:1.4;color:#4a5866;border-top:3px solid #0f6b74;padding-top:14px">Each system is integrated once, by the platform team</p>
+<p style="flex:1;font-size:24px;line-height:1.4;color:#4a5866;border-top:3px solid #0f6b74;padding-top:14px">The layer stores no business data</p>
+</div>
+<aside>Read it left to right. Two kinds of callers: engineers, through small tools in the Harbor portal, and AI agents such as Copilot, through the Harbor CLI. Both pass the same four checks in Harbor: who are you, may you do this, pass the call on with your identity attached, and record it. Behind the gate are our systems: Harbor itself, Jira, ServiceNow, GitLab, and services our teams build themselves, like the outage management service. Three properties keep it safe and cheap: tools are sandboxed and never hold credentials, each system is integrated once, and the layer holds no business data.</aside>
+</section>

@@ -163,3 +163,8 @@ python -m harbor_platform.cli call jira POST /rest/api/2/issue/PAY-101/comment -
   (an extension can do at most what the user could do through the gateway anyway).
 - Extension code files have no access control (they contain no data, only public front-end code).
 - The platform provides no storage. Collaboration data lives in the source system, a team service, or an existing governed medium such as SharePoint, accessed through connectors.
+
+## Documents
+
+- [Requirements and architecture](docs/requirements-and-architecture.md)
+- [Leadership deck: positioning, architecture, outlook](docs/deck/) (slide HTML sources)
