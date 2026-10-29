@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>My Release Calendar</title>
+    <link rel="stylesheet" href="/sdk/harbor.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="hx-page">
+      <header class="hx-header">
+        <div>
+          <h1>My Release Calendar</h1>
+          <p class="hx-muted">Release plans come from Harbor Release and change requests from ServiceNow; a release and a change for the same system in the same period are flagged as a conflict.</p>
+        </div>
+        <nav class="hx-row week-nav" aria-label="Switch week">
+          <button class="hx-btn hx-btn-sm" id="prev" aria-label="Previous week">‹</button>
+          <span id="week-label" class="week-label"></span>
+          <button class="hx-btn hx-btn-sm" id="next" aria-label="Next week">›</button>
+          <button class="hx-btn hx-btn-sm hx-btn-ghost" id="this-week">This week</button>
+        </nav>
+      </header>
+      <div id="stats" class="hx-row stats"></div>
+      <div id="messages" class="hx-stack"></div>
+      <div id="days" class="days"></div>
+    </main>
+    <script src="/sdk/harbor.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

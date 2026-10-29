@@ -1,0 +1,11 @@
+name: outage-console
+title: Outage Console
+description: View ongoing outages and their handling timeline; outage responders can declare an outage and post updates, and the commander can declare recovery.
+owner: team-sre
+contact: sre-oncall@bank.internal
+tier: official
+visibility: [APP-DEV-ALL, APP-OPS]
+capabilities:
+  - outage.read
+  - outage.manage
+  - snow.change.read

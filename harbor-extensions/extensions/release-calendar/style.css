@@ -1,0 +1,37 @@
+.week-nav { flex-wrap: nowrap; flex-shrink: 0; }
+.week-label { min-width: 120px; white-space: nowrap; text-align: center; font-weight: 500; font-variant-numeric: tabular-nums; }
+.stats { margin-bottom: 16px; }
+#messages:not(:empty) { margin-bottom: 16px; }
+
+.days { display: flex; flex-direction: column; gap: 10px; }
+.day {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 16px;
+  padding: 14px 16px;
+}
+.day.is-today { border-color: var(--hx-accent); box-shadow: inset 3px 0 0 var(--hx-accent); }
+.day-date { font-variant-numeric: tabular-nums; }
+.day-date .dow { font-size: 12px; color: var(--hx-text-2); }
+.day-date .md { font-size: 18px; font-weight: 600; line-height: 1.2; }
+.day-empty { color: var(--hx-text-3); font-size: 13px; align-self: center; }
+.items { display: flex; flex-direction: column; gap: 8px; }
+
+.item {
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--hx-border);
+  border-radius: var(--hx-radius-sm);
+  background: var(--hx-surface);
+}
+.item.is-conflict { border-color: color-mix(in srgb, var(--hx-bad) 45%, var(--hx-border)); background: color-mix(in srgb, var(--hx-bad-soft) 55%, var(--hx-surface)); }
+.kind { font-size: 12px; font-weight: 600; text-align: center; padding: 3px 0; border-radius: 4px; }
+.kind-release { color: var(--hx-accent-text); background: var(--hx-accent-soft); }
+.kind-change { color: var(--hx-info); background: var(--hx-info-soft); }
+.item-title { font-weight: 500; }
+.item-meta { font-size: 12px; color: var(--hx-text-2); font-variant-numeric: tabular-nums; }
+.item-meta code { color: var(--hx-text); }
+.item-side { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }

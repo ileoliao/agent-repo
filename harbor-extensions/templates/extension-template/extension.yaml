@@ -1,0 +1,8 @@
+name: my-extension            # must match the directory name
+title: My Extension
+description: One sentence on what problem it solves
+owner: team-xxx               # required: maintaining team or person; user feedback is routed here
+contact: team-xxx@bank.internal
+tier: experimental            # new extensions start as experimental; the platform team upgrades them based on usage
+visibility: [APP-DEV-ALL]     # which AD groups can see it
+capabilities: []              # e.g.: [harbor-release.release.read, snow.change.read]

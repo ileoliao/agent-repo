@@ -1,0 +1,22 @@
+# Harbor Extensions platform · runtime config (dev environment)
+# Any entry can be overridden by an environment variable; see backend/harbor_platform/config.py
+
+# The only identity/authorization dependency: the PAT service (simulated by mocks in dev)
+pat_service_url: http://127.0.0.1:9001/pat
+
+# Substitution value for ${MOCK_BASE} in connectors/*.yaml
+mock_base: http://127.0.0.1:9001
+
+# Only browser requests from these origins are accepted (CSRF protection; sandboxed iframes send Origin: null and are rejected)
+portal_origins:
+  - http://127.0.0.1:8000
+  - http://localhost:8000
+  - http://127.0.0.1:5173
+  - http://localhost:5173
+
+introspect_ttl: 60          # seconds; maximum delay for AD group changes
+rate_limit: 60              # requests per user x extension x connector within the window
+rate_window: 10             # seconds
+allowed_data_classes: [internal]   # phase 1 opens only internal-class capabilities
+dev_login: true             # simulated SSO login for dev; must be off in production
+cookie_secure: false        # must be true in production (HTTPS)

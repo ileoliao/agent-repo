@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+portal/node_modules/
+portal/dist/
+backend/tests/e2e/artifacts/

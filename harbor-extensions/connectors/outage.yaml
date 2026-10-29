@@ -1,0 +1,28 @@
+# Reference for onboarding a team-built service: the outage management service
+# The service does no login of its own and needs no service account: it trusts only the X-Harbor-Identity issued by the gateway (verifying signature, aud=outage, expiry),
+# and uses the user inside as the actor; fine-grained rules such as "only the commander can declare recovery" are enforced by the service itself.
+name: outage
+title: Outage Management
+description: Outage declaration, progress updates and recovery (service built by the Ops team)
+owner: team-sre
+upstream: ${MOCK_BASE}/outage
+auth:
+  type: identity-only
+
+capabilities:
+  read:
+    description: View the outage list, details and timeline
+    allow:
+      - GET /api/outages
+      - GET /api/outages/*
+    groups: [APP-DEV-ALL, APP-OPS]
+    data_class: internal
+
+  manage:
+    description: Declare an outage, post updates, declare recovery (recovery is commander-only, decided by the service itself)
+    allow:
+      - POST /api/outages
+      - POST /api/outages/*/updates
+    groups: [APP-INCIDENT-RESPONDER]
+    data_class: internal
+    write: true
