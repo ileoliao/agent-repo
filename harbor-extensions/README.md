@@ -28,6 +28,8 @@ Open http://127.0.0.1:8000 and sign in as one of the simulated users:
 | dave (Dave Zhao) | Ops, incident commander, not in the developer group | Sees only the Outage Console; can declare recovery for outages he commands |
 | pam (Pam Pan) | Platform admin | Gets an extra "Audit" page |
 
+Smoke-check a running dev environment (HTTP/CLI checks for every simulated user, plus browser checks; `--no-browser` skips Playwright): `python3 scripts/smoke.py`
+
 Portal dev mode (hot reload): run `scripts/dev.sh` first, then `cd portal && npm run dev`, and open http://127.0.0.1:5173 .
 
 ## Tests
