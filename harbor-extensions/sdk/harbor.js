@@ -10,6 +10,7 @@
  *   const res = await snow.get("/api/now/table/change_request", { query: { sysparm_limit: 10 } });
  *   res.status; res.ok; res.data;           // returned by the upstream as-is
  *   await harbor.can("snow", "change.write"); // whether the current user can use a capability
+ *   const ctx = await harbor.context();       // { workspace, embedded }: the Harbor workspace the user is in, if any
  *
  * The platform stores no business data. State an extension needs lives in the team's own service or the source system,
  * and once registered as a connector is read and written through harbor.connector(...) as well.
@@ -107,7 +108,7 @@
   }
 
   window.harbor = Object.freeze({
-    version: "0.2.0",
+    version: "0.3.0",
     HarborError: HarborError,
     me: function () { return call("me").then(unwrap).then(function (r) { return r.data; }); },
     can: function (connectorName, capability) {
@@ -116,5 +117,8 @@
         .then(function (r) { return !!(r.data && r.data.allowed); });
     },
     connector: connector,
+    // Where the extension is running: { workspace: string|null, embedded: boolean }.
+    // When Harbor switches workspace it reloads the extension, so read this once at start-up.
+    context: function () { return call("context").then(unwrap).then(function (r) { return r.data; }); },
   });
 })();

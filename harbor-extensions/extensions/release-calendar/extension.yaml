@@ -5,6 +5,9 @@ owner: team-platform
 contact: harbor-platform@bank.internal
 tier: official
 visibility: [APP-DEV-ALL]
+nav:
+  section: release
+  order: 20
 capabilities:
   - harbor-release.release.read
   - snow.change.read

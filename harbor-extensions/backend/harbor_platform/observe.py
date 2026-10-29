@@ -7,6 +7,7 @@ the prototype writes a JSON Lines file and keeps recent records in memory for th
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from collections import defaultdict, deque
@@ -38,18 +39,31 @@ class RateLimiter:
 
 
 class Audit:
-    def __init__(self, path: Path, keep: int = 2000) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    """One record per gateway decision.
+
+    path=None writes to stdout instead of a file: in a container the node's log agent ships it
+    (Cloud Logging, or Loki via the existing collector) and the pod needs no writable volume.
+    The in-memory tail behind the portal's audit page is per instance; with several replicas, query the log backend instead.
+    """
+
+    def __init__(self, path: Path | None, keep: int = 2000) -> None:
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._recent: deque[dict[str, Any]] = deque(maxlen=keep)
         self._lock = threading.Lock()
 
     def record(self, **fields: Any) -> None:
         entry = {"ts": datetime.now(UTC).isoformat(timespec="milliseconds"), **fields}
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
         with self._lock:
             self._recent.append(entry)
-            with self._path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            if self._path is None:
+                sys.stdout.write(json.dumps({"harbor_audit": entry}, ensure_ascii=False) + "\n")
+                sys.stdout.flush()
+            else:
+                with self._path.open("a", encoding="utf-8") as f:
+                    f.write(line)
 
     def recent(self, limit: int = 200) -> list[dict[str, Any]]:
         with self._lock:

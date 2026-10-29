@@ -6,3 +6,7 @@ contact: team-xxx@bank.internal
 tier: experimental            # new extensions start as experimental; the platform team upgrades them based on usage
 visibility: [APP-DEV-ALL]     # which AD groups can see it
 capabilities: []              # e.g.: [harbor-release.release.read, snow.change.read]
+# nav:                        # optional; how it shows up in Harbor's sidebar (see config/nav.yaml)
+#   workspaces: [team-a]      # only offer it in these Harbor workspaces (default: all)
+#   order: 100
+#   section / featured are promotions for official-tier extensions, granted by the platform team in review

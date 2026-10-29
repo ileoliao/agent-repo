@@ -18,8 +18,8 @@ state that must be persisted and business rules that must be enforced belong in 
 - **Do not use `fetch` / `XMLHttpRequest` / WebSocket**: extensions have no network access; always use `harbor.connector(...)`.
 - **Do not use `localStorage`, `document.cookie`, `alert` or `confirm`**: none of them work in the sandbox. Keep data that must be saved in a team service or the source system, and do confirmations inline in the page.
 - **Do not build HTML from data with `innerHTML`**: data returned by upstream systems comes from other users, so use `textContent` or DOM APIs (see the `h()` helper in the examples). PRs that use innerHTML go to manual review.
-- **Do not reference external CDNs**: only files in this extension's directory and under `/sdk/` may be loaded.
-- Only include `/sdk/harbor.css` and `/sdk/harbor.js`, and prefer `hx-` prefixed classes and `--hx-` CSS variables for styling.
+- **Do not reference external CDNs**: only files in this extension's directory and under `../../sdk/` may be loaded. Always use relative paths: the platform may be served under a prefix such as `/extensions`.
+- Only include `../../sdk/harbor.css` and `../../sdk/harbor.js`, and prefer `hx-` prefixed classes and `--hx-` CSS variables for styling.
 - **Do not implement login and do not add password inputs**: the user is already signed in to the portal; use `harbor.me()` to get the identity. The portal handles session expiry, so extensions need not.
 - To open a source-system page, use a normal link `<a href="…" target="_blank" rel="noopener">`; the target system handles corporate SSO itself.
 
@@ -29,6 +29,10 @@ These rules are checked automatically by CI (`python -m harbor_platform.validate
 
 ```js
 const me = await harbor.me();                       // { user, display_name, groups }
+
+// The Harbor workspace the user is in (null if none); scope your queries to it when it matters.
+// Harbor reloads the extension when the workspace changes, so read it once at start-up.
+const { workspace } = await harbor.context();
 
 // Connector: pass-through calls to the upstream system's native API; paths and query strings match the upstream docs
 const snow = harbor.connector("snow");

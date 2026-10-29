@@ -46,17 +46,21 @@ def _wait(url: str, timeout: float = 20) -> None:
     raise RuntimeError(f"{url} is not ready")
 
 
-@pytest.fixture(scope="module")
-def servers(tmp_path_factory):
+@pytest.fixture(scope="module", params=["", "/extensions"], ids=["root", "base-path"])
+def servers(request, tmp_path_factory):
+    """Run every scenario twice: at the root, and under a base path as behind Harbor's ingress."""
+    prefix = request.param
     mock_port, app_port = _free_port(), _free_port()
-    base = f"http://127.0.0.1:{app_port}"
+    origin = f"http://127.0.0.1:{app_port}"
+    base = f"{origin}{prefix}/"
     data = tmp_path_factory.mktemp("data")
     env = {
         **os.environ,
         "HARBOR_DATA_DIR": str(data),
         "HARBOR_PAT_URL": f"http://127.0.0.1:{mock_port}/pat",
         "HARBOR_MOCK_BASE": f"http://127.0.0.1:{mock_port}",
-        "HARBOR_PORTAL_ORIGINS": base,
+        "HARBOR_PORTAL_ORIGINS": origin,
+        "HARBOR_BASE_PATH": prefix,
     }
     procs = [
         subprocess.Popen(
@@ -70,7 +74,7 @@ def servers(tmp_path_factory):
     ]
     try:
         _wait(f"http://127.0.0.1:{mock_port}/docs")
-        _wait(f"{base}/api/health")
+        _wait(f"{base}api/health")
         yield base
     finally:
         for p in procs:
@@ -101,7 +105,7 @@ def page(browser, servers):
 
 
 def login(page, user: str) -> None:
-    page.goto("/")
+    page.goto("./")
     page.locator(f'button[data-user="{user}"]').click()
     page.get_by_role("heading", name="Extensions", exact=True).wait_for()
 
@@ -111,7 +115,7 @@ def shot(page, name: str) -> None:
 
 
 def test_login_and_catalog(page):
-    page.goto("/")
+    page.goto("./")
     page.get_by_role("heading", name="Dev environment sign-in").wait_for()
     shot(page, "01-login")
     login(page, "alice")
@@ -123,7 +127,7 @@ def test_login_and_catalog(page):
 
 def open_outage(page, user: str, title: str | None = None):
     login(page, user)
-    page.goto("/x/outage-console")
+    page.goto("x/outage-console")
     frame = page.frame_locator("iframe.ext-frame")
     frame.locator('[data-outage-id="OUT-1042"]').wait_for()
     if title:
@@ -178,7 +182,7 @@ def test_outage_read_only_user(page):
 
 def test_extension_is_sandboxed(page):
     login(page, "alice")
-    page.goto("/x/outage-console")
+    page.goto("x/outage-console")
     page.frame_locator("iframe.ext-frame").locator('[data-outage-id="OUT-1042"]').wait_for()
     frame = next(f for f in page.frames if "/ext/outage-console/" in f.url)
     result = frame.evaluate(
@@ -202,7 +206,7 @@ def test_extension_is_sandboxed(page):
 def test_extension_cannot_spoof_another_extension(page):
     """An extension claiming to be another extension in its message has no effect: the portal decides identity per iframe."""
     login(page, "bob")
-    page.goto("/x/release-calendar")
+    page.goto("x/release-calendar")
     page.frame_locator("iframe.ext-frame").locator("[data-date]").first.wait_for()
     frame = next(f for f in page.frames if "/ext/release-calendar/" in f.url)
     result = frame.evaluate(
@@ -233,7 +237,7 @@ def test_release_calendar_per_user_capabilities(page):
 
     page.get_by_role("button", name="Switch user").click()
     login(page, "bob")
-    page.goto("/x/release-calendar")
+    page.goto("x/release-calendar")
     frame = page.frame_locator("iframe.ext-frame")
     chg = frame.locator('[data-id="CHG0031001"]')
     chg.get_by_role("button", name="Approve").click()
@@ -245,7 +249,7 @@ def test_release_calendar_per_user_capabilities(page):
 
 def test_new_joiner_sees_friendly_permission_messages(page):
     login(page, "carol")
-    page.goto("/x/release-calendar")
+    page.goto("x/release-calendar")
     frame = page.frame_locator("iframe.ext-frame")
     frame.get_by_text("APP-SNOW-READ").wait_for()
     text = frame.locator("#messages").inner_text()
@@ -258,7 +262,7 @@ def test_ops_user_sees_only_ops_extensions(page):
     login(page, "dave")
     assert page.locator("[data-extension]").count() == 1
     assert page.locator('[data-extension="outage-console"]').count() == 1
-    page.goto("/x/release-calendar")
+    page.goto("x/release-calendar")
     page.get_by_text("visible only to members of AD group").wait_for()
 
 
@@ -277,7 +281,7 @@ def test_connectors_and_audit(page):
 def test_session_expiry_is_handled_by_portal(page):
     """When the session expires the extension need not handle login: the portal intercepts 401, prompts to sign in again, and returns to the original extension."""
     login(page, "alice")
-    page.goto("/x/outage-console")
+    page.goto("x/outage-console")
     frame = page.frame_locator("iframe.ext-frame")
     frame.locator("[data-detail-title]").wait_for()
     page.context.clear_cookies()  # simulate session expiry
@@ -294,7 +298,7 @@ def test_session_expiry_is_handled_by_portal(page):
 def test_external_links_open_outside_sandbox(page, servers):
     """External links in an extension open in a new tab outside the sandbox (the target system handles its own SSO)."""
     login(page, "alice")
-    page.goto("/x/outage-console")
+    page.goto("x/outage-console")
     page.frame_locator("iframe.ext-frame").locator('[data-outage-id="OUT-1042"]').wait_for()
     frame = next(f for f in page.frames if "/ext/outage-console/" in f.url)
     frame.evaluate(
@@ -303,21 +307,57 @@ def test_external_links_open_outside_sandbox(page, servers):
           a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.id = 'ext-link'; a.textContent = 'open';
           document.body.append(a);
         }""",
-        f"{servers}/api/health",
+        f"{servers}api/health",
     )
     with page.context.expect_page() as popup_info:
         page.frame_locator("iframe.ext-frame").locator("#ext-link").click()
     popup = popup_info.value
     popup.wait_for_load_state()
-    assert popup.evaluate("window.origin") == servers  # no longer an opaque origin
+    assert servers.startswith(popup.evaluate("window.origin") + "/")  # no longer an opaque origin
     assert page.url.endswith("/x/outage-console")  # the portal page was not navigated away
 
 
 def test_extension_file_cannot_run_outside_portal(page, servers):
     """Opening an extension URL directly is also sandboxed (CSP sandbox); without the portal nothing can be called."""
-    page.goto("/")
+    page.goto("./")
     page.locator('button[data-user="alice"]').click()
     page.get_by_role("heading", name="Extensions", exact=True).wait_for()
-    page.goto(f"{servers}/ext/outage-console/index.html")
+    page.goto(f"{servers}ext/outage-console/index.html")
     origin = page.evaluate("window.origin")
     assert origin == "null"
+
+
+def test_embedded_in_harbor_shell(page, servers):
+    """Harbor's shell (same origin) frames the portal in embed mode: no portal chrome, sidebar from /api/nav,
+    workspace reaches the extension, navigation and session loss are reported to the shell."""
+    login(page, "alice")
+    prefix = servers.split("://", 1)[1].split("/", 1)[1].rstrip("/")
+    prefix = "/" + prefix if prefix else ""
+    shell = (Path(__file__).parent / "harbor_shell.html").read_text(encoding="utf-8")
+    page.goto(f"{servers}api/portal-config")  # any same-origin page without a CSP, to host the stand-in shell
+    page.set_content(shell.replace("__BASE__", prefix).replace("__START__", "outage-console"))
+
+    portal = page.frame_locator("#frame")
+    portal.frame_locator("iframe.ext-frame").locator('[data-outage-id="OUT-1042"]').wait_for()
+    assert portal.locator(".topbar").count() == 0  # Harbor provides the chrome
+    page.locator('aside a.active[data-ext="outage-console"]').first.wait_for()
+    page.wait_for_function("window.hostEvents.some(e => e.type === 'navigate' && e.extension === 'outage-console')")
+
+    ext = next(f for f in page.frames if "/ext/outage-console/" in f.url)
+    assert ext.evaluate("harbor.context()") == {"workspace": "payments", "embedded": True}
+    shot(page, "13-harbor-shell-embedded")
+
+    # Inside the portal: catalog, then another extension; the shell follows
+    page.locator('aside a[data-ext=""]').click()
+    portal.locator('[data-extension="release-calendar"]').click()
+    page.wait_for_function("window.hostEvents.some(e => e.type === 'navigate' && e.extension === 'release-calendar')")
+    page.locator('aside a.active[data-ext="release-calendar"]').first.wait_for()
+    portal.frame_locator("iframe.ext-frame").locator('[data-id="CHG0031001"]').wait_for()
+    shot(page, "14-harbor-shell-release")
+
+    # Session gone (e.g. signed out of Harbor): the portal asks the shell to re-authenticate
+    page.context.clear_cookies()
+    cal = next(f for f in page.frames if "/ext/release-calendar/" in f.url)
+    cal.evaluate("harbor.me().catch(() => null)")
+    page.wait_for_function("window.hostEvents.some(e => e.type === 'auth-required')")
+    assert page.errors == []

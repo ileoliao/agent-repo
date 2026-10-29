@@ -26,7 +26,8 @@ ERROR_RULES: list[tuple[re.Pattern[str], str, set[str]]] = [
     (re.compile(r"\bdocument\.cookie\b"), "Extensions cannot read cookies and do not need to: identity is passed by the portal", CODE_SUFFIXES),
     (re.compile(r"<script\b(?![^>]*\bsrc\s*=)[^>]*>", re.I), "Do not write inline scripts: CSP only allows same-origin .js files", {".html", ".htm"}),
     (re.compile(r"<[a-z][^>]*\son[a-z]+\s*=", re.I), "Do not write inline event handlers (onclick=...): use addEventListener in .js", {".html", ".htm"}),
-    (re.compile(r"""<(script|link|img|iframe)\b[^>]*\b(src|href)\s*=\s*["']?(https?:)?//""", re.I), "Do not load external resources: only files in this extension directory and /sdk/ may be referenced", {".html", ".htm"}),
+    (re.compile(r"""<(script|link|img|iframe)\b[^>]*\b(src|href)\s*=\s*["']?(https?:)?//""", re.I), "Do not load external resources: only files in this extension directory and ../../sdk/ may be referenced", {".html", ".htm"}),
+    (re.compile(r"""<(script|link|img)\b[^>]*\b(src|href)\s*=\s*["']?/(?!/)""", re.I), "Use relative paths (e.g. ../../sdk/harbor.js, ./app.js): absolute paths break when the platform is served under a base path such as /extensions", {".html", ".htm"}),
     (re.compile(r"""\bimport\b[^;]*?["'](https?:)?//"""), "Do not import modules from an external address", {".js", ".mjs"}),
 ]
 

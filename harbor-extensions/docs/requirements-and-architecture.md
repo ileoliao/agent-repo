@@ -102,6 +102,8 @@ Extensions are released through Git and run in a sandbox. Every request is sent 
 
 Runtime resources (the secrets service, the OTel Collector, and a shared cache when running multiple instances) are only deployment dependencies; any comparable product can replace them, and they create no business coupling.
 
+**Deployment**: a separate service on GKE. Harbor's existing ingress routes `/extensions` to it, so Harbor's own code does not change; the service, its cookie and the portal all live under that prefix. The image carries only platform code; connectors, extensions and grants are synced from git by a sidecar, so merging a PR still goes live without a rollout. Serving from Harbor's host shares a browser origin with Harbor's UI; a separate hostname removes that and needs no code change (see `deploy/README.md`).
+
 ## Key Flows
 
 **Release: open a PR to go live; only permission changes need human review**
@@ -182,7 +184,7 @@ Difference from low-code platforms: this platform targets engineers and AI-gener
 
 ## Prototype and Rollout
 
-The prototype covers all of P0's scope, and 85 automated tests pass, 12 of them running in a real browser. A set of required items remains before production; the most critical are connecting the real PAT service and agreeing with each system (including team-built services) on how it validates the identity claim.
+The prototype covers all of P0's scope, and 132 automated tests pass; the 13 real-browser scenarios run twice, at the root and under the `/extensions` prefix used behind Harbor's ingress. A set of required items remains before production; the most critical are connecting the real PAT service and agreeing with each system (including team-built services) on how it validates the identity claim.
 
 **Prototype contents**: a Python (FastAPI) gateway; a React portal (extension catalog, extension container and bridge, connector catalog, audit); two sample extensions: My Release Calendar (Harbor Release + SNOW) and the Outage Console (a team-built outage service + SNOW, the reference implementation for onboarding team services); the CLI; CI validation; the extension template and Copilot instructions. PAT/AD, Jira, ServiceNow, Harbor Release, and the outage service are all simulated.
 
@@ -195,6 +197,8 @@ The prototype covers all of P0's scope, and 85 automated tests pass, 12 of them 
 | Sandbox isolation, anti-impersonation, anti-CSRF, path bypass | Implemented and tested in the browser |
 | Single sign-on, session expiry, sign-out revocation, external links | Implemented (the login itself is a simulated SSO) |
 | Rate limiting, audit, hot reload, team-service onboarding | Implemented |
+| Inside Harbor's sidebar and workspace switcher | Implemented: per-user nav API, governed promotions (`nav.section` / `nav.featured`, capped), embed mode, workspace context, shared login; Harbor-side React kit typechecked, tested against a stand-in shell |
+| Deployment as a separate GKE service behind Harbor's ingress | Implemented: configurable base path, k8s probes, stdout audit, image + kustomize base with git-sync; image build not yet run in CI |
 | CI: auto-merge / needs review / blocked | Implemented, including code-rule checks |
 | `cli_only` | Partial: browsers cannot call it; the CLI path is not yet wired to the compliance approval gate |
 | Downstream caching, PR previews, auto-archiving | Not implemented, listed in P1 |
@@ -210,10 +214,10 @@ The prototype covers all of P0's scope, and 85 automated tests pass, 12 of them 
 | Session renewal | Prompts re-login on 401 | Redirect to SSO for silent renewal, then return to the original page |
 | Identity claim | Symmetric key (HS256) | Asymmetric signing + JWKS; **agree on the validation method with each system and its owning team**, a prerequisite for onboarding every connector |
 | Connector credentials | Dev config file | Injected by the secrets service; delete dev credentials |
-| Multiple instances | Rate limiting and identity cache live in process memory | Switch to shared storage (such as Redis) |
-| Observability | Audit written to a file | Report every gateway decision as an OTel span (fields already aligned) |
-| Release pipeline | Validation script runs locally | Wire into CI, auto-merge or require approval by exit code; sync the extension catalog after merge |
-| Network | Local machine | Internal-network deployment; the platform team requests the firewall policies to each system |
+| Multiple instances | Rate limiting and identity cache are per pod | Acceptable for the pilot (limit set per pod); shared storage such as Redis only if limits must be exact |
+| Observability | Audit written to stdout as JSON | Ship with the log agent; later report every gateway decision as an OTel span (fields already aligned) |
+| Release pipeline | Validation script runs locally; git-sync sidecar in the manifests | Wire validation into CI, auto-merge or require approval by exit code; the content repo is synced into the pods |
+| Network | Local machine | GKE service behind Harbor's ingress at `/extensions`; the platform team requests the egress policies to each system |
 | Upstream responses | Read fully into memory | Set a response body size limit, or switch to streaming forwarding |
 
 **P1 (complete during the pilot)**
@@ -247,3 +251,5 @@ The prototype covers all of P0's scope, and 85 automated tests pass, 12 of them 
 - [ ] The specific capability lists and AD groups for the two P0 connectors
 - [ ] Whether the PAT service already provides session issuance and revocation interfaces
 - [ ] Availability of the internal npm / frontend dependency mirror
+- [ ] Harbor's auth service token-validation contract (request and response shape) for the shared login
+- [ ] `config/nav.yaml` section keys matching Harbor's sidebar groups

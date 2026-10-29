@@ -11,7 +11,8 @@ Cases that need manual review (everything else auto-merges):
   * extension requests a write capability that has not been granted;
   * extension requests a capability above the internal data class;
   * extension visibility is wider than on main;
-  * config/grants.yaml or connectors/ itself changed (only the platform team may modify them).
+  * extension asks for a navigation promotion (nav.section / nav.featured), or changes one;
+  * config/grants.yaml, config/nav.yaml or connectors/ itself changed (only the platform team may modify them).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import Any
 
 from .config import REPO_ROOT
 from .connectors import load_connectors, split_capability_id
-from .extensions import load_extensions, load_grants, reference_errors
+from .extensions import load_extensions, load_grants, load_nav_config, reference_errors
 from .lint import lint_extension
 
 
@@ -36,11 +37,14 @@ def validate(root: Path, base: Path | None = None) -> dict[str, Any]:
     connectors, errors = load_connectors(root / "connectors", "http://mock")
     extensions, ext_errors = load_extensions(root / "extensions")
     grants, grant_errors = load_grants(root / "config" / "grants.yaml")
-    errors = errors + ext_errors + grant_errors
+    nav, nav_errors = load_nav_config(root / "config" / "nav.yaml")
+    errors = errors + ext_errors + grant_errors + nav_errors
 
     lint_review: dict[str, list[str]] = {}
     for ext in extensions.values():
         errors += reference_errors(ext, connectors)
+        if ext.nav.section and ext.nav.section not in nav.sections:
+            errors.append(f"Extension {ext.name}: nav.section {ext.nav.section} is not defined in config/nav.yaml")
         linted = lint_extension(ext.path)
         errors += linted.errors
         lint_review[ext.name] = linted.review
@@ -67,7 +71,11 @@ def validate(root: Path, base: Path | None = None) -> dict[str, Any]:
             if cap.data_class != "internal":
                 reasons.append(f"capability {cap_id} has data class {cap.data_class}")
         if base is not None:
+            # Like visibility, promotions are judged against main: CI passes --base
             old = base_exts.get(ext.name)
+            old_promo = (old.nav.section, old.nav.featured) if old else (None, False)
+            if (ext.nav.section, ext.nav.featured) != old_promo and (ext.nav.section or ext.nav.featured):
+                reasons.append(f"navigation promotion: section={ext.nav.section or '-'}, featured={ext.nav.featured}")
             if old is not None and not ext.visibility <= old.visibility:
                 added = sorted(ext.visibility - old.visibility)
                 reasons.append(f"visibility widened: added {', '.join(added)}")
@@ -77,7 +85,7 @@ def validate(root: Path, base: Path | None = None) -> dict[str, Any]:
     platform_changes = []
     if base is not None:
         connector_files = {p.name for d in (root, base) for p in (d / "connectors").glob("*.yaml")}
-        for path in ["config/grants.yaml", *(f"connectors/{n}" for n in sorted(connector_files))]:
+        for path in ["config/grants.yaml", "config/nav.yaml", *(f"connectors/{n}" for n in sorted(connector_files))]:
             if _file_text(root / path) != _file_text(base / path):
                 platform_changes.append(path)
 

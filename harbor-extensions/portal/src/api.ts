@@ -60,6 +60,11 @@ export interface AuditEntry {
   latency_ms?: number;
 }
 
+export interface PortalConfig {
+  dev_login: boolean;
+  login_url: string;
+}
+
 export interface DevUser {
   user: string;
   display_name: string;
@@ -77,8 +82,19 @@ export class ApiError extends Error {
   }
 }
 
+/** Base path the portal is served under, from the <base href> the platform injects: "/" or e.g. "/extensions/". */
+export const BASE_PATH = new URL(".", document.baseURI).pathname;
+
+/** Router basename: "" at the root, "/extensions" under a prefix. */
+export const ROUTER_BASENAME = BASE_PATH.replace(/\/$/, "");
+
+/** Resolve a platform path ("/api/me") against the base path. */
+export function platformUrl(path: string): string {
+  return BASE_PATH + path.replace(/^\//, "");
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(platformUrl(path), {
     credentials: "same-origin",
     ...init,
     headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },

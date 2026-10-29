@@ -6,9 +6,12 @@
  *
  * Key constraints:
  *  - only accept messages from "this iframe" (compared via event.source); the portal decides the extension identity, so an extension cannot impersonate another;
- *  - only /gw, /api/me and /api/can are reachable, not the portal's other APIs;
+ *  - only /gw, /api/me and /api/can are reachable (plus the local "context" op), not the portal's other APIs;
  *  - paths get the same validation as the gateway, so the browser cannot normalize ../ and escape the /gw prefix.
  */
+
+import { platformUrl } from "./api";
+import { EMBED, WORKSPACE } from "./host";
 
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const NAME_RE = /^[a-z][a-z0-9-]{1,40}$/;
@@ -87,11 +90,15 @@ function encodeBody(body: unknown, contentType: unknown): { body?: BodyInit; typ
 export async function handleBridgeMessage(extension: string, msg: BridgeMessage): Promise<BridgeResult> {
   const headers: Record<string, string> = { "X-Harbor-Extension": extension, Accept: "application/json" };
   const call = (url: string, init: RequestInit = {}) =>
-    fetch(url, { credentials: "same-origin", ...init, headers: { ...headers, ...(init.headers as Record<string, string>) } }).then(toResult);
+    fetch(platformUrl(url), { credentials: "same-origin", ...init, headers: { ...headers, ...(init.headers as Record<string, string>) } }).then(toResult);
 
   switch (msg.op) {
     case "me":
       return call("/api/me");
+
+    case "context":
+      // Answered locally: where the extension is running (the host's workspace), no request needed
+      return { ok: true, status: 200, headers: {}, gatewayError: null, data: { workspace: WORKSPACE, embedded: EMBED } };
 
     case "can": {
       const { connector, capability } = msg;

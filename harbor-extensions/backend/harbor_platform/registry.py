@@ -12,7 +12,7 @@ from typing import Any, Generic, TypeVar
 
 from .config import Settings
 from .connectors import Capability, Connector, load_connectors, split_capability_id
-from .extensions import Extension, load_extensions, load_grants
+from .extensions import Extension, NavConfig, load_extensions, load_grants, load_nav_config
 
 T = TypeVar("T")
 
@@ -57,6 +57,7 @@ class Registry:
             lambda: load_extensions(s.extensions_dir),
         )
         self._grants = _Snapshot(lambda: _signature([s.grants_file]), lambda: load_grants(s.grants_file))
+        self._nav = _Snapshot(lambda: _signature([s.nav_file]), lambda: load_nav_config(s.nav_file))
 
     @property
     def connectors(self) -> dict[str, Connector]:
@@ -71,8 +72,12 @@ class Registry:
         return self._grants.get()[0]
 
     @property
+    def nav(self) -> NavConfig:
+        return self._nav.get()[0]
+
+    @property
     def errors(self) -> list[str]:
-        return self._connectors.get()[1] + self._extensions.get()[1] + self._grants.get()[1]
+        return self._connectors.get()[1] + self._extensions.get()[1] + self._grants.get()[1] + self._nav.get()[1]
 
     def capability(self, cap_id: str) -> Capability | None:
         connector, key = split_capability_id(cap_id)

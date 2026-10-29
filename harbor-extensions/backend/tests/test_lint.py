@@ -31,6 +31,8 @@ def _ext(tmp_path, files: dict[str, str]):
         ("index.html", '<script src="https://cdn.example.com/x.js"></script>', "external resources"),
         ("index.html", '<link rel="stylesheet" href="//cdn.example.com/x.css">', "external resources"),
         ("app.js", 'import x from "https://esm.example.com/x.js";', "external address"),
+        ("index.html", '<script src="/sdk/harbor.js"></script>', "Use relative paths"),
+        ("index.html", '<link rel="stylesheet" href="/ext/demo/style.css">', "Use relative paths"),
     ],
 )
 def test_violations_are_errors(tmp_path, name, text, expect):
@@ -48,7 +50,7 @@ def test_inner_html_needs_review(tmp_path):
 def test_no_false_positives(tmp_path):
     ok = {
         "index.html": (
-            '<link rel="stylesheet" href="/sdk/harbor.css"><script src="/sdk/harbor.js"></script>'
+            '<link rel="stylesheet" href="../../sdk/harbor.css"><script src="../../sdk/harbor.js"></script>'
             '<script src="app.js"></script><!-- <script>old()</script> -->'
             '<a href="https://snow.bank.internal/x" target="_blank" rel="noopener">Open in ServiceNow</a>'
         ),

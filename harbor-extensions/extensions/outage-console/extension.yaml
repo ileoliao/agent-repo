@@ -5,6 +5,9 @@ owner: team-sre
 contact: sre-oncall@bank.internal
 tier: official
 visibility: [APP-DEV-ALL, APP-OPS]
+nav:
+  featured: true
+  order: 10
 capabilities:
   - outage.read
   - outage.manage

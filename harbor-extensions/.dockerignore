@@ -1,0 +1,12 @@
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+portal/node_modules
+portal/dist
+portal/tsconfig.tsbuildinfo
+backend/tests
+backend/mocks
+data
+docs
+deploy
+config/secrets.dev.yaml

@@ -16,5 +16,5 @@ cd backend
 MOCKS=$!
 trap 'kill $MOCKS 2>/dev/null' EXIT
 echo "Mock systems: http://127.0.0.1:9001/docs"
-echo "Portal:       http://127.0.0.1:8000"
+echo "Portal:       http://127.0.0.1:8000${HARBOR_BASE_PATH:-}/"
 "$PYTHON" -m uvicorn harbor_platform.main:app --host 127.0.0.1 --port 8000

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, TIER_LABEL, type ExtensionInfo, type Me } from "../api";
 import { attachBridge } from "../bridge";
+import { notifyHost } from "../host";
 
 export function ExtensionPage({ me, onReauthenticate }: { me: Me; onReauthenticate: () => void }) {
   const { name = "" } = useParams();
@@ -23,7 +24,11 @@ export function ExtensionPage({ me, onReauthenticate }: { me: Me; onReauthentica
   useEffect(() => {
     if (!ext || !frame.current) return;
     // Session expiry is handled by the portal: in production this redirects to corporate SSO for a silent renewal, and the extension never notices
-    return attachBridge(frame.current, ext.name, () => setExpired(true));
+    return attachBridge(frame.current, ext.name, () => {
+      setExpired(true);
+      // Embedded in Harbor: Harbor owns sign-in, so tell it right away (no-op when standalone)
+      notifyHost({ type: "auth-required", returnTo: window.location.href });
+    });
   }, [ext]);
 
   if (error) {

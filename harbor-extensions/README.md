@@ -13,7 +13,7 @@ once a team service is registered as a connector, extensions and agents access i
 ## Quick start
 
 ```bash
-pip install -r backend/requirements.txt        # Python 3.11+
+pip install -r backend/requirements-dev.txt    # Python 3.11+ (requirements.txt = runtime only)
 python -m playwright install chromium          # only needed for end-to-end tests
 scripts/dev.sh                                 # builds the portal automatically on first run
 ```
@@ -32,11 +32,44 @@ Smoke-check a running dev environment (HTTP/CLI checks for every simulated user,
 
 Portal dev mode (hot reload): run `scripts/dev.sh` first, then `cd portal && npm run dev`, and open http://127.0.0.1:5173 .
 
+To try it under a path prefix, as behind Harbor's ingress: `HARBOR_BASE_PATH=/extensions scripts/dev.sh`, then open http://127.0.0.1:8000/extensions/ .
+
+## Deployment
+
+A separate service on GKE; Harbor's ingress routes `/extensions` to it and Harbor's own code does not change.
+`Dockerfile` builds the image; `deploy/k8s/base` is the kustomize base (Deployment with a git-sync sidecar, Service, ConfigMap, PDB).
+Connectors, extensions and grants are synced from git at runtime, so a merged PR goes live without a rollout. Details: [deploy/README.md](deploy/README.md).
+
+| Setting | Env var | Default | Production |
+|---|---|---|---|
+| `base_path` | `HARBOR_BASE_PATH` | `""` | `/extensions` |
+| content root | `HARBOR_ROOT` | repo checkout | git-sync directory |
+| code assets | `HARBOR_APP_DIR` | repo checkout | `/app` in the image |
+| config file | `HARBOR_CONFIG` | `config/platform.yaml` | mounted ConfigMap |
+| `audit_sink` | `HARBOR_AUDIT_SINK` | `file` | `stdout` |
+| `session_cookie` | `HARBOR_SESSION_COOKIE` | `harbor_session` | a name Harbor itself does not use |
+| `dev_login` | `HARBOR_DEV_LOGIN` | `true` | `false`; then `HARBOR_IDENTITY_KEY` is required and `secrets.dev.yaml` is ignored |
+| `login_url` | `HARBOR_LOGIN_URL` | `""` | Harbor's login page, e.g. `/login?next={next}` |
+
+## Inside Harbor's navigation
+
+Harbor keeps its own left sidebar and workspace switcher; the extensions show up inside it.
+`integrations/harbor-react/` has the three files to copy into Harbor's React app (details in its README):
+
+- **Sidebar data**: `GET /extensions/api/nav?workspace=…` returns what this user may open in this workspace.
+  Harbor renders a bounded "Extensions" group (the user's pins + up to `max_featured` featured picks + "All extensions (N)"),
+  and official extensions promoted with `nav.section` appear under an existing Harbor group (keys in `config/nav.yaml`).
+  Promotions are official-tier only and always go through platform-team review.
+- **Embed mode**: Harbor's route `/ext/:name` frames `/extensions/x/<name>?embed=1&ws=<workspace>`. The portal drops its top bar,
+  passes the workspace to the extension (`harbor.context()`), and reports `navigate` and `auth-required` to Harbor.
+- **One login**: set `session_cookie` to Harbor's session cookie and `pat_service_url` to Harbor's auth service, turn off `dev_login`,
+  and set `login_url` to Harbor's login page. The portal then never shows its own login.
+
 ## Tests
 
 ```bash
 cd backend
-pytest                  # everything: backend unit/integration tests + real-browser end-to-end tests (about 15 s)
+pytest                  # everything: unit/integration + real-browser end-to-end, run at the root and under /extensions (about 25 s)
 pytest tests/e2e        # end-to-end only; screenshots go to tests/e2e/artifacts/
 ```
 
@@ -87,13 +120,15 @@ Extension code never touches any credential.
 ## Layout
 
 ```
-config/          platform.yaml (runtime config), grants.yaml (write-capability grants, approved by the platform team), secrets.dev.yaml
+config/          platform.yaml (runtime config), grants.yaml (write-capability grants) and nav.yaml (sidebar sections, featured cap), both platform-team owned; secrets.dev.yaml
 connectors/      connectors: upstream address, auth method, allow lists grouped by capability, AD groups, data class
 extensions/      extensions: outage-console (team-built service + SNOW), release-calendar (Harbor Release + SNOW, includes write operations)
 sdk/             harbor.js (extension SDK), harbor.css (design tokens)
 portal/          portal (React + Vite): extension catalog, extension container and bridge, connector catalog, audit
 backend/         gateway and platform (FastAPI), mock systems, tests
 templates/       template for new extensions
+deploy/          GKE manifests (kustomize base) and deployment notes; Dockerfile at the top level
+integrations/    harbor-react: sidebar group, nav hook and extension frame to copy into Harbor's React app
 .github/copilot-instructions.md   extension development rules for Copilot
 ```
 
@@ -145,10 +180,11 @@ python -m harbor_platform.cli call jira POST /rest/api/2/issue/PAY-101/comment -
 | Session renewal | Prompts re-login on 401 | Switch to an SSO redirect with silent renewal, returning to the original page |
 | Identity claim | HS256 shared secret | Asymmetric signing, with downstream verifying via JWKS; **agree the verification method with each system's owner**, a prerequisite for onboarding every connector |
 | Connector credentials | `config/secrets.dev.yaml` | Inject `HARBOR_SECRET_<NAME>` from the secrets service; delete the dev credentials file |
-| Multiple instances | Rate limiting and the introspect cache live in process memory | Use shared storage such as Redis, or sticky routing by user |
-| Observability | Audit writes a JSON Lines file | Report every gateway decision as an OTel span (fields already aligned); keep the file only as a fallback, or drop it |
-| Release pipeline | `validate` runs locally | CI runs it on PRs: exit code 0 auto-merges, 2 requires platform-team approval; after merge, sync the extensions directory to the host |
-| Network | Local machine | Deploy on the internal network; the platform team requests the firewall rules from the gateway to each system centrally |
+| Multiple instances | Rate limiting and the introspect cache are per pod (manifests run 2 replicas and halve the limit) | Redis (Memorystore) only if limits must be exact |
+| Observability | Audit goes to stdout as JSON (`audit_sink: stdout`) | Ship it with the log agent; later report every gateway decision as an OTel span (fields already aligned) |
+| Release pipeline | `validate` runs locally; git-sync manifests ready | CI runs it on PRs: exit code 0 auto-merges, 2 requires platform-team approval; set up the content repo for git-sync |
+| Image and manifests | `Dockerfile` and `deploy/k8s/base` written, layout smoke-tested | Build the image and run `kustomize build` in CI; add per-environment overlays |
+| Network | Local machine | GKE on the internal network; add `/extensions` to Harbor's ingress; the platform team requests egress to each system centrally |
 | Upstream responses | Read fully into memory | Set a response body size limit, or switch to streaming |
 
 **P1 (to complete during the pilot)**
