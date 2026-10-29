@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harbor-extensions-config
+data:
+  # Mounted at /etc/harbor-extensions/platform.yaml (HARBOR_CONFIG). Same keys as config/platform.yaml.
+  platform.yaml: |
+    # Served behind Harbor's ingress at https://<harbor-host>/extensions/
+    base_path: /extensions
+    pat_service_url: http://pat-service.harbor.svc.cluster.local/pat
+    portal_origins:
+      - https://harbor.example.internal
+    # Distinct from any cookie Harbor itself sets on the same host; also scoped to base_path
+    session_cookie: hx_session
+    introspect_ttl: 60
+    # Per pod: with N replicas the effective limit per user x extension x connector is N x this value
+    rate_limit: 30
+    rate_window: 10
+    allowed_data_classes: [internal]
+    dev_login: false
+    cookie_secure: true
+    audit_sink: stdout

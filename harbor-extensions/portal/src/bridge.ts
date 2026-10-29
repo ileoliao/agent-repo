@@ -10,6 +10,8 @@
  *  - paths get the same validation as the gateway, so the browser cannot normalize ../ and escape the /gw prefix.
  */
 
+import { platformUrl } from "./api";
+
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const NAME_RE = /^[a-z][a-z0-9-]{1,40}$/;
 const CAPABILITY_RE = /^[a-z][a-z0-9_.-]{0,80}$/;
@@ -87,7 +89,7 @@ function encodeBody(body: unknown, contentType: unknown): { body?: BodyInit; typ
 export async function handleBridgeMessage(extension: string, msg: BridgeMessage): Promise<BridgeResult> {
   const headers: Record<string, string> = { "X-Harbor-Extension": extension, Accept: "application/json" };
   const call = (url: string, init: RequestInit = {}) =>
-    fetch(url, { credentials: "same-origin", ...init, headers: { ...headers, ...(init.headers as Record<string, string>) } }).then(toResult);
+    fetch(platformUrl(url), { credentials: "same-origin", ...init, headers: { ...headers, ...(init.headers as Record<string, string>) } }).then(toResult);
 
   switch (msg.op) {
     case "me":

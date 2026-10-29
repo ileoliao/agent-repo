@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, NavLink, Route, Routes } from "react-router-dom";
-import { api, ApiError, type Me } from "./api";
+import { api, ApiError, ROUTER_BASENAME, type Me } from "./api";
 import { AuditPage } from "./pages/Audit";
 import { CatalogPage } from "./pages/Catalog";
 import { ConnectorsPage } from "./pages/Connectors";
@@ -36,7 +36,7 @@ export function App() {
 
   const isAdmin = me.groups.includes("APP-PLATFORM-ADMIN");
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <div className="shell">
         <header className="topbar">
           <NavLink to="/" className="brand" aria-label="Harbor Extensions home">

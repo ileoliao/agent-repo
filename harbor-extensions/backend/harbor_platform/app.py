@@ -1,16 +1,18 @@
 """Harbor Extensions platform: gateway + extension host. The platform stores no business data.
 
-Routes
+Routes (all under settings.base_path, e.g. /extensions behind Harbor's ingress; "" by default)
   /gw/{connector}/{path}     Passthrough gateway: authorizes, then forwards the request unchanged to the upstream system
   /api/...                   Platform APIs for the portal and SDK (me, extension catalog, connector catalog, can, audit)
   /auth/...                  Simulated login for development
   /ext/{name}/...            Extension static files (sandbox CSP enforced)
   /sdk/...                   harbor.js / harbor.css
   /                          Portal (React build output)
+  /healthz, /readyz          Kubernetes probes (always at the root, never under the base path)
 """
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -19,8 +21,8 @@ from typing import Any
 
 import httpx
 import jwt
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from .auth import AuthUnavailable, Introspector, Principal
@@ -37,6 +39,7 @@ REQUEST_HEADERS = ("accept", "accept-language", "content-type", "if-match", "if-
 RESPONSE_HEADERS = ("content-type", "etag", "last-modified", "cache-control", "x-total-count")
 ADMIN_GROUP = "APP-PLATFORM-ADMIN"
 RESERVED_PREFIXES = ("api/", "gw/", "ext/", "sdk/", "auth/")
+BASE_HREF_RE = re.compile(r"<base\s+href=\"[^\"]*\"\s*/?>", re.I)
 
 # Extension pages: sandboxed, no network access of their own, embeddable only in the portal
 EXTENSION_CSP = "; ".join(
@@ -106,10 +109,15 @@ def identity_token(settings: Settings, ctx: Context, audience: str, capability: 
 
 def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
     settings = settings or load_settings()
+    mount = settings.base_path  # "" or e.g. "/extensions"
     registry = Registry(settings)
-    audit = Audit(settings.data_dir / "audit.log")
+    audit = Audit(None if settings.audit_sink == "stdout" else settings.data_dir / "audit.log")
     limiter = RateLimiter(settings.rate_limit, settings.rate_window)
     runtime: dict[str, Any] = {}
+    # Every route except the k8s probes lives under the base path, so the service can sit behind Harbor's ingress at /extensions
+    r = APIRouter(prefix=mount)
+    # The session cookie is scoped to the base path, so it is never sent to other services on the same host (e.g. Harbor itself)
+    cookie_path = mount + "/"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -124,11 +132,37 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
     app = FastAPI(
         title="Harbor Extensions platform (prototype)",
         lifespan=lifespan,
-        docs_url="/api/docs",
-        openapi_url="/api/openapi.json",
+        docs_url=f"{mount}/api/docs",
+        openapi_url=f"{mount}/api/openapi.json",
         redoc_url=None,
     )
     app.state.runtime = runtime
+
+    # ------------------------------------------------------------------ k8s probes (outside the base path; not exposed via ingress)
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz() -> dict[str, Any]:
+        """Liveness: the process is serving. Deliberately ignores upstreams and the PAT service."""
+        return {"ok": True}
+
+    @app.get("/readyz", include_in_schema=False)
+    def readyz() -> Response:
+        """Readiness: governed content has been synced and the portal is present. The PAT service is not checked,
+        because the introspect cache is designed to keep serving through short PAT outages."""
+        missing = [
+            str(p)
+            for p in (settings.connectors_dir, settings.extensions_dir, settings.portal_dist / "index.html")
+            if not p.exists()
+        ]
+        if missing:
+            return JSONResponse({"ok": False, "missing": missing}, status_code=503)
+        return JSONResponse({"ok": True, "config_errors": len(registry.errors)})
+
+    if mount:
+
+        @app.get(mount, include_in_schema=False)
+        def base_redirect() -> Response:
+            return RedirectResponse(mount + "/", status_code=308)
 
     # ------------------------------------------------------------------ common
 
@@ -196,7 +230,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
 
     # ------------------------------------------------------------------ passthrough gateway
 
-    @app.api_route("/gw/{connector_name}/{path:path}", methods=GATEWAY_METHODS)
+    @r.api_route("/gw/{connector_name}/{path:path}", methods=GATEWAY_METHODS)
     async def gateway(request: Request, connector_name: str, path: str) -> Response:
         started = time.perf_counter()
         ctx = await resolve(request, require_extension=True)
@@ -205,7 +239,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             raise GatewayError(404, "unknown_connector", f"Connector {connector_name} is not registered")
 
         raw = request.scope.get("raw_path", b"").decode("latin-1")
-        prefix = f"/gw/{connector_name}"
+        prefix = f"{mount}/gw/{connector_name}"
         raw_path = raw[len(prefix):] if raw.startswith(prefix) else "/" + path
         method = request.method
         base = {**audit_base(ctx), "connector": connector.name, "method": method}
@@ -231,12 +265,14 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
 
         body = await request.body()
         if len(body) > settings.max_body_bytes:
+            audit.record(**base, decision="deny", code="body_too_large")
             raise GatewayError(413, "body_too_large", "Request body too large")
 
         headers = {k: v for k in REQUEST_HEADERS if (v := request.headers.get(k))}
         if connector.auth_type == "service-account":
             secret = settings.secrets.get(connector.auth_secret or "")
             if not secret:
+                audit.record(**base, decision="deny", code="connector_misconfigured")
                 raise GatewayError(500, "connector_misconfigured", f"Credentials for connector {connector.name} are not configured")
             headers["Authorization"] = f"Bearer {secret}"
         headers["X-Harbor-Identity"] = identity_token(settings, ctx, connector.name, cap.id)
@@ -287,17 +323,17 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             "owner": ext.owner,
             "contact": ext.contact,
             "tier": ext.tier,
-            "entry": f"/ext/{ext.name}/{ext.entry}",
+            "entry": f"{mount}/ext/{ext.name}/{ext.entry}",
             "capabilities": caps,
         }
 
-    @app.get("/api/me")
+    @r.get("/api/me")
     async def me(request: Request) -> dict[str, Any]:
         ctx = await resolve(request, require_extension=False)
         p = ctx.principal
         return {"user": p.user, "display_name": p.display_name, "groups": sorted(p.groups), "credential": p.kind}
 
-    @app.get("/api/extensions")
+    @r.get("/api/extensions")
     async def list_extensions(request: Request) -> dict[str, Any]:
         ctx = await resolve(request, require_extension=False)
         items = [
@@ -307,7 +343,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
         ]
         return {"items": items}
 
-    @app.get("/api/extensions/{name}")
+    @r.get("/api/extensions/{name}")
     async def get_extension(request: Request, name: str) -> dict[str, Any]:
         ctx = await resolve(request, require_extension=False)
         ext = registry.extensions.get(name)
@@ -318,7 +354,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             raise GatewayError(403, d.code, d.reason, d.need)
         return extension_view(ext, ctx.principal)
 
-    @app.get("/api/connectors")
+    @r.get("/api/connectors")
     async def list_connectors(request: Request) -> dict[str, Any]:
         ctx = await resolve(request, require_extension=False)
         groups = ctx.principal.groups
@@ -342,7 +378,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             ]
         }
 
-    @app.get("/api/can")
+    @r.get("/api/can")
     async def can(request: Request, connector: str, capability: str) -> dict[str, Any]:
         ctx = await resolve(request, require_extension=True)
         cap_id = capability if capability.startswith(f"{connector}.") else f"{connector}.{capability}"
@@ -353,27 +389,27 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             ctx.principal, ctx.extension, cap, connector, settings.allowed_data_classes, registry.grants
         ).as_dict()
 
-    @app.get("/api/audit")
+    @r.get("/api/audit")
     async def get_audit(request: Request, limit: int = 200) -> dict[str, Any]:
         ctx = await resolve(request, require_extension=False)
         if ADMIN_GROUP not in ctx.principal.groups:
             raise GatewayError(403, "missing_group", f"Requires membership of AD group {ADMIN_GROUP}", [ADMIN_GROUP])
         return {"items": audit.recent(min(limit, 1000))}
 
-    @app.get("/api/health")
+    @r.get("/api/health")
     def health() -> dict[str, Any]:
         return {"ok": True, "config_errors": registry.errors}
 
     # ------------------------------------------------------------------ development login (simulated SSO)
 
-    @app.get("/api/dev/users")
+    @r.get("/api/dev/users")
     async def dev_users() -> Any:
         if not settings.dev_login:
             raise GatewayError(404, "not_found", "Development login is disabled")
         r = await runtime["client"].get(settings.pat_service_url.rstrip("/") + "/users", timeout=5)
         return r.json()
 
-    @app.post("/auth/dev-login")
+    @r.post("/auth/dev-login")
     async def dev_login(request: Request, body: LoginBody) -> JSONResponse:
         check_origin(request)
         if not settings.dev_login:
@@ -390,12 +426,12 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             httponly=True,
             samesite="strict",
             secure=settings.cookie_secure,
-            path="/",
+            path=cookie_path,
             max_age=8 * 3600,
         )
         return resp
 
-    @app.post("/auth/logout")
+    @r.post("/auth/logout")
     async def logout(request: Request) -> JSONResponse:
         """Sign out: revoke the session at the PAT service and clear the gateway cache, so an intercepted old cookie stops working immediately."""
         check_origin(request)
@@ -409,7 +445,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             except httpx.HTTPError:
                 pass  # the session still expires on schedule; the cookie is deleted regardless
         resp = JSONResponse({"ok": True})
-        resp.delete_cookie(settings.session_cookie, path="/")
+        resp.delete_cookie(settings.session_cookie, path=cookie_path)
         return resp
 
     # ------------------------------------------------------------------ static files
@@ -421,7 +457,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
         "Cache-Control": "no-cache",
     }
 
-    @app.get("/ext/{name}/{file_path:path}")
+    @r.get("/ext/{name}/{file_path:path}")
     def extension_file(name: str, file_path: str) -> FileResponse:
         ext = registry.extensions.get(name)
         if ext is None:
@@ -432,7 +468,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             raise GatewayError(404, "not_found", "File not found")
         return FileResponse(target, headers=ext_headers)
 
-    @app.get("/sdk/{file_name}")
+    @r.get("/sdk/{file_name}")
     def sdk_file(file_name: str) -> FileResponse:
         root = settings.sdk_dir.resolve()
         target = (root / file_name).resolve()
@@ -442,7 +478,7 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
 
     portal_headers = {"Content-Security-Policy": PORTAL_CSP, "X-Content-Type-Options": "nosniff"}
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @r.get("/{full_path:path}", include_in_schema=False)
     def portal(full_path: str) -> Response:
         if full_path.startswith(RESERVED_PREFIXES):
             raise GatewayError(404, "not_found", "Endpoint not found")
@@ -450,8 +486,11 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
         if not (dist / "index.html").is_file():
             return HTMLResponse("Portal not built yet: cd portal && npm install && npm run build", status_code=503)
         target = (dist / full_path).resolve()
-        if full_path and target.is_relative_to(dist) and target.is_file():
+        if full_path and target.is_relative_to(dist) and target.is_file() and target.name != "index.html":
             return FileResponse(target, headers=portal_headers)
-        return FileResponse(dist / "index.html", headers={**portal_headers, "Cache-Control": "no-cache"})
+        # SPA entry: the build is base-path agnostic; the <base href> tells it where it is mounted
+        html = BASE_HREF_RE.sub(f'<base href="{mount}/" />', (dist / "index.html").read_text(encoding="utf-8"), count=1)
+        return HTMLResponse(html, headers={**portal_headers, "Cache-Control": "no-cache"})
 
+    app.include_router(r)
     return app

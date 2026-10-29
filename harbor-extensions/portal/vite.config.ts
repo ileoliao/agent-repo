@@ -11,5 +11,7 @@ export default defineConfig({
     port: 5173,
     proxy: Object.fromEntries(proxied.map((p) => [p, { target: backend }])),
   },
+  // Relative asset URLs + the <base href> injected by the platform: one build works under any base path
+  base: "./",
   build: { outDir: "dist", emptyOutDir: true },
 });

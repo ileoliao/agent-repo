@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Base for GKE. Create an overlay per environment that sets the image, the git-sync repo,
+# the PAT service URL and the portal origin (see deploy/README.md).
+labels:
+  - pairs:
+      app.kubernetes.io/name: harbor-extensions
+      app.kubernetes.io/part-of: harbor
+    includeSelectors: true
+resources:
+  - serviceaccount.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
+images:
+  - name: harbor-extensions
+    newName: REGION-docker.pkg.dev/PROJECT/harbor/harbor-extensions
+    newTag: latest

@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-extensions
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    spec:
+      serviceAccountName: harbor-extensions
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65533            # lets the app read what git-sync writes
+        seccompProfile: {type: RuntimeDefault}
+
+      # First sync before the app starts, so a new pod never serves an empty catalog
+      initContainers:
+        - name: git-sync-init
+          image: registry.k8s.io/git-sync/git-sync:v4.4.0
+          args: [--one-time]
+          envFrom: [{configMapRef: {name: harbor-extensions-gitsync}}]
+          volumeMounts: [{name: content, mountPath: /git}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {memory: 256Mi}}
+
+      containers:
+        - name: app
+          image: harbor-extensions
+          ports: [{name: http, containerPort: 8000}]
+          env:
+            # Governed content comes from git-sync (atomic symlink swap; the registry hot-reloads on change)
+            - name: HARBOR_ROOT
+              value: /git/current
+          envFrom:
+            # HARBOR_IDENTITY_KEY and HARBOR_SECRET_<NAME> for each connector credential.
+            # Provision it from Secret Manager (External Secrets or the Secret Manager CSI add-on); never commit it.
+            - secretRef: {name: harbor-extensions-secrets}
+          volumeMounts:
+            - {name: content, mountPath: /git, readOnly: true}
+            - {name: config, mountPath: /etc/harbor-extensions, readOnly: true}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 15
+            failureThreshold: 4
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {requests: {cpu: 100m, memory: 192Mi}, limits: {memory: 512Mi}}
+
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.4.0
+          envFrom: [{configMapRef: {name: harbor-extensions-gitsync}}]
+          volumeMounts: [{name: content, mountPath: /git}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {memory: 256Mi}}
+
+      volumes:
+        - name: content
+          emptyDir: {}
+        - name: config
+          configMap: {name: harbor-extensions-config}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harbor-extensions-gitsync
+data:
+  # Repository holding connectors/, extensions/, config/grants.yaml at its root (override in the overlay).
+  # Credentials: add GITSYNC_USERNAME/GITSYNC_PASSWORD or an SSH key via a Secret in the overlay.
+  GITSYNC_REPO: https://git.example.internal/platform/harbor-extensions-content.git
+  GITSYNC_REF: main
+  GITSYNC_ROOT: /git
+  GITSYNC_LINK: current
+  GITSYNC_PERIOD: 30s
+  GITSYNC_DEPTH: "1"
