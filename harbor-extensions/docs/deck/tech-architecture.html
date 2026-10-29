@@ -1,0 +1,83 @@
+<section id="tech-architecture" data-transition="fade" style="background:#f6f5f1;color:#14212b;font-family:'IBM Plex Sans', Arial, sans-serif;padding:96px 128px 96px;display:flex;flex-direction:column;gap:20px">
+<p style="font-size:24px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:#0f6b74">Technical architecture</p>
+<h2 style="font-size:56px;font-weight:600;line-height:1.12;color:#14212b">One request, end to end</h2>
+<div style="flex:1;display:flex;flex-direction:row;gap:24px">
+<div style="flex:1;display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;flex-direction:row;gap:24px">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ffffff;border:1px solid #dcdfe2;border-radius:14px;padding:16px 24px">
+<h3 style="font-size:28px;font-weight:600;color:#14212b">Portal + extension (browser)</h3>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Sandboxed iframe, CSP connect-src 'none'</p>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">harbor.js → postMessage → portal + cookie</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ffffff;border:1px solid #dcdfe2;border-radius:14px;padding:16px 24px">
+<h3 style="font-size:28px;font-weight:600;color:#14212b">CLI / Copilot agent</h3>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Bearer PAT, straight to the gateway</p>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Same checks and audit as people</p>
+</div>
+</div>
+<x-shape kind="arrow-down" style="width:32px;height:28px;background:#9aa6b0;align-self:center"></x-shape>
+<div style="display:flex;flex-direction:column;gap:14px;background:#0c2233;border-radius:16px;padding:20px 24px">
+<p style="font-size:24px;font-weight:600;color:#7fd0d6">Harbor gateway · /gw/{connector}/{path} · deny by default</p>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+<div style="display:flex;flex-direction:column;gap:2px;background:#13314a;border-radius:10px;padding:12px 18px">
+<p style="font-size:24px;font-weight:700;color:#f6f5f1">1 Authenticate</p>
+<p style="font-size:24px;line-height:1.3;color:#bfd0da">Cookie or PAT → PAT introspect, 60 s cache</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px;background:#13314a;border-radius:10px;padding:12px 18px">
+<p style="font-size:24px;font-weight:700;color:#f6f5f1">2 Resolve</p>
+<p style="font-size:24px;line-height:1.3;color:#bfd0da">Match METHOD /path to a capability</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px;background:#13314a;border-radius:10px;padding:12px 18px">
+<p style="font-size:24px;font-weight:700;color:#f6f5f1">3 Authorize</p>
+<p style="font-size:24px;line-height:1.3;color:#bfd0da">AD group ∩ declared ∩ visibility ∩ grant</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px;background:#13314a;border-radius:10px;padding:12px 18px">
+<p style="font-size:24px;font-weight:700;color:#f6f5f1">4 Rate limit</p>
+<p style="font-size:24px;line-height:1.3;color:#bfd0da">Per user × extension × connector</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px;background:#0f6b74;border-radius:10px;padding:12px 18px">
+<p style="font-size:24px;font-weight:700;color:#ffffff">5 Forward unchanged</p>
+<p style="font-size:24px;line-height:1.3;color:#e6f4f5">+ service credential + signed identity JWT</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px;background:#13314a;border-radius:10px;padding:12px 18px">
+<p style="font-size:24px;font-weight:700;color:#f6f5f1">6 Audit</p>
+<p style="font-size:24px;line-height:1.3;color:#bfd0da">Every decision, JSON lines, OTel fields</p>
+</div>
+</div>
+</div>
+<x-shape kind="arrow-down" style="width:32px;height:28px;background:#9aa6b0;align-self:center"></x-shape>
+<div style="display:flex;flex-direction:row;gap:24px">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ffffff;border:1px solid #dcdfe2;border-radius:14px;padding:16px 24px">
+<h3 style="font-size:28px;font-weight:600;color:#14212b">Built-in connectors</h3>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Harbor Release · ServiceNow · Jira</p>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Service account + identity JWT</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ffffff;border:2px solid #0f6b74;border-radius:14px;padding:16px 24px">
+<h3 style="font-size:28px;font-weight:600;color:#14212b">Team services, e.g. outage</h3>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Identity-only: verify JWT (aud, exp)</p>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Business rules live here, not in Harbor</p>
+</div>
+</div>
+</div>
+<div style="width:460px;display:flex;flex-direction:column;gap:12px">
+<p style="font-size:24px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#4a5866">Control plane</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ffffff;border:1px solid #dcdfe2;border-radius:14px;padding:18px 24px">
+<h3 style="font-size:28px;font-weight:600;color:#14212b">Git = release system</h3>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">connectors/*.yaml</p>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">extensions/*/extension.yaml</p>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">config/grants.yaml</p>
+<p style="font-size:24px;line-height:1.35;color:#0f6b74">CI lint → merge → hot reload</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px;background:#ffffff;border:1px solid #dcdfe2;border-radius:14px;padding:18px 24px">
+<h3 style="font-size:28px;font-weight:600;color:#14212b">PAT service</h3>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">introspect · session · revoke</p>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Only external dependency</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px;background:#ffffff;border:1px solid #dcdfe2;border-radius:14px;padding:18px 24px">
+<h3 style="font-size:28px;font-weight:600;color:#14212b">Secrets · OTel</h3>
+<p style="font-size:24px;line-height:1.35;color:#4a5866">Credentials stay in the gateway; audit to OTel</p>
+</div>
+</div>
+</div>
+<aside>This is the detailed view behind the previous slide. Top: two kinds of callers. In the browser, an extension runs in a sandboxed iframe with no network access of its own; it calls the harbor.js SDK, which hands the request to the portal over postMessage, and the portal sends it with the user's session cookie. The CLI and Copilot agents send a PAT directly. Middle: every request hits the same gateway route, /gw/{connector}/{path}, and passes six steps. One, authenticate: the PAT service introspects the cookie or PAT, cached for 60 seconds. Two, resolve: the method and path are matched to a capability, and path tricks like dot-dot or encoded slashes are rejected. Three, authorize: the user's AD groups, the capabilities the extension declared, its visibility, and for writes the platform team's grant must all allow it; otherwise the gateway denies with a readable reason. Four, rate limit per user, extension and connector. Five, forward the request unchanged, adding only the connector's service credential and a signed identity token valid for 60 seconds, so downstream sees the real operator. Six, audit every decision. Bottom: built-in connectors use a service account; team-built services like outage are identity-only, verify the token, and keep their own business rules. Right: the control plane is Git. Connectors, extensions and grants are YAML in the repo; CI lints and validates, merge publishes, and the gateway hot-reloads. The PAT service is the only external dependency; credentials live only in the gateway; audit goes to OTel. The platform stores no business data.</aside>
+</section>
