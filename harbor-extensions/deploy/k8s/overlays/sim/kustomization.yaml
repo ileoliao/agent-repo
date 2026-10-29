@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Local kind simulation of the GKE deployment (see deploy/sim/run.sh). Same base as production; only environment values differ.
+namespace: harbor
+resources:
+  - ../../base
+images:
+  # Overlays match the name the base already rewrote to (not the bare "harbor-extensions" from deployment.yaml)
+  - name: REGION-docker.pkg.dev/PROJECT/harbor/harbor-extensions
+    newName: harbor-extensions
+    newTag: sim
+patches:
+  - target: {kind: ConfigMap, name: harbor-extensions-config}
+    patch: |-
+      - op: replace
+        path: /data/platform.yaml
+        value: |
+          base_path: /extensions
+          pat_service_url: http://pat-service.harbor.svc.cluster.local/pat
+          # Substitution value for ${MOCK_BASE} in the content repo's connectors/*.yaml (sim: the in-cluster mocks)
+          mock_base: http://upstream-mocks.harbor.svc.cluster.local
+          portal_origins:
+            - https://harbor.sim.internal:8443
+          session_cookie: hx_session
+          introspect_ttl: 60
+          rate_limit: 30
+          rate_window: 10
+          allowed_data_classes: [internal]
+          dev_login: false
+          cookie_secure: true
+          audit_sink: stdout
+  - target: {kind: ConfigMap, name: harbor-extensions-gitsync}
+    patch: |-
+      - op: replace
+        path: /data/GITSYNC_REPO
+        value: git://content-git.harbor.svc.cluster.local:9418/content.git

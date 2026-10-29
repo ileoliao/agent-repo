@@ -1,0 +1,11 @@
+# Simulation only: the prototype's mock systems (PAT service, Jira, SNOW, Harbor Release, outage) as one in-cluster service.
+# Build context: harbor-extensions/
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1
+RUN pip install --no-cache-dir "fastapi>=0.115" "uvicorn>=0.30" "PyJWT>=2.8"
+WORKDIR /app
+COPY backend/mocks ./mocks
+RUN useradd --uid 10002 --no-create-home --shell /usr/sbin/nologin mocks
+USER 10002
+EXPOSE 9001
+CMD ["python", "-m", "uvicorn", "mocks.app:app", "--host", "0.0.0.0", "--port", "9001", "--log-level", "warning"]

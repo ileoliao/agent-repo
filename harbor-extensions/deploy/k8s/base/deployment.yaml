@@ -20,7 +20,8 @@ spec:
           image: registry.k8s.io/git-sync/git-sync:v4.4.0
           args: [--one-time]
           envFrom: [{configMapRef: {name: harbor-extensions-gitsync}}]
-          volumeMounts: [{name: content, mountPath: /git}]
+          # git-sync writes its gitconfig under HOME (/tmp) at startup, so /tmp must be writable on a read-only root
+          volumeMounts: [{name: content, mountPath: /git}, {name: tmp, mountPath: /tmp}]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -58,7 +59,7 @@ spec:
         - name: git-sync
           image: registry.k8s.io/git-sync/git-sync:v4.4.0
           envFrom: [{configMapRef: {name: harbor-extensions-gitsync}}]
-          volumeMounts: [{name: content, mountPath: /git}]
+          volumeMounts: [{name: content, mountPath: /git}, {name: tmp, mountPath: /tmp}]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -67,6 +68,8 @@ spec:
 
       volumes:
         - name: content
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
         - name: config
           configMap: {name: harbor-extensions-config}
@@ -84,3 +87,6 @@ data:
   GITSYNC_LINK: current
   GITSYNC_PERIOD: 30s
   GITSYNC_DEPTH: "1"
+  # The first sync must succeed (init container), but afterwards keep retrying forever. With the default (abort on failure) a
+  # git outage crash-loops the sidecar, the pod goes NotReady (all containers must be ready) and every replica leaves the Service.
+  GITSYNC_MAX_FAILURES: "-1"

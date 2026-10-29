@@ -1,0 +1,19 @@
+# Local stand-in for the GKE cluster (kind). Host 8080/8443 -> ingress-nginx http/https, playing the role of Harbor's ingress.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: harbor-sim
+networking:
+  # nftables proxy mode: some VM kernels lack the iptables "statistic" match kube-proxy needs for multi-endpoint Services
+  kubeProxyMode: nftables
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # NodePorts of the ingress-nginx Service (run.sh pins them); not hostPort, which needs the iptables multiport module
+      - {containerPort: 30080, hostPort: 8080, protocol: TCP}
+      - {containerPort: 30443, hostPort: 8443, protocol: TCP}
