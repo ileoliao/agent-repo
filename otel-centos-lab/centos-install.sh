@@ -14,7 +14,7 @@
 #   TLS_KEY_FILE=/path/client.key
 #   OTEL_TOKEN=...
 #   TLS_INSECURE=true|false
-#   LOG_PATHS="/var/log/messages /var/log/secure"   # filelog 采集路径，空格分隔
+#   LOG_PATHS="/var/log/messages /var/log/secure"   # file_log 采集路径，空格分隔
 #   ENABLE_LOGS=true|false                          # 默认 true
 set -euo pipefail
 
@@ -100,11 +100,13 @@ if [[ -n "$OTEL_TOKEN" ]]; then
   HEADERS_YAML=$'\n'"    headers:"$'\n'"      authorization: \"Bearer \${env:OTEL_TOKEN}\""
 fi
 
-# Build filelog include list YAML
+# Build file_log include list YAML
 FILELOG_INCLUDE=""
+set -f  # 不要在安装时展开 LOG_PATHS 里的通配符，交给 file_log 运行时匹配
 for p in $LOG_PATHS; do
   FILELOG_INCLUDE+=$'\n'"      - ${p}"
 done
+set +f
 
 if [[ -n "${RPM_PATH:-}" ]]; then
   RPM_FILE="$RPM_PATH"
@@ -146,7 +148,7 @@ BACKUP_SUFFIX="$(date +%Y%m%d%H%M%S)"
 
 if [[ "${ENABLE_LOGS}" == "true" ]]; then
   FILELOG_RECEIVER="
-  filelog:
+  file_log:
     include:${FILELOG_INCLUDE}
     exclude:
       - /var/log/*.gz
@@ -157,7 +159,7 @@ if [[ "${ENABLE_LOGS}" == "true" ]]; then
 "
   LOGS_PIPELINE="
     logs:
-      receivers: [filelog]
+      receivers: [file_log]
       processors: [resource_detection, batch]
       exporters: [otlp_grpc]
 "
@@ -241,9 +243,24 @@ echo "  tls.insecure=${INSECURE}"
 [[ -n "$CERT_PATH" ]] && echo "  cert_file=${CERT_PATH} key_file=${KEY_PATH}"
 [[ -n "$OTEL_TOKEN" ]] && echo "  headers.authorization=Bearer \${OTEL_TOKEN} (在 ${CONF})"
 if [[ "${ENABLE_LOGS}" == "true" ]]; then
-  echo "日志采集路径 (filelog): ${LOG_PATHS}"
+  echo "日志采集路径 (file_log): ${LOG_PATHS}"
 else
   echo "日志采集: 已关闭 (ENABLE_LOGS=false)"
+fi
+
+# CentOS/RHEL 的 /var/log/messages、secure 默认是 root:root 0600，adm 组读不了；
+# 用 CAP_DAC_READ_SEARCH（只读绕过权限检查）比改成 root 运行或 chmod 日志更稳，logrotate 重建文件后依然有效。
+DROPIN_DIR=/etc/systemd/system/otelcol-contrib.service.d
+DROPIN="${DROPIN_DIR}/10-read-logs.conf"
+if [[ "${ENABLE_LOGS}" == "true" ]]; then
+  install -d -m 0755 "$DROPIN_DIR"
+  cat > "$DROPIN" << 'UNIT'
+[Service]
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+UNIT
+else
+  rm -f "$DROPIN"
 fi
 
 if [[ "$COLLECTOR_ENDPOINT" == "REPLACE_ME:4317" ]]; then

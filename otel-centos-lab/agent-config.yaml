@@ -18,6 +18,13 @@ receivers:
       load:
       paging:
       processes:
+  file_log:
+    include:
+      - /var/log/messages
+      - /var/log/secure
+    start_at: end
+    include_file_path: true
+    include_file_name: true
 
 processors:
   resource_detection:
@@ -41,6 +48,10 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
+      processors: [resource_detection, batch]
+      exporters: [otlp_grpc, debug]
+    logs:
+      receivers: [file_log]
       processors: [resource_detection, batch]
       exporters: [otlp_grpc, debug]
   telemetry:

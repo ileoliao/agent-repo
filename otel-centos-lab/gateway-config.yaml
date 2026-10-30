@@ -1,4 +1,4 @@
-# Central / gateway collector: receive OTLP, dump metrics for verification
+# Central / gateway collector: receive OTLP (metrics + logs), dump for verification
 receivers:
   otlp:
     protocols:
@@ -21,6 +21,10 @@ exporters:
     path: /workspace/otel-centos-lab/logs/gateway-metrics.json
     rotation:
       max_megabytes: 10
+  file/logs:
+    path: /workspace/otel-centos-lab/logs/gateway-logs.json
+    rotation:
+      max_megabytes: 10
 
 service:
   pipelines:
@@ -28,6 +32,10 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug, file/metrics]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, file/logs]
   telemetry:
     logs:
       level: info
