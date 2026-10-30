@@ -16,6 +16,11 @@
 #   TLS_INSECURE=true|false
 #   LOG_PATHS="/var/log/messages /var/log/secure"   # file_log 采集路径，空格分隔
 #   ENABLE_LOGS=true|false                          # 默认 true
+#   ENABLE_PROCESS_METRICS=true|false               # 默认 true；per-process CPU/内存/IO
+#   PROCESS_NAMES="rsyslogd sshd otelcol-contrib"   # 空格或逗号分隔；未设置 = 采集全部进程（噪声大，仅实验室）
+#   PROCESS_MATCH_TYPE=strict|regexp                # 默认 strict（精确匹配进程名）
+#   PROCESS_CAPS=true|false                         # 默认 true；给 systemd 单元加 CAP_SYS_PTRACE+CAP_DAC_READ_SEARCH drop-in，
+#                                                   # 才能读其他用户进程的 /proc/<pid>/io 与 exe（process.disk.io、executable.path）
 set -euo pipefail
 
 OTEL_VERSION="${OTEL_VERSION:-0.164.0}"
@@ -28,6 +33,10 @@ CERTS_DIR="${CERTS_DIR:-/etc/otelcol-contrib/certs}"
 ENABLE_LOGS="${ENABLE_LOGS:-true}"
 # CentOS/RHEL 常见系统日志；可用 LOG_PATHS 覆盖
 LOG_PATHS="${LOG_PATHS:-/var/log/messages /var/log/secure}"
+ENABLE_PROCESS_METRICS="${ENABLE_PROCESS_METRICS:-true}"
+PROCESS_NAMES="${PROCESS_NAMES:-}"
+PROCESS_MATCH_TYPE="${PROCESS_MATCH_TYPE:-strict}"
+PROCESS_CAPS="${PROCESS_CAPS:-true}"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -107,6 +116,59 @@ for p in $LOG_PATHS; do
   FILELOG_INCLUDE+=$'\n'"      - ${p}"
 done
 set +f
+
+case "$ENABLE_PROCESS_METRICS" in
+  true|false) ;;
+  *) echo "ENABLE_PROCESS_METRICS 只能是 true 或 false (当前: ${ENABLE_PROCESS_METRICS})"; exit 1 ;;
+esac
+case "$PROCESS_CAPS" in
+  true|false) ;;
+  *) echo "PROCESS_CAPS 只能是 true 或 false (当前: ${PROCESS_CAPS})"; exit 1 ;;
+esac
+case "$PROCESS_MATCH_TYPE" in
+  strict|regexp) ;;
+  *) echo "PROCESS_MATCH_TYPE 只能是 strict 或 regexp (当前: ${PROCESS_MATCH_TYPE})"; exit 1 ;;
+esac
+
+# process scraper: PROCESS_NAMES 按空格/逗号拆分 -> include.names
+# 注意: Linux 进程名 (comm) 最长 15 字符；逗号/空格是分隔符，regexp 模式下单个模式里不能含它们（可用 | 做或）
+PROCESS_NAME_LIST=()
+if [[ "$ENABLE_PROCESS_METRICS" == "true" && -n "$PROCESS_NAMES" ]]; then
+  read -r -a PROCESS_NAME_LIST <<< "${PROCESS_NAMES//,/ }"
+fi
+
+PROCESS_FILTER_YAML=""
+if [[ "${#PROCESS_NAME_LIST[@]}" -gt 0 ]]; then
+  PROCESS_FILTER_YAML=$'\n'"        include:"$'\n'"          match_type: ${PROCESS_MATCH_TYPE}"$'\n'"          names:"
+  for n in "${PROCESS_NAME_LIST[@]}"; do
+    esc="${n//\'/\'\'}"
+    PROCESS_FILTER_YAML+=$'\n'"            - '${esc}'"
+  done
+fi
+
+if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
+  PROCESS_SCRAPER="
+      process:
+        # otelcol-contrib 以非 root 用户运行：读其他用户进程的 exe/io/user 会 EACCES，静音这些错误日志
+        mute_process_name_error: true
+        mute_process_exe_error: true
+        mute_process_io_error: true
+        mute_process_user_error: true
+        mute_process_cgroup_error: true${PROCESS_FILTER_YAML}
+        metrics:
+          process.cpu.time:
+            enabled: true
+          process.cpu.utilization:
+            enabled: true
+          process.memory.usage:
+            enabled: true
+          process.memory.virtual:
+            enabled: true
+          process.disk.io:
+            enabled: true"
+else
+  PROCESS_SCRAPER=""
+fi
 
 if [[ -n "${RPM_PATH:-}" ]]; then
   RPM_FILE="$RPM_PATH"
@@ -188,7 +250,7 @@ receivers:
       network:
       load:
       paging:
-      processes:
+      processes:${PROCESS_SCRAPER}
 ${FILELOG_RECEIVER}
 processors:
   resource_detection:
@@ -246,6 +308,36 @@ if [[ "${ENABLE_LOGS}" == "true" ]]; then
   echo "日志采集路径 (file_log): ${LOG_PATHS}"
 else
   echo "日志采集: 已关闭 (ENABLE_LOGS=false)"
+fi
+if [[ "$ENABLE_PROCESS_METRICS" != "true" ]]; then
+  echo "进程指标 (process scraper): 已关闭 (ENABLE_PROCESS_METRICS=false)"
+elif [[ "${#PROCESS_NAME_LIST[@]}" -gt 0 ]]; then
+  echo "进程指标 (process scraper): match_type=${PROCESS_MATCH_TYPE} names=${PROCESS_NAME_LIST[*]}"
+else
+  echo "警告: 未设置 PROCESS_NAMES，将采集【全部】进程（高基数、噪声大，仅建议实验室使用）。生产请设置 PROCESS_NAMES。"
+fi
+
+# 非 root 的 otelcol-contrib 读不了 root 进程的 /proc/<pid>/io (0400) 和 /proc/<pid>/exe：
+#   CAP_SYS_PTRACE       -> readlink /proc/<pid>/exe (executable.path)
+#   CAP_DAC_READ_SEARCH  -> open /proc/<pid>/io (process.disk.io)
+# CentOS Stream 9 (podman + systemd) 实测两者缺一不可。
+DROPIN_DIR=/etc/systemd/system/otelcol-contrib.service.d
+DROPIN_FILE="${DROPIN_DIR}/10-process-metrics.conf"
+if [[ "$ENABLE_PROCESS_METRICS" == "true" && "$PROCESS_CAPS" == "true" ]]; then
+  install -d -m 0755 "$DROPIN_DIR"
+  cat > "$DROPIN_FILE" << 'UNIT'
+# Managed by centos-install.sh — per-process metrics need to read other users' /proc/<pid>/{io,exe}
+[Service]
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+UNIT
+  echo "systemd drop-in: ${DROPIN_FILE} (CAP_SYS_PTRACE CAP_DAC_READ_SEARCH)"
+else
+  rm -f "$DROPIN_FILE"
+  rmdir "$DROPIN_DIR" 2>/dev/null || true
+  if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
+    echo "PROCESS_CAPS=false: 不授予额外 capability；root 进程的 process.disk.io / executable.path 将缺失"
+  fi
 fi
 
 # CentOS/RHEL 的 /var/log/messages、secure 默认是 root:root 0600，adm 组读不了；
