@@ -11,7 +11,7 @@ Release: https://github.com/open-telemetry/opentelemetry-collector-releases/rele
 CentOS host
   otelcol-contrib (agent)
     receivers: host_metrics + filelog (optional)
-    processors: resource_detection + batch
+    processors: transform (drop process.pid / parent_pid) + resource_detection + batch
     exporter:  otlp_grpc  ──►  central Collector (gateway)
                                   OTLP :4317 / :4318
                                   → your backend
@@ -31,8 +31,8 @@ sudo bash centos-install.sh
 The script:
 
 1. Downloads (or uses `RPM_PATH`) and installs the contrib RPM via `dnf` / `yum` / `rpm`
-2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + filelog)
-3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, optional `OTEL_TOKEN`)
+2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics incl. per-process metrics + filelog)
+3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, `KEEP_PROCESS_PIDS`, optional `OTEL_TOKEN`)
 4. Enables and **restarts** `otelcol-contrib` via systemd
 
 ### File logs (enabled by default)
@@ -61,6 +61,37 @@ Notes from live testing:
 - The agent's own stdout goes to journald -> rsyslog -> `/var/log/messages`, so its own log lines are shipped too. During a gateway outage this adds retry/error lines to the stream.
 - `file_log` has no offset storage and uses `start_at: end`: lines written while the agent is stopped/rebooting are not collected afterwards.
 - Gateway outage: the OTLP exporter retries with backoff for up to 5 minutes per batch (in-memory queue); batches older than that are dropped. Shorter outages are replayed with original timestamps.
+
+### Process metrics: PIDs are stripped by default
+
+The `process` scraper emits one resource per process (`process.cpu.time`, `process.memory.usage`, `process.memory.virtual`, `process.disk.io`).
+`process.pid` and `process.parent_pid` change on every process restart, so exporting them creates a new time series each time and blows up cardinality in the backend.
+
+The agent therefore runs a `transform/drop_process_pids` processor at the start of the metrics pipeline that deletes the resource attributes
+`process.pid` and `process.parent_pid` before the OTLP export. Stable attributes are kept: `process.executable.name`, `process.executable.path`,
+`process.command`, `process.command_line`, `process.owner`, plus `host.name` / `os.type`.
+
+To keep the PIDs for a debugging session, set `KEEP_PROCESS_PIDS=true`:
+
+```bash
+# at install time
+sudo KEEP_PROCESS_PIDS=true COLLECTOR_ENDPOINT=10.0.0.20:4317 bash centos-install.sh
+
+# or on an installed host
+sudo sed -i 's/^KEEP_PROCESS_PIDS=.*/KEEP_PROCESS_PIDS=true/' /etc/otelcol-contrib/otelcol-contrib.conf
+sudo systemctl restart otelcol-contrib
+```
+
+Set it back to `false` (or re-run the installer without the variable, which resets it to `false`) when done.
+When running `agent-config.yaml` by hand, export `KEEP_PROCESS_PIDS` in the environment; unset means `false`.
+
+Caveats:
+
+- Without the PID, processes that share the same executable/command line/owner (e.g. several `nginx` workers) produce identical resource attributes, so their series
+  collapse into one. Per-process values are only meaningful for singleton processes; aggregate per executable name in the backend or gateway if you need totals.
+- `process.command_line` is kept because it is stable per service, but it can still be high cardinality for processes launched with changing arguments.
+  Delete it in the same processor (or add an `exclude` for such processes in the `process` scraper) if that is a problem on your hosts.
+- The agent runs as `otelcol-contrib`, so some per-process details of other users' processes (exe path, IO, ...) can be unreadable; the `mute_process_*_error` options keep that out of the logs.
 
 ### Credentials (TLS / token)
 
@@ -139,6 +170,12 @@ receivers:
       load:
       paging:
       processes:
+      process:
+        mute_process_name_error: true
+        mute_process_exe_error: true
+        mute_process_io_error: true
+        mute_process_user_error: true
+        mute_process_cgroup_error: true
   file_log:
     include:
       - /var/log/messages
@@ -147,6 +184,13 @@ receivers:
     include_file_path: true
 
 processors:
+  transform/drop_process_pids:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - 'delete_key(resource.attributes, "process.pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
+          - 'delete_key(resource.attributes, "process.parent_pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
   resource_detection:
     detectors: [system, env]
     system:
@@ -163,7 +207,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [resource_detection, batch]
+      processors: [transform/drop_process_pids, resource_detection, batch]
       exporters: [otlp_grpc]
     logs:
       receivers: [file_log]
@@ -192,10 +236,12 @@ Allow **4317/tcp** (gRPC) or **4318/tcp** (HTTP) from agents to the gateway.
 | Container restart (systemd reboot) | Pass: service enabled, conf/certs/drop-in persist, data resumes |
 | Rotation with `/var/log/myapp/*` + logrotate | Pass after fix: no `.1`/`.gz` content shipped, new active file collected |
 | Gateway outage 70s / 6.5min, 4 agents | Short: replayed; long: batches older than 5 min dropped, newer replayed |
+| Process metrics without `process.pid` / `process.parent_pid` (default) | Pass: CentOS Stream 9 + podman + systemd, installer-generated config; gateway received `process.cpu.time`, `process.memory.*`, `process.disk.io` with `process.executable.name`/`command`/`owner` and no pid attributes |
+| `KEEP_PROCESS_PIDS=true` (conf edit + restart) | Pass: pid and parent_pid present again after restart |
 | SELinux enforcing | Not tested (lab VM has no SELinux policy loaded) |
 | Live filelog (`file_log`) CentOS Stream 9 + podman + systemd, agent -> gateway | Pass: lines from `/var/log/messages`, `/var/log/secure`, `/var/log/myapp/*.log` (incl. file created after install) seen at gateway; works after logrotate |
 
-Sample metric names observed: `system.cpu.utilization`, `system.memory.usage`, `system.disk.io`, `system.filesystem.usage`, `system.network.io`, `system.cpu.load_average.*`, `system.paging.*`, `system.processes.*`.
+Sample metric names observed: `system.cpu.utilization`, `system.memory.usage`, `system.disk.io`, `system.filesystem.usage`, `system.network.io`, `system.cpu.load_average.*`, `system.paging.*`, `system.processes.*`, `process.cpu.time`, `process.memory.usage`, `process.memory.virtual`, `process.disk.io`.
 
 ## Files in this folder
 
