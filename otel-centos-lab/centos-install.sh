@@ -151,8 +151,8 @@ if [[ "${ENABLE_LOGS}" == "true" ]]; then
   file_log:
     include:${FILELOG_INCLUDE}
     exclude:
-      - /var/log/*.gz
-      - /var/log/*.1
+      - \"**/*.gz\"
+      - \"**/*.[0-9]\"
     start_at: end
     include_file_path: true
     include_file_name: true
