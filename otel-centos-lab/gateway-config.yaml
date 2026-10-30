@@ -1,0 +1,41 @@
+# Central / gateway collector: receive OTLP, dump metrics for verification
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  batch:
+    send_batch_size: 1024
+    timeout: 5s
+
+exporters:
+  debug:
+    verbosity: detailed
+    sampling_initial: 50
+    sampling_thereafter: 50
+  file/metrics:
+    path: /workspace/otel-centos-lab/logs/gateway-metrics.json
+    rotation:
+      max_megabytes: 10
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, file/metrics]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8888
