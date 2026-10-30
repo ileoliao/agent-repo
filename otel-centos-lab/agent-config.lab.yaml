@@ -17,6 +17,25 @@ receivers:
       load:
       paging:
       processes:
+      process:
+        # Lab smoke: no include block = ALL processes (noisy). Production should set include.names.
+        # Collector runs as non-root: mute EACCES noise for other users' /proc entries.
+        mute_process_name_error: true
+        mute_process_exe_error: true
+        mute_process_io_error: true
+        mute_process_user_error: true
+        mute_process_cgroup_error: true
+        metrics:
+          process.cpu.time:
+            enabled: true
+          process.cpu.utilization:
+            enabled: true
+          process.memory.usage:
+            enabled: true
+          process.memory.virtual:
+            enabled: true
+          process.disk.io:
+            enabled: true
 
 processors:
   resource_detection:

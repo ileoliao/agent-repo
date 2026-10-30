@@ -10,7 +10,7 @@ Release: https://github.com/open-telemetry/opentelemetry-collector-releases/rele
 ```
 CentOS host
   otelcol-contrib (agent)
-    receivers: host_metrics + filelog (optional)
+    receivers: host_metrics (incl. per-process) + filelog (optional)
     processors: resource_detection + batch
     exporter:  otlp_grpc  ──►  central Collector (gateway)
                                   OTLP :4317 / :4318
@@ -31,9 +31,9 @@ sudo bash centos-install.sh
 The script:
 
 1. Downloads (or uses `RPM_PATH`) and installs the contrib RPM via `dnf` / `yum` / `rpm`
-2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + filelog)
+2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + per-process metrics + filelog)
 3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, optional `OTEL_TOKEN`)
-4. Enables and **restarts** `otelcol-contrib` via systemd
+4. Writes the systemd drop-in for process metrics (see below) and **restarts** `otelcol-contrib`
 
 ### File logs (enabled by default)
 
@@ -49,6 +49,48 @@ export LOG_PATHS="/var/log/messages /var/log/secure /var/log/myapp/*.log"
 ```
 
 The script adds the `otelcol-contrib` user to the `adm` group so it can read typical system logs.
+
+### Per-process metrics (`process` scraper)
+
+CPU / memory / disk I/O of individual processes, via the `host_metrics` `process` scraper (separate from the aggregate `processes` scraper). Each process is a separate resource with `process.pid`, `process.executable.name`, `process.executable.path`, `process.command_line`, `process.owner`, ...
+
+Enabled metrics: `process.cpu.time`, `process.cpu.utilization` (opt-in in 0.164.0, enabled explicitly; first appears on the 2nd scrape), `process.memory.usage`, `process.memory.virtual`, `process.disk.io`.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `PROCESS_NAMES` | unset | Process names to collect, **space- or comma-separated** (`"rsyslogd, sshd,otelcol-contrib"`) -> `include.names`. Unset (or empty) = **all processes** |
+| `PROCESS_MATCH_TYPE` | `strict` | `strict` = exact match on the process name; `regexp` = Go regexp, **unanchored** (`ssh` also matches `sshd`; use `^sshd$`) |
+| `ENABLE_PROCESS_METRICS` | `true` | `false` removes the `process` scraper (and the systemd drop-in) entirely |
+| `PROCESS_CAPS` | `true` | write the capability drop-in below; `false` = least privilege, root processes lose `process.disk.io` / `executable.path` |
+
+Why `strict` is the default: exact names are predictable and cheap; `regexp` is unanchored and easy to over-match. Note Linux process names (`comm`) are truncated to 15 characters, and `,`/whitespace are separators, so a regexp cannot contain them (use `|` for alternation).
+
+```bash
+# Production: pick the processes you care about
+sudo -E env COLLECTOR_ENDPOINT=10.0.0.20:4317 PROCESS_NAMES="rsyslogd sshd nginx" bash centos-install.sh
+# Regexp
+sudo -E env COLLECTOR_ENDPOINT=... PROCESS_MATCH_TYPE=regexp PROCESS_NAMES='^java$,^postgres' bash centos-install.sh
+# Off
+sudo -E env COLLECTOR_ENDPOINT=... ENABLE_PROCESS_METRICS=false bash centos-install.sh
+```
+
+> **Strongly recommended: set `PROCESS_NAMES` in production.** With it unset, every process on the host is collected (one resource and ~5 metrics series per PID per interval; short-lived processes keep creating new series). That is acceptable for a lab, not for a fleet. The installer prints a warning in this mode.
+
+**Permissions on CentOS.** The RPM service runs as the non-root user `otelcol-contrib`. On CentOS Stream 9 (verified with podman + systemd):
+
+- `/proc/<pid>/stat|statm|cmdline` of other users are readable -> cpu time, memory, name, command line work out of the box.
+- `readlink /proc/<pid>/exe` needs `CAP_SYS_PTRACE`; `/proc/<pid>/io` is root-only `0400` and needs `CAP_DAC_READ_SEARCH`. **Both** are needed for `process.disk.io` and `process.executable.path` of root-owned processes (`CAP_SYS_PTRACE` alone still fails on `/proc/<pid>/io`).
+- Without them the scraper logs `Error scraping metrics ... permission denied` every interval, for every PID (including ones your `include` would skip), so the generated config also sets `mute_process_{name,exe,io,user,cgroup}_error: true`.
+
+The installer writes `/etc/systemd/system/otelcol-contrib.service.d/10-process-metrics.conf`:
+
+```ini
+[Service]
+AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+```
+
+This grants the collector read access to arbitrary files (`CAP_DAC_READ_SEARCH`) and ptrace-read of other processes — a real privilege increase. If your security policy forbids it, use `PROCESS_CAPS=false` and accept missing disk I/O / exe path for other users' processes. SELinux was not exercised in the container lab; on enforcing hosts check `ausearch -m avc -ts recent` after enabling.
 
 ### Credentials (TLS / token)
 
@@ -126,7 +168,22 @@ receivers:
       network:
       load:
       paging:
-      processes:
+      processes:                 # aggregate counts
+      process:                   # per-process; prefer an include list in production
+        include:
+          match_type: strict     # or regexp
+          names: [rsyslogd, sshd, otelcol-contrib]
+        mute_process_name_error: true
+        mute_process_exe_error: true
+        mute_process_io_error: true
+        mute_process_user_error: true
+        mute_process_cgroup_error: true
+        metrics:
+          process.cpu.time: {enabled: true}
+          process.cpu.utilization: {enabled: true}
+          process.memory.usage: {enabled: true}
+          process.memory.virtual: {enabled: true}
+          process.disk.io: {enabled: true}
   filelog:
     include:
       - /var/log/messages
@@ -176,8 +233,16 @@ Allow **4317/tcp** (gRPC) or **4318/tcp** (HTTP) from agents to the gateway.
 | TLS with CA to gateway | Pass |
 | Bearer token written to conf | Pass (gateway did not enforce auth in lab) |
 | filelog paths in config | Added; validate OK — re-run CentOS lab if you need live log traffic proof |
+| Per-process metrics, filtered (`PROCESS_NAMES="rsyslogd, sshd,otelcol-contrib"`, strict) | Pass — CentOS Stream 9 + systemd + podman; `process.cpu.time/utilization`, `process.memory.usage/virtual`, `process.disk.io` seen at gateway with `process.pid` / `process.executable.name` |
+| `PROCESS_MATCH_TYPE=regexp` | Pass (`^ssh,rsyslog` -> sshd, rsyslogd only) |
+| `ENABLE_PROCESS_METRICS=false` | Pass (no process scraper, drop-in removed) |
+| `PROCESS_NAMES` unset (all processes) | Pass (lab smoke; installer warns) |
+| Reading root processes' `io` / `exe` as `otelcol-contrib` | Needs `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH` drop-in (installed by default, `PROCESS_CAPS=false` to skip) |
+| SELinux enforcing, TLS/mTLS with process metrics | Not tested |
 
-Sample metric names observed: `system.cpu.utilization`, `system.memory.usage`, `system.disk.io`, `system.filesystem.usage`, `system.network.io`, `system.cpu.load_average.*`, `system.paging.*`, `system.processes.*`.
+Raw samples and permission experiments: [`evidence/process-metrics-centos9.md`](evidence/process-metrics-centos9.md).
+
+Sample metric names observed: `system.cpu.utilization`, `system.memory.usage`, `system.disk.io`, `system.filesystem.usage`, `system.network.io`, `system.cpu.load_average.*`, `system.paging.*`, `system.processes.*`, `process.cpu.time`, `process.cpu.utilization`, `process.memory.usage`, `process.memory.virtual`, `process.disk.io`.
 
 ## Files in this folder
 
@@ -188,3 +253,4 @@ Sample metric names observed: `system.cpu.utilization`, `system.memory.usage`, `
 | `agent-config.lab.yaml` | local lab agent (127.0.0.1) |
 | `gateway-config.yaml` | minimal gateway |
 | `run-lab.sh` | local smoke test helper |
+| `evidence/` | live verification output (per-process metrics on CentOS Stream 9) |
