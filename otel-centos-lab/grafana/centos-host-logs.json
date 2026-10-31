@@ -1,4 +1,42 @@
 {
+  "__inputs": [
+    {
+      "name": "DS_MIMIR",
+      "label": "Mimir",
+      "description": "Metrics (Prometheus-type data source pointing to Mimir)",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    },
+    {
+      "name": "DS_LOKI",
+      "label": "Loki",
+      "description": "Logs",
+      "type": "datasource",
+      "pluginId": "loki",
+      "pluginName": "Loki"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "loki",
+      "name": "Loki",
+      "version": "1.0.0"
+    }
+  ],
   "uid": "centos-host-logs",
   "title": "CentOS host \u00b7 Logs",
   "tags": [
@@ -22,7 +60,7 @@
       "id": 100,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 0,
@@ -35,7 +73,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "max by (instance, deployment_environment_name, datacenter, team, business_line, role) (last_over_time(system_cpu_logical_count{job=\"$job\",instance=\"$host\"}[2m]))",
           "instant": true,
@@ -84,7 +122,7 @@
       "id": 17,
       "datasource": {
         "type": "loki",
-        "uid": "${logs}"
+        "uid": "${DS_LOKI}"
       },
       "gridPos": {
         "x": 0,
@@ -97,7 +135,7 @@
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "${logs}"
+            "uid": "${DS_LOKI}"
           },
           "expr": "sum by (detected_level) (count_over_time({service_name=~\".+\"} | service_instance_id=\"$host\" | detected_level=~\"$level\" | systemd_unit=~\"$unit\" |~ \"$search\" [1m]))",
           "legendFormat": "{{detected_level}}"
@@ -209,7 +247,7 @@
       "id": 18,
       "datasource": {
         "type": "loki",
-        "uid": "${logs}"
+        "uid": "${DS_LOKI}"
       },
       "gridPos": {
         "x": 0,
@@ -222,7 +260,7 @@
           "refId": "A",
           "datasource": {
             "type": "loki",
-            "uid": "${logs}"
+            "uid": "${DS_LOKI}"
           },
           "expr": "{service_name=~\".+\"} | service_instance_id=\"$host\" | detected_level=~\"$level\" | systemd_unit=~\"$unit\" |~ \"$search\""
         }
@@ -238,28 +276,12 @@
   "templating": {
     "list": [
       {
-        "name": "metrics",
-        "label": "Metrics",
-        "type": "datasource",
-        "query": "prometheus",
-        "current": {},
-        "hide": 0
-      },
-      {
-        "name": "logs",
-        "label": "Logs",
-        "type": "datasource",
-        "query": "loki",
-        "current": {},
-        "hide": 0
-      },
-      {
         "name": "job",
         "label": "Job",
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_time, job)",
@@ -274,7 +296,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\"}, deployment_environment_name)",
@@ -296,7 +318,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\"}, datacenter)",
@@ -318,7 +340,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\"}, team)",
@@ -340,7 +362,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\"}, business_line)",
@@ -362,7 +384,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\",business_line=~\"$business_line\"}, role)",
@@ -384,7 +406,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\",business_line=~\"$business_line\",role=~\"$role\"}, instance)",

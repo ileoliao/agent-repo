@@ -132,10 +132,10 @@ Two dashboards that link to each other like tabs (a dashboard link on the `cento
 | `grafana/centos-host-metrics.json` | CentOS host · Metrics | host info, overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory |
 | `grafana/centos-host-logs.json` | CentOS host · Logs | host info, log volume by level, log stream (filters: level, systemd unit, regex search) |
 
-Import both and pick the **Metrics** (Mimir, Prometheus type) and **Logs** (Loki) data sources in the variables at the top; the data source UIDs are not hard-coded.
+Import both (Dashboards → New → Import). Grafana asks once for the **Mimir** (Prometheus type) and **Loki** data sources and writes their UIDs into the panels; there is no data source selector on the dashboards. For file provisioning, replace `${DS_MIMIR}` / `${DS_LOKI}` with your data source UIDs first.
 
 - Hosts are narrowed down with cascading, multi-select filters: Environment (`deployment.environment.name`) → Datacenter → Team → Business line → Role → Host. They read the promoted labels on `system_cpu_logical_count` (one series per host) and do **not** use `target_info`, so these five attributes must be promoted (see above).
-- Panels select series by `job` (`SERVICE_NAME`) and `instance` (`service.instance.id` = host name), which every series has.
+- Panels select series by `job` and `instance`, which every series has. `job` is the agent's `service.name` (`SERVICE_NAME`, default `centos-host`): it marks the data as coming from this host agent and keeps the dashboards from mixing in other sources of the same metric names in the tenant; it is the same on every host. `instance` is the host (`service.instance.id` = host name).
 - Metric names follow Mimir's default OTLP translation without unit/type suffixes (`system_cpu_time`, `system_memory_utilization`, `process_memory_usage`). If your Mimir sets `otel_metric_suffixes_enabled: true` (or you use Prometheus' OTLP receiver), names get suffixes (`system_cpu_time_seconds_total`) and the queries need them too.
 - Logs are filtered by `service_instance_id`, `detected_level` and `systemd_unit` (structured metadata), not by index labels.
 

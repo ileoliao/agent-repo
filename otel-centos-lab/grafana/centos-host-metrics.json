@@ -1,4 +1,28 @@
 {
+  "__inputs": [
+    {
+      "name": "DS_MIMIR",
+      "label": "Mimir",
+      "description": "Metrics (Prometheus-type data source pointing to Mimir)",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    }
+  ],
   "uid": "centos-host",
   "title": "CentOS host \u00b7 Metrics",
   "tags": [
@@ -22,7 +46,7 @@
       "id": 100,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 0,
@@ -35,7 +59,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "max by (instance, deployment_environment_name, datacenter, team, business_line, role) (last_over_time(system_cpu_logical_count{job=\"$job\",instance=\"$host\"}[2m]))",
           "instant": true,
@@ -97,7 +121,7 @@
       "id": 2,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 0,
@@ -110,7 +134,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "1 - sum(rate(system_cpu_time{job=\"$job\",instance=\"$host\",state=\"idle\"}[2m])) / sum(rate(system_cpu_time{job=\"$job\",instance=\"$host\"}[2m]))",
           "instant": true
@@ -156,7 +180,7 @@
       "id": 3,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 6,
@@ -169,7 +193,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum(system_memory_utilization{job=\"$job\",instance=\"$host\",state=\"used\"})",
           "instant": true
@@ -215,7 +239,7 @@
       "id": 4,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 12,
@@ -228,7 +252,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum(system_cpu_load_average_1m{job=\"$job\",instance=\"$host\"}) / sum(system_cpu_logical_count{job=\"$job\",instance=\"$host\"})",
           "instant": true
@@ -274,7 +298,7 @@
       "id": 5,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 18,
@@ -287,7 +311,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum(system_filesystem_usage{job=\"$job\",instance=\"$host\",mountpoint=\"/\",state=\"used\"}) / sum(system_filesystem_usage{job=\"$job\",instance=\"$host\",mountpoint=\"/\"})",
           "instant": true
@@ -346,7 +370,7 @@
       "id": 7,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 0,
@@ -359,7 +383,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum by (state) (rate(system_cpu_time{job=\"$job\",instance=\"$host\"}[2m])) / scalar(sum(rate(system_cpu_time{job=\"$job\",instance=\"$host\"}[2m])))",
           "legendFormat": "{{state}}"
@@ -398,7 +422,7 @@
       "id": 8,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 12,
@@ -411,7 +435,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum by (state) (system_memory_utilization{job=\"$job\",instance=\"$host\",state=~\"used|cached\"})",
           "legendFormat": "{{state}}"
@@ -451,7 +475,7 @@
       "id": 9,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 0,
@@ -464,7 +488,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum(system_cpu_load_average_1m{job=\"$job\",instance=\"$host\"})",
           "legendFormat": "1m"
@@ -473,7 +497,7 @@
           "refId": "B",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum(system_cpu_load_average_5m{job=\"$job\",instance=\"$host\"})",
           "legendFormat": "5m"
@@ -482,7 +506,7 @@
           "refId": "C",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum(system_cpu_load_average_15m{job=\"$job\",instance=\"$host\"})",
           "legendFormat": "15m"
@@ -521,7 +545,7 @@
       "id": 10,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 12,
@@ -534,7 +558,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum by (mountpoint) (system_filesystem_usage{job=\"$job\",instance=\"$host\",state=\"used\"}) / sum by (mountpoint) (system_filesystem_usage{job=\"$job\",instance=\"$host\"})",
           "legendFormat": "{{mountpoint}}"
@@ -573,7 +597,7 @@
       "id": 11,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 0,
@@ -586,7 +610,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum by (device, direction) (rate(system_disk_io{job=\"$job\",instance=\"$host\"}[2m]))",
           "legendFormat": "{{device}} {{direction}}"
@@ -625,7 +649,7 @@
       "id": 12,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 12,
@@ -638,7 +662,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum by (device, direction) (rate(system_network_io{job=\"$job\",instance=\"$host\"}[2m]))",
           "legendFormat": "{{device}} {{direction}}"
@@ -690,7 +714,7 @@
       "id": 14,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 0,
@@ -703,7 +727,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum by (process_executable_name) (rate(process_cpu_time{job=\"$job\",instance=\"$host\"}[2m]))",
           "legendFormat": "{{process_executable_name}}"
@@ -742,7 +766,7 @@
       "id": 15,
       "datasource": {
         "type": "prometheus",
-        "uid": "${metrics}"
+        "uid": "${DS_MIMIR}"
       },
       "gridPos": {
         "x": 12,
@@ -755,7 +779,7 @@
           "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${metrics}"
+            "uid": "${DS_MIMIR}"
           },
           "expr": "sum by (process_executable_name) (process_memory_usage{job=\"$job\",instance=\"$host\"})",
           "legendFormat": "{{process_executable_name}}"
@@ -792,20 +816,12 @@
   "templating": {
     "list": [
       {
-        "name": "metrics",
-        "label": "Metrics",
-        "type": "datasource",
-        "query": "prometheus",
-        "current": {},
-        "hide": 0
-      },
-      {
         "name": "job",
         "label": "Job",
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_time, job)",
@@ -820,7 +836,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\"}, deployment_environment_name)",
@@ -842,7 +858,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\"}, datacenter)",
@@ -864,7 +880,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\"}, team)",
@@ -886,7 +902,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\"}, business_line)",
@@ -908,7 +924,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\",business_line=~\"$business_line\"}, role)",
@@ -930,7 +946,7 @@
         "type": "query",
         "datasource": {
           "type": "prometheus",
-          "uid": "${metrics}"
+          "uid": "${DS_MIMIR}"
         },
         "query": {
           "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\",business_line=~\"$business_line\",role=~\"$role\"}, instance)",
