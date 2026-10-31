@@ -18,5 +18,5 @@ service:
   pipelines:
     logs/files:
       receivers: [file_log]
-      processors: [memory_limiter, resource/service, resource_detection, transform/instance_id, batch]
+      processors: [memory_limiter, resource_detection, resource/identity, batch]
       exporters: [otlp_http]

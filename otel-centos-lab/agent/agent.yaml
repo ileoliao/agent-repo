@@ -36,9 +36,6 @@ processors:
     check_interval: 1s
     limit_mib: 256
     spike_limit_mib: 64
-  resource/service:
-    attributes:
-      - {key: service.name, value: "${env:SERVICE_NAME}", action: insert}
   # env first: HOST_ATTRIBUTES (OTEL_RESOURCE_ATTRIBUTES) win over detected values
   resource_detection:
     detectors: [env, system]
@@ -48,18 +45,12 @@ processors:
         host.id: {enabled: true}
         host.arch: {enabled: true}
         os.description: {enabled: true}
-  # service.instance.id becomes the "instance" label in Mimir/Prometheus; without it all hosts
-  # sharing a service.name would write into the same series
-  transform/instance_id:
-    error_mode: ignore
-    metric_statements:
-      - context: resource
-        statements:
-          - set(resource.attributes["service.instance.id"], resource.attributes["host.name"]) where resource.attributes["service.instance.id"] == nil
-    log_statements:
-      - context: resource
-        statements:
-          - set(resource.attributes["service.instance.id"], resource.attributes["host.name"]) where resource.attributes["service.instance.id"] == nil
+  # service.instance.id = host.name becomes the "instance" label in Mimir/Prometheus; without it all
+  # hosts sharing a service.name would write into the same series
+  resource/identity:
+    attributes:
+      - {key: service.name, value: "${env:SERVICE_NAME}", action: insert}
+      - {key: service.instance.id, from_attribute: host.name, action: insert}
   batch:
     send_batch_size: 1024
     timeout: 10s
@@ -72,7 +63,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [memory_limiter, resource/service, resource_detection, transform/instance_id, batch]
+      processors: [memory_limiter, resource_detection, resource/identity, batch]
       exporters: [otlp_http]
   telemetry:
     logs:

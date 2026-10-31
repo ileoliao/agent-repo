@@ -88,22 +88,22 @@ Real filesystems on loop or LVM devices are still reported. The central collecto
 
 ## Privileges and sandbox
 
-The service runs as `otelcol-contrib` with **no capabilities**. The installer writes one drop-in, `/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf`: empty `CapabilityBoundingSet` / `AmbientCapabilities`, `SupplementaryGroups=systemd-journal` (only with `SYSTEM_LOGS=true`), `NoNewPrivileges`, `ProtectSystem=strict` with `ReadWritePaths=/var/lib/otelcol-contrib/file_storage`, `ProtectHome`, `PrivateTmp`, `InaccessiblePaths` for `/etc/ssh`, sudoers and `/etc/pki/tls/private`, and kernel/namespace protections.
+The service runs as `otelcol-contrib` with **no capabilities**. The installer writes one drop-in, `/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf`: empty `CapabilityBoundingSet`, `SupplementaryGroups=systemd-journal` (only with `SYSTEM_LOGS=true`), `NoNewPrivileges`, `ProtectSystem=strict` with `ReadWritePaths=/var/lib/otelcol-contrib/file_storage`, `ProtectHome`, `PrivateTmp`, `RestrictNamespaces`, `LockPersonality`, `SystemCallArchitectures=native`.
 
-Verified on CentOS Stream 9: the running agent has `CapEff=0` and `NoNewPrivs=1` and cannot read `/etc/shadow`, SSH host keys, `/root` or `/proc/<pid>/{environ,mem}` of other processes; `systemd-analyze security` 4.2 OK (7.2 MEDIUM without the drop-in). Why no capabilities:
+Without capabilities, plain file permissions already keep the agent user away from secrets: verified on CentOS Stream 9, it cannot read `/etc/shadow`, SSH host keys, sudoers, `/root` or `/proc/<pid>/{environ,mem}` of other processes, even outside the sandbox. The sandbox therefore only adds what file permissions do not cover: no privilege escalation through setuid binaries (`NoNewPrivileges`), no user namespaces (a common kernel-exploit entry point), no writes outside the storage directory, and hidden home directories (some hosts have world-readable ones). Running agent: `CapEff=0`, `NoNewPrivs=1`; `systemd-analyze security` 4.9 OK (7.2 MEDIUM without the drop-in). Why no capabilities:
 
 | Capability | Would give | |
 |---|---|---|
 | `CAP_SYS_PTRACE` | other users' per-process disk I/O, **and** any process's environment and memory (read `sshd` memory in the test) | not granted |
 | `CAP_DAC_READ_SEARCH` | 0600 log files, **and** any file (`/etc/shadow`, SSH host keys) | not granted |
 
-`/etc/shadow` cannot be listed in `InaccessiblePaths`: SELinux denies systemd mounting over `shadow_t` and the service fails to start; without capabilities its `0000` mode already protects it. The RPM ships no SELinux policy, so the service runs as `unconfined_service_t`; everything above worked with 0 AVC denials.
+The RPM ships no SELinux policy, so the service runs as `unconfined_service_t`; everything above worked with 0 AVC denials.
 
 The systemd service does not inherit the login shell's proxy variables. If your hosts set a proxy for all services (`DefaultEnvironment`), put the central collector in `NO_PROXY`.
 
 ## Host identity and attributes (Mimir)
 
-Mimir builds the series identity of OTLP data from `service.name` → `job` and `service.instance.id` → `instance`; other resource attributes only go to `target_info` unless promoted. All hosts share `service.name`, so the agent sets **`service.instance.id = host.name`** (otherwise hosts would overwrite each other's series). It also detects `host.id` (machine-id), `host.arch`, `os.description` and adds `HOST_ATTRIBUTES` (keys `[A-Za-z0-9._-]`, values `[A-Za-z0-9._/:-]`; they win over detected values; `service.name` / `service.instance.id` are rejected).
+Mimir builds the series identity of OTLP data from `service.name` → `job` and `service.instance.id` → `instance`; other resource attributes only go to `target_info` unless promoted. All hosts share `service.name`, so the agent sets **`service.instance.id = host.name`** (otherwise hosts would overwrite each other's series). It also detects `host.id` (machine-id), `host.arch`, `os.description` and adds `HOST_ATTRIBUTES` (keys `[A-Za-z0-9._-]`, values `[A-Za-z0-9._/:-]`; they win over detected values).
 
 Attributes that are constant per host do not add series. Promote only what nearly every query or alert route uses:
 
@@ -138,8 +138,8 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 | Install | Over an older install; from internal repo (`file://`) and from GitHub | Pass; only the managed fragments, conf and drop-in remain |
 | Install | `https://` + Basic token via `sudo -E` | Pass: preflight 200, data arrives; token appears 0 times in the journal |
 | Install | Wrong password | Exit 1 at preflight (401), running agent and config unchanged |
-| Install | Invalid inputs: `host:port` endpoint, token over `http://`, token not `base64(user:pass)`, process name > 15 chars, `LOG_PATHS` under `/home`, `http://` repo, `service.name` in `HOST_ATTRIBUTES`, non-boolean flag | Exit 1 before anything is changed |
-| Privileges | Running agent | `CapEff=0`, `NoNewPrivs=1`; groups `otelcol-contrib` (+ `systemd-journal` with system logs) |
+| Install | Invalid inputs: `host:port` endpoint, token over `http://`, process name > 15 chars, `LOG_PATHS` under `/home`, `http://` repo, malformed `HOST_ATTRIBUTES`, non-boolean flag | Exit 1 before anything is changed |
+| Privileges | Running agent | `CapEff=0`, `NoNewPrivs=1`; groups `otelcol-contrib` (+ `systemd-journal` with system logs); `systemd-analyze security` 4.9 OK |
 | Privileges | Reading `/etc/shadow`, SSH host key, `/root`, `/proc/<sshd>/environ`, `/proc/<sshd>/mem` | Denied (root outside the sandbox can read them) |
 | Logs | journald `err` / `warning` / `authpriv` lines | `error` / `warn` / `info` with `syslog_identifier`, `systemd_unit` |
 | Logs | Lines written while the agent was stopped (journald and file) | Collected after start |
@@ -151,13 +151,9 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 | Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=centos-host` |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
 
-Earlier experiments: [`evidence/process-metrics-centos9.md`](evidence/process-metrics-centos9.md).
-
 ## Files
 
 | Path | Description |
 |---|---|
 | `centos-install.sh` | installer |
 | `agent/*.yaml` | agent config fragments |
-| `gateway-config.yaml` | minimal verification collector (no auth, binds all interfaces: lab only) |
-| `evidence/` | earlier live verification output |

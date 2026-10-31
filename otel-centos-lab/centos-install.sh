@@ -11,7 +11,7 @@
 #
 # Variables:
 #   COLLECTOR_ENDPOINT   required; https://host:port (http:// only without a token)
-#   OTEL_TOKEN           Basic auth token, base64("user:password"); requires https://
+#   OTEL_TOKEN           Basic auth token, base64("user:password"); requires https:// (checked by the preflight)
 #   REPO_URL             internal yum repo (https:// or file://); default: GitHub release download
 #   OTEL_VERSION         default 0.164.0
 #   HOST_ATTRIBUTES      "deployment.environment.name=prod,datacenter=sh1,team=infra"
@@ -45,7 +45,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 [[ -d "$SRC" ]] || die "config fragments not found in ${SRC}"
 
 # ---------- inputs (values end up in a systemd EnvironmentFile: no whitespace, quotes or control chars)
-for v in COLLECTOR_ENDPOINT OTEL_TOKEN REPO_URL OTEL_VERSION SERVICE_NAME; do
+for v in COLLECTOR_ENDPOINT OTEL_TOKEN REPO_URL OTEL_VERSION SERVICE_NAME HOST_ATTRIBUTES; do
   [[ ! "${!v}" =~ [[:space:][:cntrl:]\'\"] ]] || die "${v} must not contain whitespace, quotes or control characters"
 done
 case "$COLLECTOR_ENDPOINT" in
@@ -53,23 +53,14 @@ case "$COLLECTOR_ENDPOINT" in
   http://*) [[ -z "$OTEL_TOKEN" ]] || die "OTEL_TOKEN requires an https:// COLLECTOR_ENDPOINT" ;;
   *) die "COLLECTOR_ENDPOINT must be https://host:port (got: '${COLLECTOR_ENDPOINT}')" ;;
 esac
-if [[ -n "$OTEL_TOKEN" ]] && ! base64 -d <<< "$OTEL_TOKEN" 2>/dev/null | grep -q ':'; then
-  die 'OTEL_TOKEN must be base64("user:password")'
-fi
 # No signature or digest check on the package, so its transport must be authenticated
 case "$REPO_URL" in ""|https://*|file:///*) ;; *) die "REPO_URL must be https:// or file://" ;; esac
-[[ "$SERVICE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "SERVICE_NAME may only contain [A-Za-z0-9._-]"
 for v in KEEP_PROCESS_PIDS SYSTEM_LOGS; do
   case "${!v}" in true|false) ;; *) die "${v} must be true or false" ;; esac
 done
 
-if [[ -n "$HOST_ATTRIBUTES" ]]; then
-  IFS=',' read -r -a attrs <<< "$HOST_ATTRIBUTES"
-  for kv in "${attrs[@]}"; do
-    [[ "$kv" =~ ^[A-Za-z][A-Za-z0-9._-]*=[A-Za-z0-9._/:-]+$ ]] || die "HOST_ATTRIBUTES entry must be key=value: '${kv}'"
-    case "${kv%%=*}" in service.name|service.instance.id) die "${kv%%=*} cannot be set in HOST_ATTRIBUTES" ;; esac
-  done
-fi
+kv='[A-Za-z][A-Za-z0-9._-]*=[A-Za-z0-9._/:-]+'
+[[ -z "$HOST_ATTRIBUTES" || "$HOST_ATTRIBUTES" =~ ^${kv}(,${kv})*$ ]] || die "HOST_ATTRIBUTES must be key=value,key=value"
 
 # Lists are passed to the collector as JSON arrays (parsed as YAML lists by ${env:...})
 to_json() { local out="" x; for x in "$@"; do out+="${out:+,}\"${x}\""; done; echo "[${out}]"; }
@@ -150,29 +141,24 @@ code="$(printf 'Authorization: Basic %s\n' "$OTEL_TOKEN" | curl -sS -o /dev/null
   401 = wrong OTEL_TOKEN; certificate error = company CA missing from the system trust store. The running agent was not changed."
 
 # ---------- install: config, environment, sandbox drop-in
-rm -f "${ETC}"/*.yaml "${ETC}"/*.bak.* "${ETC}"/*.rpmsave "${ETC}"/*.rpmnew   # leftovers may hold an old token
+rm -f "${ETC}"/*.yaml "${ETC}"/*.rpmsave "${ETC}"/*.rpmnew   # rpm leftovers may hold an old token
 cp -p "${STAGE}"/*.yaml "${STAGE}/otelcol-contrib.conf" "$ETC/"
 install -d -m 0750 -o otelcol-contrib -g otelcol-contrib "$STORAGE_DIR"
 install -d -m 0755 "$(dirname "$DROPIN")"
 journal_group=""
 [[ "$SYSTEM_LOGS" != "true" ]] || journal_group="SupplementaryGroups=systemd-journal"
 cat > "$DROPIN" << UNIT
-# Managed by centos-install.sh: no capabilities + sandbox
+# Managed by centos-install.sh. No capabilities: file permissions already keep the agent user away from
+# secrets (shadow, SSH keys, other processes' memory). The rest limits privilege escalation and kernel
+# attack surface (setuid binaries, user namespaces) and keeps writes to the storage directory.
 [Service]
 CapabilityBoundingSet=
-AmbientCapabilities=
 ${journal_group}
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=${STORAGE_DIR}
 ProtectHome=yes
 PrivateTmp=yes
-# /etc/shadow cannot be listed here (SELinux denies mounting over shadow_t); its 0000 mode protects it
-InaccessiblePaths=-/etc/ssh -/etc/sudoers -/etc/sudoers.d -/etc/pki/tls/private
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictSUIDSGID=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 SystemCallArchitectures=native
