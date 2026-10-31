@@ -59,8 +59,24 @@ processors:
         action: update
         operations:
           - {action: aggregate_labels, label_set: [state], aggregation_type: sum}
+  # groupbyattrs left name/owner (and pid with KEEP_PROCESS_PIDS) on the resource, where Mimir/Prometheus
+  # keep them only in target_info: make them data point labels so each process is its own series
+  # without any promotion in the backend
+  transform/process_labels:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        conditions:
+          - IsMatch(metric.name, "^process\\.")
+        statements:
+          - set(datapoint.attributes["process.executable.name"], resource.attributes["process.executable.name"]) where resource.attributes["process.executable.name"] != nil
+          - set(datapoint.attributes["process.owner"], resource.attributes["process.owner"]) where resource.attributes["process.owner"] != nil
+          - set(datapoint.attributes["process.pid"], resource.attributes["process.pid"]) where resource.attributes["process.pid"] != nil
+      - context: resource
+        statements:
+          - delete_matching_keys(resource.attributes, "^process\\.")
 
 service:
   pipelines:
     metrics:
-      processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, resource_detection, resource/identity, batch]
+      processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, transform/process_labels, resource_detection, resource/identity, batch]

@@ -73,7 +73,7 @@ The service loads them with `OTELCOL_OPTIONS="--config=… --config=…"` (maps 
 
 `PROCESS_NAMES` selects processes by exact name (Linux `comm`, max 15 characters). Exported: `process.cpu.time`, `process.cpu.utilization`, `process.memory.usage`, `process.memory.virtual`. `process.disk.io` is off: reading other users' `/proc/<pid>/io` needs `CAP_SYS_PTRACE`, which would let the agent read any process's memory.
 
-`process.pid` changes on every restart and would blow up cardinality, but dropping it makes several processes with the same name and owner (nginx / php-fpm workers) overwrite each other. So the agent copies name and owner onto the data points, regroups by them and **sums** them: one series per executable name + owner (verified: three `sleep` processes → one series with their total RSS). Summed CPU time drops when one process exits, which `rate()` treats as a counter reset. `process.command_line` / `command` can carry secrets (`mysql -pSECRET`) and are never exported, `KEEP_PROCESS_PIDS=true` included.
+`process.pid` changes on every restart and would blow up cardinality, but dropping it makes several processes with the same name and owner (nginx / php-fpm workers) overwrite each other. So the agent copies name and owner onto the data points, regroups by them and **sums** them: one series per executable name + owner (verified: three `sleep` processes → one series with their total RSS). Name and owner end up as data point labels (`process_executable_name`, `process_owner`), not resource attributes: Mimir/Prometheus would otherwise keep them only in `target_info`, and every process of a host would land in the same series unless the backend promotes them. Summed CPU time drops when one process exits, which `rate()` treats as a counter reset. `process.command_line` / `command` can carry secrets (`mysql -pSECRET`) and are never exported, `KEEP_PROCESS_PIDS=true` included.
 
 ## Cardinality guards
 
@@ -129,9 +129,17 @@ system_memory_utilization_ratio{state="used"}
 
 Cloned VMs keep the template's `/etc/machine-id` unless the image pipeline resets it, so `host.id` is only unique if it does.
 
+## Grafana dashboard
+
+`grafana/centos-host.json`: overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory, log volume by level and the log stream. Import it in Grafana and pick the **Metrics** (Mimir, Prometheus type) and **Logs** (Loki) data sources in the variables at the top; the data source UIDs are not hard-coded.
+
+- Hosts are selected by `job` (`SERVICE_NAME`) and `instance` (`service.instance.id` = host name), which every series has, so the dashboard needs **no** resource-attribute promotion in Mimir.
+- Metric names follow Mimir's default OTLP translation without unit/type suffixes (`system_cpu_time`, `system_memory_utilization`, `process_memory_usage`). If your Mimir sets `otel_metric_suffixes_enabled: true` (or you use Prometheus' OTLP receiver), names get suffixes (`system_cpu_time_seconds_total`) and the queries need them too.
+- Logs are filtered by `service_instance_id`, `detected_level` and `systemd_unit` (structured metadata), not by index labels.
+
 ## Verification
 
-CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164.0; test collector with OTLP/HTTP + TLS (test CA in the system trust store) + basic auth; local Prometheus + Loki.
+CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164.0; test collector with OTLP/HTTP + TLS (test CA in the system trust store) + basic auth; local collector → single-instance Mimir 2.16 + Loki 3.5, Grafana 11.4.
 
 | Area | Check | Result |
 |---|---|---|
@@ -149,6 +157,8 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 | Metrics | `process.disk.io`, `process.command_line` | Not exported |
 | Metrics | Dummy `veth`, bridge, tmpfs, container mount, loop device | Excluded; xfs on `/dev/loop0` still reported |
 | Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=centos-host` |
+| Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | Metrics arrive under the tenant only; promoted `host_name`, `deployment_environment_name`, `datacenter`, `team`; one `target_info` per host; one series per process name + owner (`sleep` sum = RSS sum) |
+| Grafana | Every dashboard query through Grafana's Mimir and Loki data sources | All 16 return data |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
 
 ## Files
@@ -157,3 +167,4 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 |---|---|
 | `centos-install.sh` | installer |
 | `agent/*.yaml` | agent config fragments |
+| `grafana/centos-host.json` | Grafana dashboard (Mimir + Loki) |
