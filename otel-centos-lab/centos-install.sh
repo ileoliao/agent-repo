@@ -16,6 +16,7 @@
 #   TLS_INSECURE=true|false
 #   LOG_PATHS="/var/log/messages /var/log/secure"   # file_log 采集路径，空格分隔
 #   ENABLE_LOGS=true|false                          # 默认 true
+#   KEEP_PROCESS_PIDS=true|false                    # 默认 false: 导出前删除 process.pid / process.parent_pid（基数）；仅调试时设 true
 #   ENABLE_PROCESS_METRICS=true|false               # 默认 true；per-process CPU/内存/IO
 #   PROCESS_NAMES="rsyslogd sshd otelcol-contrib"   # 空格或逗号分隔；未设置 = 采集全部进程（噪声大，仅实验室）
 #   PROCESS_MATCH_TYPE=strict|regexp                # 默认 strict（精确匹配进程名）
@@ -37,6 +38,11 @@ ENABLE_PROCESS_METRICS="${ENABLE_PROCESS_METRICS:-true}"
 PROCESS_NAMES="${PROCESS_NAMES:-}"
 PROCESS_MATCH_TYPE="${PROCESS_MATCH_TYPE:-strict}"
 PROCESS_CAPS="${PROCESS_CAPS:-true}"
+KEEP_PROCESS_PIDS="${KEEP_PROCESS_PIDS:-false}"
+case "$KEEP_PROCESS_PIDS" in
+  true|false) ;;
+  *) echo "KEEP_PROCESS_PIDS 只能是 true 或 false (当前: $KEEP_PROCESS_PIDS)"; exit 1 ;;
+esac
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -253,6 +259,14 @@ receivers:
       processes:${PROCESS_SCRAPER}
 ${FILELOG_RECEIVER}
 processors:
+  # Drop per-process PID resource attributes (high cardinality). Set KEEP_PROCESS_PIDS=true to keep them for debugging.
+  transform/drop_process_pids:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - 'delete_key(resource.attributes, "process.pid") where "\${env:KEEP_PROCESS_PIDS:-false}" != "true"'
+          - 'delete_key(resource.attributes, "process.parent_pid") where "\${env:KEEP_PROCESS_PIDS:-false}" != "true"'
   resource_detection:
     detectors: [system, env]
     system:
@@ -270,7 +284,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [resource_detection, batch]
+      processors: [transform/drop_process_pids, resource_detection, batch]
       exporters: [otlp_grpc]
 ${LOGS_PIPELINE}
   telemetry:
@@ -289,6 +303,7 @@ fi
     echo 'OTELCOL_OPTIONS="--config=/etc/otelcol-contrib/config.yaml"'
   fi
   echo "COLLECTOR_ENDPOINT=${COLLECTOR_ENDPOINT}"
+  echo "KEEP_PROCESS_PIDS=${KEEP_PROCESS_PIDS}"
   if [[ -n "$OTEL_TOKEN" ]]; then
     echo "OTEL_TOKEN=${OTEL_TOKEN}"
   fi
@@ -308,6 +323,11 @@ if [[ "${ENABLE_LOGS}" == "true" ]]; then
   echo "日志采集路径 (file_log): ${LOG_PATHS}"
 else
   echo "日志采集: 已关闭 (ENABLE_LOGS=false)"
+fi
+if [[ "$KEEP_PROCESS_PIDS" == "true" ]]; then
+  echo "进程指标: 保留 process.pid / process.parent_pid (KEEP_PROCESS_PIDS=true, 仅用于调试)"
+else
+  echo "进程指标: 已删除 process.pid / process.parent_pid (默认, 避免高基数)"
 fi
 if [[ "$ENABLE_PROCESS_METRICS" != "true" ]]; then
   echo "进程指标 (process scraper): 已关闭 (ENABLE_PROCESS_METRICS=false)"

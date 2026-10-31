@@ -11,7 +11,7 @@ Release: https://github.com/open-telemetry/opentelemetry-collector-releases/rele
 CentOS host
   otelcol-contrib (agent)
     receivers: host_metrics (incl. per-process) + file_log (optional)
-    processors: resource_detection + batch
+    processors: transform (drop process.pid / parent_pid) + resource_detection + batch
     exporter:  otlp_grpc  ──►  central Collector (gateway)
                                   OTLP :4317 / :4318
                                   → your backend
@@ -32,7 +32,7 @@ The script:
 
 1. Downloads (or uses `RPM_PATH`) and installs the contrib RPM via `dnf` / `yum` / `rpm`
 2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + per-process metrics + file_log)
-3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, optional `OTEL_TOKEN`)
+3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, `KEEP_PROCESS_PIDS`, optional `OTEL_TOKEN`)
 4. Writes the systemd drop-in for process metrics (see below) and **restarts** `otelcol-contrib`
 
 ### File logs (enabled by default)
@@ -64,7 +64,7 @@ Notes from live testing:
 
 ### Per-process metrics (`process` scraper)
 
-CPU / memory / disk I/O of individual processes, via the `host_metrics` `process` scraper (separate from the aggregate `processes` scraper). Each process is a separate resource with `process.pid`, `process.executable.name`, `process.executable.path`, `process.command_line`, `process.owner`, ...
+CPU / memory / disk I/O of individual processes, via the `host_metrics` `process` scraper (separate from the aggregate `processes` scraper). Each process is a separate resource with `process.executable.name`, `process.executable.path`, `process.command_line`, `process.owner`, ...
 
 Enabled metrics: `process.cpu.time`, `process.cpu.utilization` (opt-in in 0.164.0, enabled explicitly; first appears on the 2nd scrape), `process.memory.usage`, `process.memory.virtual`, `process.disk.io`.
 
@@ -103,6 +103,33 @@ CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 ```
 
 This drop-in sits next to `10-read-logs.conf` (file_log, `CAP_DAC_READ_SEARCH`); systemd merges `AmbientCapabilities` / `CapabilityBoundingSet` across drop-ins, so with both enabled the service has `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`. It grants the collector read access to arbitrary files (`CAP_DAC_READ_SEARCH`) and ptrace-read of other processes — a real privilege increase. If your security policy forbids it, use `PROCESS_CAPS=false` and accept missing disk I/O / exe path for other users' processes. SELinux was not exercised in the container lab; on enforcing hosts check `ausearch -m avc -ts recent` after enabling.
+
+#### PIDs are stripped by default
+
+`process.pid` and `process.parent_pid` change on every process restart, so exporting them creates a new time series each time and blows up cardinality in the backend.
+The agent therefore runs a `transform/drop_process_pids` processor at the start of the metrics pipeline that deletes these two resource attributes before the OTLP export.
+Stable attributes are kept: `process.executable.name`, `process.executable.path`, `process.command`, `process.command_line`, `process.owner`, plus `host.name` / `os.type`.
+
+To keep the PIDs for a debugging session, set `KEEP_PROCESS_PIDS=true`:
+
+```bash
+# at install time
+sudo KEEP_PROCESS_PIDS=true COLLECTOR_ENDPOINT=10.0.0.20:4317 bash centos-install.sh
+
+# or on an installed host
+sudo sed -i 's/^KEEP_PROCESS_PIDS=.*/KEEP_PROCESS_PIDS=true/' /etc/otelcol-contrib/otelcol-contrib.conf
+sudo systemctl restart otelcol-contrib
+```
+
+Set it back to `false` (or re-run the installer without the variable, which resets it to `false`) when done.
+When running `agent-config.yaml` by hand, export `KEEP_PROCESS_PIDS` in the environment; unset means `false`.
+
+Caveats:
+
+- Without the PID, processes that share the same executable/command line/owner (e.g. several `nginx` workers matched by `PROCESS_NAMES`) produce identical resource attributes, so their series
+  collapse into one. Per-process values are only meaningful for singleton processes; aggregate per executable name in the backend or gateway if you need totals.
+- `process.command_line` is kept because it is stable per service, but it can still be high cardinality for processes launched with changing arguments.
+  Delete it in the same processor if that is a problem on your hosts.
 
 ### Credentials (TLS / token)
 
@@ -204,6 +231,13 @@ receivers:
     include_file_path: true
 
 processors:
+  transform/drop_process_pids:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - 'delete_key(resource.attributes, "process.pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
+          - 'delete_key(resource.attributes, "process.parent_pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
   resource_detection:
     detectors: [system, env]
     system:
@@ -220,7 +254,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [resource_detection, batch]
+      processors: [transform/drop_process_pids, resource_detection, batch]
       exporters: [otlp_grpc]
     logs:
       receivers: [file_log]
@@ -244,6 +278,8 @@ Allow **4317/tcp** (gRPC) or **4318/tcp** (HTTP) from agents to the gateway.
 | CentOS Stream 9 + RPM + systemd (`centos-install.sh`) | Pass (Cursor VM + podman) |
 | TLS with CA to gateway | Pass |
 | Bearer token written to conf | Pass (gateway did not enforce auth in lab) |
+| Process metrics without `process.pid` / `process.parent_pid` (default) | Pass: CentOS Stream 9 + podman + systemd, installer-generated config; no pid attributes at gateway, `process.executable.name`/`command`/`owner` present |
+| `KEEP_PROCESS_PIDS=true` (conf edit + restart) | Pass: pid and parent_pid present again after restart |
 | Per-process metrics, filtered (`PROCESS_NAMES="rsyslogd, sshd,otelcol-contrib"`, strict) | Pass — CentOS Stream 9 + systemd + podman; `process.cpu.time/utilization`, `process.memory.usage/virtual`, `process.disk.io` seen at gateway with `process.pid` / `process.executable.name` |
 | `PROCESS_MATCH_TYPE=regexp` | Pass (`^ssh,rsyslog` -> sshd, rsyslogd only) |
 | `ENABLE_PROCESS_METRICS=false` | Pass (no process scraper, drop-in removed) |
