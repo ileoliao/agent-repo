@@ -33,7 +33,7 @@
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
-  "description": "Host agent from otel-redhat-lab: metrics in Mimir (default OTLP names, no suffixes). Logs: 'Red Hat host \u00b7 Logs' (link at the top).",
+  "description": "Host agent from otel-redhat-agent: metrics in Mimir (default OTLP names, no suffixes). Logs: 'Red Hat host \u00b7 Logs' (link at the top).",
   "refresh": "30s",
   "time": {
     "from": "now-1h",
