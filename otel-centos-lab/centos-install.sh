@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # CentOS Stream / RHEL / Rocky / Alma: install otelcol-contrib as host agent
-# (OS metrics + file logs) and ship to a central OpenTelemetry Collector.
+# (host metrics, system logs from journald, optional application log files) and ship to a central
+# OpenTelemetry Collector. The agent runs without capabilities and in a systemd sandbox.
 #
 # Usage:
 #   export COLLECTOR_ENDPOINT=https://otel-gateway.example.com:4318   # URL = OTLP/HTTP; host:port = OTLP/gRPC
@@ -15,20 +16,21 @@
 #   TLS_CERT_FILE=/path/client.crt
 #   TLS_KEY_FILE=/path/client.key
 #   OTEL_TOKEN=...                                  # sent as "Authorization: <OTEL_AUTH_SCHEME> <OTEL_TOKEN>"
+#   OTEL_TOKEN_FILE=/path                           # read the token from this file instead (keeps it out of argv and shell history)
 #   OTEL_AUTH_SCHEME=Bearer|Basic                   # default Bearer; Basic = OTEL_TOKEN is base64("user:password")
 #   TLS_INSECURE=true|false                         # gRPC: tls.insecure; with OTEL_TOKEN over a clear-text connection, TLS_INSECURE=true is required
 #   HOST_ATTRIBUTES="deployment.environment.name=prod,datacenter=sh1,team=infra"   # extra resource attributes for this host
-#   LOG_PATHS="/var/log/messages /var/log/secure"   # file_log paths, space-separated
-#   ENABLE_LOGS=true|false                          # default true
+#   SYSTEM_LOGS=true|false                          # default true: system logs from journald (priority info and above)
+#   LOG_PATHS="/var/log/myapp/*.log"                # application log files (file_log), space-separated; default: none
+#   LOG_CAPS=true|false                             # default false; true grants CAP_DAC_READ_SEARCH so LOG_PATHS files the agent cannot read
+#                                                   # are read anyway -- the agent can then read ANY file (/etc/shadow...). Transition only.
 #   SERVICE_NAME=centos-host                        # service.name (Loki service_name, Prometheus job); only [A-Za-z0-9._-]
-#   STORAGE_DIR=/var/lib/otelcol-contrib/file_storage  # file_log offset storage, so reading resumes after a restart
+#   STORAGE_DIR=/var/lib/otelcol-contrib/file_storage  # journald cursor / file offsets, so reading resumes after a restart
 #   KEEP_PROCESS_PIDS=true|false                    # default false: drop pid & co. and SUM same-name, same-owner processes into one series;
 #                                                   # true = one series per process (with process.pid), for debugging only
-#   ENABLE_PROCESS_METRICS=true|false               # default true; per-process CPU/memory/IO
+#   ENABLE_PROCESS_METRICS=true|false               # default true; per-process CPU/memory
 #   PROCESS_NAMES="rsyslogd sshd otelcol-contrib"   # space- or comma-separated; unset = ALL processes (noisy, lab only)
 #   PROCESS_MATCH_TYPE=strict|regexp                # default strict (exact process name)
-#   PROCESS_CAPS=true|false                         # default true; systemd drop-in with CAP_SYS_PTRACE+CAP_DAC_READ_SEARCH,
-#                                                   # needed to read other users' /proc/<pid>/io and exe (process.disk.io, executable.path)
 set -euo pipefail
 
 OTEL_VERSION="${OTEL_VERSION:-0.164.0}"
@@ -41,15 +43,14 @@ OTEL_AUTH_SCHEME="${OTEL_AUTH_SCHEME:-Bearer}"
 HOST_ATTRIBUTES="${HOST_ATTRIBUTES:-}"
 REPO_URL="${REPO_URL:-}"
 CERTS_DIR="${CERTS_DIR:-/etc/otelcol-contrib/certs}"
-ENABLE_LOGS="${ENABLE_LOGS:-true}"
+SYSTEM_LOGS="${SYSTEM_LOGS:-true}"
+LOG_CAPS="${LOG_CAPS:-false}"
 SERVICE_NAME="${SERVICE_NAME:-centos-host}"
 STORAGE_DIR="${STORAGE_DIR:-/var/lib/otelcol-contrib/file_storage}"
-# Usual CentOS/RHEL system logs; override with LOG_PATHS
-LOG_PATHS="${LOG_PATHS:-/var/log/messages /var/log/secure}"
+LOG_PATHS="${LOG_PATHS:-}"
 ENABLE_PROCESS_METRICS="${ENABLE_PROCESS_METRICS:-true}"
 PROCESS_NAMES="${PROCESS_NAMES:-}"
 PROCESS_MATCH_TYPE="${PROCESS_MATCH_TYPE:-strict}"
-PROCESS_CAPS="${PROCESS_CAPS:-true}"
 KEEP_PROCESS_PIDS="${KEEP_PROCESS_PIDS:-false}"
 case "$KEEP_PROCESS_PIDS" in
   true|false) ;;
@@ -70,6 +71,55 @@ if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this script as root or with sudo"
   exit 1
 fi
+
+# Removed options: refuse them instead of silently doing something else (ENABLE_LOGS=false would now still ship system logs)
+for legacy in ENABLE_LOGS PROCESS_CAPS; do
+  if [[ -n "${!legacy:-}" ]]; then
+    echo "ERROR: ${legacy} was removed. Logs: SYSTEM_LOGS (journald) and LOG_PATHS (files); per-process capabilities are no longer granted."
+    exit 1
+  fi
+done
+
+if [[ -n "${OTEL_TOKEN_FILE:-}" ]]; then
+  [[ -z "$OTEL_TOKEN" ]] || { echo "ERROR: set OTEL_TOKEN or OTEL_TOKEN_FILE, not both"; exit 1; }
+  [[ -r "$OTEL_TOKEN_FILE" ]] || { echo "ERROR: cannot read OTEL_TOKEN_FILE: $OTEL_TOKEN_FILE"; exit 1; }
+  OTEL_TOKEN="$(tr -d '\r\n' < "$OTEL_TOKEN_FILE")"
+fi
+
+# These values end up in YAML and in a systemd EnvironmentFile: no whitespace or control characters
+# (a newline could inject extra lines such as OTELCOL_OPTIONS)
+for v in COLLECTOR_ENDPOINT OTEL_VERSION REPO_URL STORAGE_DIR SERVICE_NAME; do
+  if [[ "${!v}" =~ [[:space:][:cntrl:]] ]]; then
+    echo "ERROR: ${v} must not contain whitespace or control characters"
+    exit 1
+  fi
+done
+[[ "$STORAGE_DIR" == /* ]] || { echo "ERROR: STORAGE_DIR must be an absolute path"; exit 1; }
+# No signature or digest check on the package, so the transport must be authenticated
+case "$REPO_URL" in
+  ""|https://*|file:///*) ;;
+  *) echo "ERROR: REPO_URL must be https:// (or file:// for a local mirror); got: ${REPO_URL}"; exit 1 ;;
+esac
+for v in SYSTEM_LOGS LOG_CAPS; do
+  case "${!v}" in
+    true|false) ;;
+    *) echo "${v} must be true or false (got: ${!v})"; exit 1 ;;
+  esac
+done
+# LOG_PATHS: absolute paths / globs only; /home and /root are hidden from the agent by the sandbox (ProtectHome)
+set -f
+for lp in $LOG_PATHS; do
+  if [[ ! "$lp" =~ ^/[][A-Za-z0-9._/*?-]+$ ]]; then
+    echo "ERROR: LOG_PATHS entries must be absolute paths or globs ([A-Za-z0-9._/*?[]-]); got: ${lp}"
+    exit 1
+  fi
+  case "$lp" in
+    /home/*|/root/*|/run/user/*)
+      echo "ERROR: ${lp} is under /home, /root or /run/user, which the agent sandbox hides (ProtectHome=yes)"
+      exit 1 ;;
+  esac
+done
+set +f
 
 # Work dir: by default a fresh mktemp -d (0700, unpredictable) removed on exit;
 # an explicitly set WORKDIR is used as is (and not removed).
@@ -204,10 +254,6 @@ for p in $LOG_PATHS; do
 done
 set +f
 
-case "$ENABLE_LOGS" in
-  true|false) ;;
-  *) echo "ENABLE_LOGS must be true or false (got: ${ENABLE_LOGS})"; exit 1 ;;
-esac
 if [[ ! "$SERVICE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "SERVICE_NAME may only contain letters, digits and . _ - (got: ${SERVICE_NAME})"
   exit 1
@@ -215,10 +261,6 @@ fi
 case "$ENABLE_PROCESS_METRICS" in
   true|false) ;;
   *) echo "ENABLE_PROCESS_METRICS must be true or false (got: ${ENABLE_PROCESS_METRICS})"; exit 1 ;;
-esac
-case "$PROCESS_CAPS" in
-  true|false) ;;
-  *) echo "PROCESS_CAPS must be true or false (got: ${PROCESS_CAPS})"; exit 1 ;;
 esac
 case "$PROCESS_MATCH_TYPE" in
   strict|regexp) ;;
@@ -244,7 +286,8 @@ fi
 if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
   PROCESS_SCRAPER="
       process:
-        # otelcol-contrib runs as non-root: reading other users' exe/io/user gives EACCES, mute those errors
+        # The agent runs without capabilities: other users' /proc/<pid>/{exe,io} give EACCES, mute those errors.
+        # process.disk.io is not collected: it needs CAP_SYS_PTRACE, which would let the agent read any process's memory.
         mute_process_name_error: true
         mute_process_exe_error: true
         mute_process_io_error: true
@@ -259,8 +302,9 @@ if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
             enabled: true
           process.memory.virtual:
             enabled: true
+          # on by default in host_metrics; switch it off explicitly (see above)
           process.disk.io:
-            enabled: true"
+            enabled: false"
 else
   PROCESS_SCRAPER=""
 fi
@@ -281,7 +325,7 @@ else
     # Download into the private WORKDIR, never a predictable path another user could pre-fill
     RPM_FILE="${WORKDIR}/${RPM_NAME}"
     echo "Downloading $RPM_URL ..."
-    curl -fL --retry 3 -o "$RPM_FILE" "$RPM_URL"
+    curl -fL --proto '=https' --proto-redir '=https' --retry 3 -o "$RPM_FILE" "$RPM_URL"
   fi
   echo "Installing RPM: $RPM_FILE"
   if command -v dnf >/dev/null 2>&1; then
@@ -301,9 +345,10 @@ if id otelcol-contrib >/dev/null 2>&1; then
     [[ -n "$CERT_PATH" ]] && chmod 0640 "$CERT_PATH" || true
     [[ -n "$KEY_PATH" ]] && chmod 0640 "$KEY_PATH" || true
   fi
-  # reading /var/log/messages and secure usually needs the adm group
-  if getent group adm >/dev/null 2>&1; then
-    usermod -aG adm otelcol-contrib || true
+  # Older versions of this script added the agent to adm; it is not needed (journald access comes from
+  # SupplementaryGroups in the unit drop-in), so take it back
+  if id -nG otelcol-contrib | tr ' ' '\n' | grep -qx adm; then
+    gpasswd -d otelcol-contrib adm >/dev/null && echo "Removed otelcol-contrib from the adm group (no longer needed)"
   fi
 fi
 
@@ -312,7 +357,47 @@ CONF=/etc/otelcol-contrib/otelcol-contrib.conf
 BACKUP_SUFFIX="$(date +%Y%m%d%H%M%S)"
 [[ -f "$CONFIG" ]] && cp -a "$CONFIG" "${CONFIG}.bak.${BACKUP_SUFFIX}"
 
-if [[ "${ENABLE_LOGS}" == "true" ]]; then
+# Logs: system logs from journald (SYSTEM_LOGS) and/or application log files (LOG_PATHS); both optional
+LOG_RECEIVERS=()
+JOURNALD_RECEIVER=""
+FILELOG_RECEIVER=""
+JOURNALD_PROCESSORS_YAML=""
+JOURNALD_PROCESSOR=""
+if [[ "$SYSTEM_LOGS" == "true" ]]; then
+  LOG_RECEIVERS+=(journald)
+  # journal access comes from SupplementaryGroups=systemd-journal in the unit drop-in
+  JOURNALD_RECEIVER="
+  journald:
+    priority: info
+    start_at: end
+    # cursor persisted: after an agent/host restart, resume where it stopped
+    storage: file_storage"
+  # journald records arrive as a map of all journal fields: keep MESSAGE as the body, map PRIORITY to
+  # severity, keep unit + identifier (structured metadata in Loki, not index labels), drop the rest
+  JOURNALD_PROCESSORS_YAML='
+  transform/journald:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        conditions:
+          - IsMap(log.body) and log.body["MESSAGE"] != nil
+        statements:
+          - set(log.attributes["systemd.unit"], log.body["_SYSTEMD_UNIT"]) where log.body["_SYSTEMD_UNIT"] != nil
+          - set(log.attributes["syslog.identifier"], log.body["SYSLOG_IDENTIFIER"]) where log.body["SYSLOG_IDENTIFIER"] != nil
+          - set(log.severity_number, SEVERITY_NUMBER_FATAL) where log.body["PRIORITY"] == "0" or log.body["PRIORITY"] == "1" or log.body["PRIORITY"] == "2"
+          - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.body["PRIORITY"] == "3"
+          - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.body["PRIORITY"] == "4"
+          - set(log.severity_number, SEVERITY_NUMBER_INFO2) where log.body["PRIORITY"] == "5"
+          - set(log.severity_number, SEVERITY_NUMBER_INFO) where log.body["PRIORITY"] == "6"
+          - set(log.severity_text, "fatal") where log.severity_number == SEVERITY_NUMBER_FATAL
+          - set(log.severity_text, "error") where log.severity_number == SEVERITY_NUMBER_ERROR
+          - set(log.severity_text, "warn") where log.severity_number == SEVERITY_NUMBER_WARN
+          - set(log.severity_text, "info") where log.severity_number == SEVERITY_NUMBER_INFO or log.severity_number == SEVERITY_NUMBER_INFO2
+          - set(log.body, log.body["MESSAGE"])'
+  JOURNALD_PROCESSOR="transform/journald, "
+fi
+if [[ -n "$LOG_PATHS" ]]; then
+  LOG_RECEIVERS+=(file_log)
   FILELOG_RECEIVER="
   file_log:
     include:${FILELOG_INCLUDE}
@@ -323,12 +408,14 @@ if [[ "${ENABLE_LOGS}" == "true" ]]; then
     # persist read offsets: after an agent/host restart, resume where it stopped instead of skipping lines written meanwhile
     storage: file_storage
     include_file_path: true
-    include_file_name: true
-"
+    include_file_name: true"
+fi
+if [[ "${#LOG_RECEIVERS[@]}" -gt 0 ]]; then
+  LOG_RECEIVER_LIST="$(IFS=,; echo "${LOG_RECEIVERS[*]}" | sed 's/,/, /g')"
   LOGS_PIPELINE="
     logs:
-      receivers: [file_log]
-      processors: [memory_limiter, resource/service, resource_detection, transform/instance_id, batch]
+      receivers: [${LOG_RECEIVER_LIST}]
+      processors: [memory_limiter, ${JOURNALD_PROCESSOR}resource/service, resource_detection, transform/instance_id, batch]
       exporters: [${EXPORTER}]
 "
   EXTENSIONS_YAML="
@@ -340,7 +427,6 @@ extensions:
   SERVICE_EXTENSIONS="
   extensions: [file_storage]"
 else
-  FILELOG_RECEIVER=""
   LOGS_PIPELINE=""
   EXTENSIONS_YAML=""
   SERVICE_EXTENSIONS=""
@@ -386,11 +472,7 @@ if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
         match_type: regexp
         action: update
         operations:
-          - {action: aggregate_labels, label_set: [state], aggregation_type: sum}
-      - include: process.disk.io
-        action: update
-        operations:
-          - {action: aggregate_labels, label_set: [direction], aggregation_type: sum}'
+          - {action: aggregate_labels, label_set: [state], aggregation_type: sum}'
   PROCESS_PROCESSOR_LIST="transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, "
 else
   PROCESS_PROCESSORS_YAML=""
@@ -398,7 +480,7 @@ else
 fi
 
 cat > "$CONFIG" << YAML
-# otelcol-contrib host agent — OS metrics + optional file logs
+# otelcol-contrib host agent: host metrics + optional journald / file logs
 # Generated by centos-install.sh (otelcol-contrib ${OTEL_VERSION})
 ${EXTENSIONS_YAML}
 receivers:
@@ -433,13 +515,13 @@ receivers:
           match_type: regexp
       load:
       paging:
-      processes:${PROCESS_SCRAPER}
-${FILELOG_RECEIVER}
+      processes:${PROCESS_SCRAPER}${JOURNALD_RECEIVER}${FILELOG_RECEIVER}
+
 processors:
   memory_limiter:
     check_interval: 1s
     limit_mib: 256
-    spike_limit_mib: 64${PROCESS_PROCESSORS_YAML}
+    spike_limit_mib: 64${PROCESS_PROCESSORS_YAML}${JOURNALD_PROCESSORS_YAML}
   resource/service:
     attributes:
       - key: service.name
@@ -517,11 +599,8 @@ echo "Transport: ${EXPORTER} -> ${COLLECTOR_ENDPOINT} ($([[ "$PLAINTEXT" == "tru
 [[ -n "$CERT_PATH" ]] && echo "  cert_file=${CERT_PATH} key_file=${KEY_PATH}"
 [[ -n "$OTEL_TOKEN" ]] && echo "  headers.authorization=${OTEL_AUTH_SCHEME} \${OTEL_TOKEN} (from ${CONF})"
 echo "service.name=${SERVICE_NAME}  service.instance.id=<host.name>  host attributes: ${HOST_ATTRIBUTES:-none}"
-if [[ "${ENABLE_LOGS}" == "true" ]]; then
-  echo "Log collection (file_log): ${LOG_PATHS}  (offsets kept in ${STORAGE_DIR})"
-else
-  echo "Log collection: disabled (ENABLE_LOGS=false)"
-fi
+echo "System logs (journald, priority info+): $([[ "$SYSTEM_LOGS" == "true" ]] && echo on || echo off)"
+echo "Application log files (file_log): ${LOG_PATHS:-none}$([[ "$LOG_CAPS" == "true" ]] && echo "  [LOG_CAPS=true: CAP_DAC_READ_SEARCH granted, the agent can read ANY file]")"
 if [[ "$KEEP_PROCESS_PIDS" == "true" ]]; then
   echo "Process metrics: one series per process, process.pid kept (KEEP_PROCESS_PIDS=true, debugging only)"
 else
@@ -535,49 +614,25 @@ else
   echo "WARNING: PROCESS_NAMES is not set, so ALL processes are collected (high cardinality, noisy; lab use only). Set PROCESS_NAMES in production."
 fi
 
-# Non-root otelcol-contrib cannot read other users' /proc/<pid>/io (mode 0400) or /proc/<pid>/exe:
-#   CAP_SYS_PTRACE       -> passes the ptrace access check on /proc/<pid>/io and /proc/<pid>/exe
-#   CAP_DAC_READ_SEARCH  -> passes the 0400 file mode on /proc/<pid>/io
-# Tested on CentOS Stream 9: without CAP_SYS_PTRACE, process.disk.io is missing for every process not owned by the collector.
-DROPIN_DIR=/etc/systemd/system/otelcol-contrib.service.d
-DROPIN_FILE="${DROPIN_DIR}/10-process-metrics.conf"
-if [[ "$ENABLE_PROCESS_METRICS" == "true" && "$PROCESS_CAPS" == "true" ]]; then
-  install -d -m 0755 "$DROPIN_DIR"
-  cat > "$DROPIN_FILE" << 'UNIT'
-# Managed by centos-install.sh — per-process metrics need to read other users' /proc/<pid>/{io,exe}
-[Service]
-AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
-CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
-UNIT
-  echo "systemd drop-in: ${DROPIN_FILE} (CAP_SYS_PTRACE CAP_DAC_READ_SEARCH)"
-else
-  rm -f "$DROPIN_FILE"
-  rmdir "$DROPIN_DIR" 2>/dev/null || true
-  if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
-    # /proc/<pid>/io is also gated by a ptrace access check, so without CAP_SYS_PTRACE process.disk.io is
-    # missing for every process the collector does not own, even though the log drop-in grants CAP_DAC_READ_SEARCH.
-    echo "PROCESS_CAPS=false: CAP_SYS_PTRACE not granted; process.disk.io (and executable.path) will be missing for other users' processes"
-  fi
-fi
-
-# On CentOS/RHEL /var/log/messages and secure are root:root 0600 by default, so the adm group cannot read them;
-# CAP_DAC_READ_SEARCH (read-only permission bypass) is more robust than running as root or chmod-ing logs, and survives logrotate re-creating the files.
-DROPIN_DIR=/etc/systemd/system/otelcol-contrib.service.d
-DROPIN="${DROPIN_DIR}/10-read-logs.conf"
-if [[ "${ENABLE_LOGS}" == "true" ]]; then
-  install -d -m 0755 "$DROPIN_DIR"
-  cat > "$DROPIN" << 'UNIT'
-[Service]
-AmbientCapabilities=CAP_DAC_READ_SEARCH
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH
-UNIT
-else
-  rm -f "$DROPIN"
-fi
-
-if [[ "${ENABLE_LOGS}" == "true" ]]; then
+if [[ "${#LOG_RECEIVERS[@]}" -gt 0 ]]; then
   install -d -m 0750 "$STORAGE_DIR"
   chown otelcol-contrib:otelcol-contrib "$STORAGE_DIR" 2>/dev/null || true
+fi
+
+# Application log files the agent cannot read are skipped silently by file_log: say so now
+if [[ -n "$LOG_PATHS" && "$LOG_CAPS" != "true" ]]; then
+  UNREADABLE=()
+  for lp in $LOG_PATHS; do
+    for f in $lp; do
+      if [[ -f "$f" ]] && ! runuser -u otelcol-contrib -- test -r "$f"; then
+        UNREADABLE+=("$f")
+      fi
+    done
+  done
+  if [[ "${#UNREADABLE[@]}" -gt 0 ]]; then
+    echo "WARNING: the agent (user otelcol-contrib) cannot read: ${UNREADABLE[*]}"
+    echo "  Make them readable for it (group / ACL set by the application owner), or set LOG_CAPS=true as a stopgap."
+  fi
 fi
 
 # Keep only the 5 newest backups (conf backups contain OTEL_TOKEN and must not pile up)
@@ -622,6 +677,38 @@ if [[ "$EXPORTER" == "otlp_http" ]]; then
   rm -f "${WORKDIR}/preflight.err"
   echo "Preflight to ${COLLECTOR_ENDPOINT}: HTTP ${PREFLIGHT_CODE}"
 fi
+
+# One managed drop-in: least privilege + sandbox. Written only after validate/preflight passed.
+DROPIN_DIR=/etc/systemd/system/otelcol-contrib.service.d
+DROPIN="${DROPIN_DIR}/10-otelcol-agent.conf"
+rm -f "${DROPIN_DIR}/10-process-metrics.conf" "${DROPIN_DIR}/10-read-logs.conf"   # written by older versions
+CAPS=""
+[[ "$LOG_CAPS" == "true" ]] && CAPS="CAP_DAC_READ_SEARCH"
+install -d -m 0755 "$DROPIN_DIR"
+{
+  echo "# Managed by centos-install.sh: least privilege + sandbox for the host agent"
+  echo "[Service]"
+  echo "# Empty = no capabilities at all (LOG_CAPS=true adds CAP_DAC_READ_SEARCH)"
+  echo "CapabilityBoundingSet=${CAPS}"
+  echo "AmbientCapabilities=${CAPS}"
+  [[ "$SYSTEM_LOGS" == "true" ]] && echo "SupplementaryGroups=systemd-journal"
+  echo "NoNewPrivileges=yes"
+  echo "ProtectSystem=strict"
+  echo "ReadWritePaths=-${STORAGE_DIR}"
+  echo "ProtectHome=yes"
+  echo "PrivateTmp=yes"
+  echo "# Secrets the agent never needs. /etc/shadow cannot be listed: SELinux forbids mounting over shadow_t;"
+  echo "# without capabilities its 0000 mode already keeps it unreadable."
+  echo "InaccessiblePaths=-/etc/ssh -/etc/sudoers -/etc/sudoers.d -/etc/pki/tls/private"
+  echo "ProtectKernelTunables=yes"
+  echo "ProtectKernelModules=yes"
+  echo "ProtectControlGroups=yes"
+  echo "RestrictSUIDSGID=yes"
+  echo "RestrictNamespaces=yes"
+  echo "LockPersonality=yes"
+  echo "SystemCallArchitectures=native"
+} > "$DROPIN"
+echo "systemd drop-in: ${DROPIN} (capabilities: ${CAPS:-none})"
 
 if [[ "$COLLECTOR_ENDPOINT" == "REPLACE_ME:4317" ]]; then
   echo "WARNING: COLLECTOR_ENDPOINT is still the placeholder; edit ${CONF} before starting"

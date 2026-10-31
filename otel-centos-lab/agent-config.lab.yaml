@@ -34,7 +34,7 @@ receivers:
       processes:
       process:
         # Lab smoke: no include block = ALL processes (noisy). Production should set include.names.
-        # Collector runs as non-root: mute EACCES noise for other users' /proc entries.
+        # Collector runs without capabilities: mute EACCES noise for other users' /proc entries.
         mute_process_name_error: true
         mute_process_exe_error: true
         mute_process_io_error: true
@@ -49,8 +49,9 @@ receivers:
             enabled: true
           process.memory.virtual:
             enabled: true
+          # needs CAP_SYS_PTRACE (would let the agent read any process's memory): off
           process.disk.io:
-            enabled: true
+            enabled: false
 
 processors:
   # Per-process metrics without pid: copy name/owner onto the data points, regroup by them and SUM
