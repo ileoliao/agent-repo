@@ -97,7 +97,7 @@ Enabled metrics: `process.cpu.time`, `process.cpu.utilization` (opt-in in 0.164.
 | `PROCESS_NAMES` | unset | Process names to collect, **space- or comma-separated** (`"rsyslogd, sshd,otelcol-contrib"`) -> `include.names`. Unset (or empty) = **all processes** |
 | `PROCESS_MATCH_TYPE` | `strict` | `strict` = exact match on the process name; `regexp` = Go regexp, **unanchored** (`ssh` also matches `sshd`; use `^sshd$`) |
 | `ENABLE_PROCESS_METRICS` | `true` | `false` removes the `process` scraper (and the systemd drop-in) entirely |
-| `PROCESS_CAPS` | `true` | write the capability drop-in below; `false` skips `CAP_SYS_PTRACE`, so root processes lose `executable.path`; `process.disk.io` is still readable while `ENABLE_LOGS=true` (see below) |
+| `PROCESS_CAPS` | `true` | write the capability drop-in below; `false` skips `CAP_SYS_PTRACE`, so `process.disk.io` (and `executable.path`) is missing for every process not owned by the collector |
 
 Why `strict` is the default: exact names are predictable and cheap; `regexp` is unanchored and easy to over-match. Note Linux process names (`comm`) are truncated to 15 characters, and `,`/whitespace are separators, so a regexp cannot contain them (use `|` for alternation).
 
@@ -110,12 +110,12 @@ sudo -E env COLLECTOR_ENDPOINT=... PROCESS_MATCH_TYPE=regexp PROCESS_NAMES='^jav
 sudo -E env COLLECTOR_ENDPOINT=... ENABLE_PROCESS_METRICS=false bash centos-install.sh
 ```
 
-> **Strongly recommended: set `PROCESS_NAMES` in production.** With it unset, every process on the host is collected (one resource and ~5 metrics series per PID per interval; short-lived processes keep creating new series). That is acceptable for a lab, not for a fleet. The installer prints a warning in this mode.
+> **Strongly recommended: set `PROCESS_NAMES` in production.** With it unset, every process on the host is collected. Same-name processes are summed (see below), so the series count is bounded by the number of distinct executable names + owners rather than PIDs, but every short-lived command still creates its own name. That is acceptable for a lab, not for a fleet. The installer prints a warning in this mode.
 
 **Permissions on CentOS.** The RPM service runs as the non-root user `otelcol-contrib`. On CentOS Stream 9 (verified with podman + systemd):
 
 - `/proc/<pid>/stat|statm|cmdline` of other users are readable -> cpu time, memory, name, command line work out of the box.
-- `readlink /proc/<pid>/exe` needs `CAP_SYS_PTRACE`; `/proc/<pid>/io` is root-only `0400` and needs `CAP_DAC_READ_SEARCH`. **Both** are needed for `process.disk.io` and `process.executable.path` of root-owned processes (`CAP_SYS_PTRACE` alone still fails on `/proc/<pid>/io`).
+- `/proc/<pid>/io` is mode `0400` **and** gated by a ptrace access check; `/proc/<pid>/exe` is gated by the ptrace check. So `process.disk.io` of other users' processes needs **both** `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH` (verified on a CentOS Stream 9 VM: with only `CAP_DAC_READ_SEARCH`, `process.disk.io` is missing for every process, while memory and CPU are fine).
 - Without them the scraper logs `Error scraping metrics ... permission denied` every interval, for every PID (including ones your `include` would skip), so the generated config also sets `mute_process_{name,exe,io,user,cgroup}_error: true`.
 
 The installer writes `/etc/systemd/system/otelcol-contrib.service.d/10-process-metrics.conf`:
@@ -126,7 +126,7 @@ AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 ```
 
-This drop-in sits next to `10-read-logs.conf` (file_log, `CAP_DAC_READ_SEARCH`); systemd merges `AmbientCapabilities` / `CapabilityBoundingSet` across drop-ins, so with both enabled the service has `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`. It grants the collector read access to arbitrary files (`CAP_DAC_READ_SEARCH`) and ptrace-read of other processes — a real privilege increase. If your security policy forbids it, use `PROCESS_CAPS=false` and accept missing exe path for other users' processes. Note that `PROCESS_CAPS=false` alone is **not** least privilege: with logs enabled (the default) the `10-read-logs.conf` drop-in still grants `CAP_DAC_READ_SEARCH` (read any file), which is the broader capability, so root processes' `process.disk.io` stays readable and only `CAP_SYS_PTRACE` / `executable.path` is lost. For real least privilege set `PROCESS_CAPS=false` **and** `ENABLE_LOGS=false` (then `process.disk.io` and `executable.path` of root processes are both missing). SELinux: verified on a CentOS Stream 9 VM (kernel 5.14, `Enforcing`): the RPM ships no SELinux policy, so the service runs as `unconfined_service_t` and SELinux does not restrict it; logs, wildcard/new files and root-process metrics all worked with 0 AVC denials. If your hosts confine it with a custom policy, check `ausearch --input-logs -m avc -ts recent` after enabling.
+This drop-in sits next to `10-read-logs.conf` (file_log, `CAP_DAC_READ_SEARCH`); systemd merges `AmbientCapabilities` / `CapabilityBoundingSet` across drop-ins, so with both enabled the service has `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`. It grants the collector read access to arbitrary files (`CAP_DAC_READ_SEARCH`) and ptrace-read of other processes — a real privilege increase. If your security policy forbids it, use `PROCESS_CAPS=false` and accept missing exe path for other users' processes. `CAP_SYS_PTRACE` is close to root (it allows attaching to any process), so weigh per-process disk I/O against it: `PROCESS_CAPS=false` drops it and only loses `process.disk.io` / `executable.path` of other users' processes. With logs enabled, `10-read-logs.conf` still grants `CAP_DAC_READ_SEARCH` (read any file); for real least privilege also set `ENABLE_LOGS=false`. SELinux: verified on a CentOS Stream 9 VM (kernel 5.14, `Enforcing`): the RPM ships no SELinux policy, so the service runs as `unconfined_service_t` and SELinux does not restrict it; logs, wildcard/new files and root-process metrics all worked with 0 AVC denials. If your hosts confine it with a custom policy, check `ausearch --input-logs -m avc -ts recent` after enabling.
 
 #### Same-name processes are summed, PIDs are stripped (default)
 
@@ -155,6 +155,21 @@ sudo systemctl restart otelcol-contrib
 
 Set it back to `false` (or re-run the installer without the variable, which resets it to `false`) when done.
 When running `agent-config.yaml` by hand, export `KEEP_PROCESS_PIDS` in the environment; unset means `false`.
+
+### Cardinality guards (what never leaves the host)
+
+The agent decides what leaves the host; anything that would explode label cardinality or leak secrets is dropped at the source, not later:
+
+| Scraper / attribute | Excluded by default | Why |
+|---|---|---|
+| `network` | `lo`, `veth*`, `docker*`, `br-*`, `cni*`, `cali*`, `flannel*`, `cilium*`, `lxc*`, `virbr*`, `vnet*` | per-container / per-VM interfaces get new names on every restart |
+| `filesystem` | pseudo and virtual types (`tmpfs`, `overlay`, `squashfs`, `iso9660`, `proc`, `sysfs`, `cgroup2`, ...) and mount points under `/dev`, `/proc`, `/sys`, `/run`, `/var/lib/{docker,containers,kubelet}/` | one series set per container / mount |
+| `disk` | `loop*`, `ram*`, `zram*`, `sr*`, `fd*` | snap/image loop devices and removable media |
+| `process.*` | `pid`, `parent_pid`, `executable.path`, `command`, `command_line` (same-name processes summed) | pids churn; `command_line` can carry secrets such as `mysql -pSECRET` and is dropped even with `KEEP_PROCESS_PIDS=true` |
+
+Real filesystems on loop or LVM devices are still reported (only the `disk` scraper skips `loop*`). To collect something excluded, edit the generated `config.yaml` (re-running the installer regenerates it).
+
+The central collector should still enforce the same policy (drop `process.pid` / `process.command_line` and cap series per tenant), because agents in a fleet run mixed versions and can be misconfigured.
 
 ### Credentials (TLS / token)
 
@@ -229,9 +244,9 @@ receivers:
         metrics:
           system.memory.utilization:
             enabled: true
-      disk:
-      filesystem:
-      network:
+      disk:          # + exclude loop/ram/sr devices, see agent-config.yaml
+      filesystem:    # + exclude pseudo fs types and container mount points
+      network:       # + exclude lo/veth/bridge/CNI interfaces
       load:
       paging:
       processes:                 # aggregate counts
@@ -316,7 +331,7 @@ Allow **4317/tcp** (gRPC) or **4318/tcp** (HTTP) from agents to the gateway.
 | `PROCESS_MATCH_TYPE=regexp` | Pass (`^ssh,rsyslog` -> sshd, rsyslogd only) |
 | `ENABLE_PROCESS_METRICS=false` | Pass (no process scraper, drop-in removed) |
 | `PROCESS_NAMES` unset (all processes) | Pass (lab smoke; installer warns) |
-| Reading root processes' `io` / `exe` as `otelcol-contrib` | Needs `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH` drop-in (installed by default, `PROCESS_CAPS=false` to skip) |
+| Reading other users' `io` / `exe` as `otelcol-contrib` | Needs `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH` (installed by default). With `CAP_DAC_READ_SEARCH` only, `process.disk.io` is missing for all processes |
 | SELinux enforcing, TLS/mTLS with process metrics | Pass (CentOS Stream 9 VM, see rows below) |
 | TLS (CA only, no mTLS) + bearer token, gateway verifies both | Pass: metrics + logs arrive; wrong token -> `Unauthenticated`, wrong CA -> x509 failure |
 | `ENABLE_LOGS=false` | Pass: drop-in removed (`CapEff=0`), no file_log/logs pipeline, metrics still flow |
@@ -324,6 +339,8 @@ Allow **4317/tcp** (gRPC) or **4318/tcp** (HTTP) from agents to the gateway.
 | Rotation with `/var/log/myapp/*` + logrotate | Pass after fix: no `.1`/`.gz` content shipped, new active file collected |
 | Gateway outage 70s / 6.5min, 4 agents | Short: replayed; long: batches older than 5 min dropped, newer replayed |
 | SELinux enforcing | Pass: CentOS Stream 9 VM (Lima, `Enforcing`), service runs as `unconfined_service_t`, 0 AVC denials |
+| Scraper excludes: `veth-test`, `br-test` (dummy/bridge), tmpfs, tmpfs under `/var/lib/containers`, loop device | Pass: only `eth0`, real filesystems and real disks reported; an xfs mounted from `/dev/loop0` (`/data-test`) is still reported |
+| `process.command_line` / `command` | Pass: never exported, `KEEP_PROCESS_PIDS=true` included (a `-pSECRET` argument did not leave the host) |
 | Same-name processes (3x `sleep`, same owner) | Pass: one series = sum of the three (5460 KiB = 3 x 1820); `KEEP_PROCESS_PIDS=true` gives three series with `process.pid` |
 | Agent stopped / VM rebooted while lines are written | Pass: lines collected after restart (`file_storage` offsets) |
 | Invalid generated config (`PROCESS_MATCH_TYPE=regexp PROCESS_NAMES="(sshd"`) | Pass: exit 1, old config restored, running agent untouched |

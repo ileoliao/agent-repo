@@ -347,6 +347,11 @@ if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
           # start_time differs per process; aligning it lets metrics_transform merge the points
           - set(datapoint.start_time_unix_nano, 0)
           - set(datapoint.time, TruncateTime(datapoint.time, Duration("1s")))
+      # command_line can carry secrets (e.g. "mysql -pSECRET"): never let it leave the host, debug mode included
+      - context: resource
+        statements:
+          - delete_key(resource.attributes, "process.command_line")
+          - delete_key(resource.attributes, "process.command")
       - context: resource
         conditions:
           - "\"${env:KEEP_PROCESS_PIDS:-false}\" != \"true\""
@@ -393,8 +398,23 @@ receivers:
           system.memory.utilization:
             enabled: true
       disk:
+        # Skip pseudo/removable devices (loop: snaps & images, ram/zram, sr: CD-ROM)
+        exclude:
+          devices: ['^(loop|ram|zram|sr|fd)[0-9]+$']
+          match_type: regexp
       filesystem:
+        # Only real filesystems: container overlays, tmpfs and pseudo filesystems would add series per container/mount
+        exclude_fs_types:
+          fs_types: [autofs, binfmt_misc, bpf, cgroup, cgroup2, configfs, debugfs, devpts, devtmpfs, fusectl, hugetlbfs, iso9660, mqueue, nsfs, overlay, proc, pstore, rpc_pipefs, securityfs, selinuxfs, squashfs, sysfs, tmpfs, tracefs]
+          match_type: strict
+        exclude_mount_points:
+          mount_points: ['^/(dev|proc|sys|run)($|/)', '^/var/lib/(docker|containers|kubelet)/']
+          match_type: regexp
       network:
+        # Per-container / per-VM virtual interfaces churn (new names on every restart)
+        exclude:
+          interfaces: ['^(lo|veth.*|docker.*|br-.*|cni.*|cali.*|flannel.*|cilium.*|lxc.*|virbr.*|vnet.*)$']
+          match_type: regexp
       load:
       paging:
       processes:${PROCESS_SCRAPER}
@@ -480,10 +500,10 @@ else
   echo "WARNING: PROCESS_NAMES is not set, so ALL processes are collected (high cardinality, noisy; lab use only). Set PROCESS_NAMES in production."
 fi
 
-# Non-root otelcol-contrib cannot read root processes' /proc/<pid>/io (0400) or /proc/<pid>/exe:
-#   CAP_SYS_PTRACE       -> readlink /proc/<pid>/exe (executable.path)
-#   CAP_DAC_READ_SEARCH  -> open /proc/<pid>/io (process.disk.io)
-# Tested on CentOS Stream 9 (podman + systemd): both are required.
+# Non-root otelcol-contrib cannot read other users' /proc/<pid>/io (mode 0400) or /proc/<pid>/exe:
+#   CAP_SYS_PTRACE       -> passes the ptrace access check on /proc/<pid>/io and /proc/<pid>/exe
+#   CAP_DAC_READ_SEARCH  -> passes the 0400 file mode on /proc/<pid>/io
+# Tested on CentOS Stream 9: without CAP_SYS_PTRACE, process.disk.io is missing for every process not owned by the collector.
 DROPIN_DIR=/etc/systemd/system/otelcol-contrib.service.d
 DROPIN_FILE="${DROPIN_DIR}/10-process-metrics.conf"
 if [[ "$ENABLE_PROCESS_METRICS" == "true" && "$PROCESS_CAPS" == "true" ]]; then
@@ -499,13 +519,9 @@ else
   rm -f "$DROPIN_FILE"
   rmdir "$DROPIN_DIR" 2>/dev/null || true
   if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
-    if [[ "${ENABLE_LOGS}" == "true" ]]; then
-      echo "PROCESS_CAPS=false: CAP_SYS_PTRACE not granted, so executable.path of root processes will be missing;"
-      echo "  but with ENABLE_LOGS=true the log drop-in (10-read-logs.conf) still grants CAP_DAC_READ_SEARCH (read any file),"
-      echo "  so process.disk.io of root processes stays readable. For real least privilege also set ENABLE_LOGS=false."
-    else
-      echo "PROCESS_CAPS=false: no extra capabilities; process.disk.io / executable.path of root processes will be missing"
-    fi
+    # /proc/<pid>/io is also gated by a ptrace access check, so without CAP_SYS_PTRACE process.disk.io is
+    # missing for every process the collector does not own, even though the log drop-in grants CAP_DAC_READ_SEARCH.
+    echo "PROCESS_CAPS=false: CAP_SYS_PTRACE not granted; process.disk.io (and executable.path) will be missing for other users' processes"
   fi
 fi
 
