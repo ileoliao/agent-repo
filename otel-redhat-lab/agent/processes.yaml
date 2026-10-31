@@ -1,0 +1,82 @@
+# Per-process CPU and memory for the processes named in PROCESS_NAMES (JSON list, exact names).
+# The agent has no capabilities, so other users' /proc/<pid>/{exe,io} are unreadable: mute those
+# errors and leave process.disk.io off (it would need CAP_SYS_PTRACE = read any process's memory).
+receivers:
+  host_metrics:
+    scrapers:
+      process:
+        mute_process_name_error: true
+        mute_process_exe_error: true
+        mute_process_io_error: true
+        mute_process_user_error: true
+        mute_process_cgroup_error: true
+        include:
+          match_type: strict
+          names: ${env:PROCESS_NAMES}
+        metrics:
+          process.cpu.time: {enabled: true}
+          process.cpu.utilization: {enabled: true}
+          process.memory.usage: {enabled: true}
+          process.memory.virtual: {enabled: true}
+          process.disk.io: {enabled: false}
+
+processors:
+  # Without pid, same-name processes of one owner (nginx/php-fpm workers...) would overwrite each other:
+  # copy name/owner onto the points, regroup by them and sum. KEEP_PROCESS_PIDS=true skips all of it
+  # (one series per pid, for debugging). command_line/command can carry secrets and never leave the host.
+  transform/process_identity:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        conditions:
+          - IsMatch(metric.name, "^process\\.") and "${env:KEEP_PROCESS_PIDS:-false}" != "true"
+        statements:
+          - set(datapoint.attributes["process.executable.name"], resource.attributes["process.executable.name"])
+          - set(datapoint.attributes["process.owner"], resource.attributes["process.owner"]) where resource.attributes["process.owner"] != nil
+          # start_time differs per process; aligning it lets metrics_transform merge the points
+          - set(datapoint.start_time_unix_nano, 0)
+          - set(datapoint.time, TruncateTime(datapoint.time, Duration("1s")))
+      - context: resource
+        statements:
+          - delete_key(resource.attributes, "process.command_line")
+          - delete_key(resource.attributes, "process.command")
+      - context: resource
+        conditions:
+          - "\"${env:KEEP_PROCESS_PIDS:-false}\" != \"true\""
+        statements:
+          - delete_matching_keys(resource.attributes, "^process\\.")
+  groupbyattrs/processes:
+    keys: [process.executable.name, process.owner]
+  metrics_transform/sum_processes:
+    transforms:
+      - include: ^process\.memory\.
+        match_type: regexp
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [], aggregation_type: sum}
+      - include: ^process\.cpu\.
+        match_type: regexp
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [state], aggregation_type: sum}
+  # groupbyattrs left name/owner (and pid with KEEP_PROCESS_PIDS) on the resource, where Mimir/Prometheus
+  # keep them only in target_info: make them data point labels so each process is its own series
+  # without any promotion in the backend
+  transform/process_labels:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        conditions:
+          - IsMatch(metric.name, "^process\\.")
+        statements:
+          - set(datapoint.attributes["process.executable.name"], resource.attributes["process.executable.name"]) where resource.attributes["process.executable.name"] != nil
+          - set(datapoint.attributes["process.owner"], resource.attributes["process.owner"]) where resource.attributes["process.owner"] != nil
+          - set(datapoint.attributes["process.pid"], resource.attributes["process.pid"]) where resource.attributes["process.pid"] != nil
+      - context: resource
+        statements:
+          - delete_matching_keys(resource.attributes, "^process\\.")
+
+service:
+  pipelines:
+    metrics:
+      processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, transform/process_labels, resource_detection, resource/identity, batch]

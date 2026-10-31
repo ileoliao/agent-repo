@@ -1,0 +1,22 @@
+# Application log files: LOG_PATHS (JSON list of absolute paths / globs), readable by user otelcol-contrib.
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol-contrib/file_storage
+    create_directory: true
+
+receivers:
+  file_log:
+    include: ${env:LOG_PATHS}
+    exclude: ["**/*.gz", "**/*.[0-9]"]   # rotated files
+    start_at: end
+    storage: file_storage    # offsets survive agent/host restarts
+    include_file_path: true
+    include_file_name: true
+
+service:
+  extensions: [file_storage]
+  pipelines:
+    logs/files:
+      receivers: [file_log]
+      processors: [memory_limiter, resource_detection, resource/identity, batch]
+      exporters: [otlp_http]

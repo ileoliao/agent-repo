@@ -1,0 +1,43 @@
+# System logs from journald (priority info and above). Journal access comes from
+# SupplementaryGroups=systemd-journal in the unit drop-in, not from capabilities.
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol-contrib/file_storage
+    create_directory: true
+
+receivers:
+  journald:
+    priority: info
+    start_at: end
+    storage: file_storage    # cursor survives agent/host restarts
+
+processors:
+  # journald records are a map of all journal fields: keep MESSAGE as the body, map PRIORITY to
+  # severity, keep unit + identifier (Loki structured metadata, not index labels), drop the rest
+  transform/journald:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        conditions:
+          - IsMap(log.body) and log.body["MESSAGE"] != nil
+        statements:
+          - set(log.attributes["systemd.unit"], log.body["_SYSTEMD_UNIT"]) where log.body["_SYSTEMD_UNIT"] != nil
+          - set(log.attributes["syslog.identifier"], log.body["SYSLOG_IDENTIFIER"]) where log.body["SYSLOG_IDENTIFIER"] != nil
+          - set(log.severity_number, SEVERITY_NUMBER_FATAL) where log.body["PRIORITY"] == "0" or log.body["PRIORITY"] == "1" or log.body["PRIORITY"] == "2"
+          - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.body["PRIORITY"] == "3"
+          - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.body["PRIORITY"] == "4"
+          - set(log.severity_number, SEVERITY_NUMBER_INFO2) where log.body["PRIORITY"] == "5"
+          - set(log.severity_number, SEVERITY_NUMBER_INFO) where log.body["PRIORITY"] == "6"
+          - set(log.severity_text, "fatal") where log.severity_number == SEVERITY_NUMBER_FATAL
+          - set(log.severity_text, "error") where log.severity_number == SEVERITY_NUMBER_ERROR
+          - set(log.severity_text, "warn") where log.severity_number == SEVERITY_NUMBER_WARN
+          - set(log.severity_text, "info") where log.severity_number == SEVERITY_NUMBER_INFO or log.severity_number == SEVERITY_NUMBER_INFO2
+          - set(log.body, log.body["MESSAGE"])
+
+service:
+  extensions: [file_storage]
+  pipelines:
+    logs/journald:
+      receivers: [journald]
+      processors: [memory_limiter, transform/journald, resource_detection, resource/identity, batch]
+      exporters: [otlp_http]

@@ -1,0 +1,5 @@
+# Basic auth: OTEL_TOKEN is base64("user:password") as handed out by the gateway team
+exporters:
+  otlp_http:
+    headers:
+      authorization: "Basic ${env:OTEL_TOKEN}"

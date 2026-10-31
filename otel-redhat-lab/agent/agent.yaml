@@ -1,0 +1,70 @@
+# Host agent base: host metrics -> central collector over OTLP/HTTP.
+# Per-host values come from /etc/otelcol-contrib/otelcol-contrib.conf (systemd EnvironmentFile).
+# Optional fragments loaded on top: auth.yaml, processes.yaml, logs-journald.yaml, logs-files.yaml.
+receivers:
+  host_metrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.utilization: {enabled: true}
+      memory:
+        metrics:
+          system.memory.utilization: {enabled: true}
+      # Cardinality guards: drop sources that churn or add series per container/mount
+      disk:
+        exclude:
+          devices: ['^(loop|ram|zram|sr|fd)[0-9]+$']
+          match_type: regexp
+      filesystem:
+        exclude_fs_types:
+          fs_types: [autofs, binfmt_misc, bpf, cgroup, cgroup2, configfs, debugfs, devpts, devtmpfs, fusectl, hugetlbfs, iso9660, mqueue, nsfs, overlay, proc, pstore, rpc_pipefs, securityfs, selinuxfs, squashfs, sysfs, tmpfs, tracefs]
+          match_type: strict
+        exclude_mount_points:
+          mount_points: ['^/(dev|proc|sys|run)($|/)', '^/var/lib/(docker|containers|kubelet)/']
+          match_type: regexp
+      network:
+        exclude:
+          interfaces: ['^(lo|veth.*|docker.*|br-.*|cni.*|cali.*|flannel.*|cilium.*|lxc.*|virbr.*|vnet.*)$']
+          match_type: regexp
+      load:
+      paging:
+      processes:
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  # env first: HOST_ATTRIBUTES (OTEL_RESOURCE_ATTRIBUTES) win over detected values
+  resource_detection:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+      resource_attributes:
+        host.id: {enabled: true}
+        host.arch: {enabled: true}
+        os.description: {enabled: true}
+  # service.instance.id = host.name becomes the "instance" label in Mimir/Prometheus; without it all
+  # hosts sharing a service.name would write into the same series
+  resource/identity:
+    attributes:
+      - {key: service.name, value: "${env:SERVICE_NAME}", action: insert}
+      - {key: service.instance.id, from_attribute: host.name, action: insert}
+  batch:
+    send_batch_size: 1024
+    timeout: 10s
+
+exporters:
+  otlp_http:
+    endpoint: ${env:COLLECTOR_ENDPOINT}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [host_metrics]
+      processors: [memory_limiter, resource_detection, resource/identity, batch]
+      exporters: [otlp_http]
+  telemetry:
+    logs:
+      level: info
