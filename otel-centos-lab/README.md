@@ -20,8 +20,17 @@ CentOS host
 ## Quick install (recommended)
 
 ```bash
-export COLLECTOR_ENDPOINT=10.0.0.20:4317
-sudo bash centos-install.sh
+# OTLP/HTTP gateway, company root CA already in the system trust store, basic auth handed out as one token,
+# package from the internal repo, host attributes from config management:
+sudo COLLECTOR_ENDPOINT=https://otel-gw.corp.example:4318 \
+  OTEL_AUTH_SCHEME=Basic OTEL_TOKEN="<base64 of user:password>" \
+  REPO_URL=https://repo.corp.example/otel/el9/ RPM_SHA256=<sha256 of the rpm> \
+  HOST_ATTRIBUTES="deployment.environment.name=prod,datacenter=sh1,team=infra,business_line=payments,role=db" \
+  PROCESS_NAMES="sshd nginx" \
+  bash centos-install.sh
+
+# OTLP/gRPC, no auth (lab):
+# sudo COLLECTOR_ENDPOINT=10.0.0.20:4317 bash centos-install.sh
 
 # Or use a pre-downloaded RPM (air-gapped / mirrored):
 # sudo RPM_PATH=./otelcol-contrib_0.164.0_linux_amd64.rpm \
@@ -30,12 +39,13 @@ sudo bash centos-install.sh
 
 The script:
 
-1. Downloads (or uses `RPM_PATH`), **verifies its sha256**, and installs the contrib RPM via `dnf` / `yum` / `rpm`
+1. Gets the RPM from the internal repo (`REPO_URL`), a local file (`RPM_PATH`) or GitHub, **verifies its sha256**, and installs it via `dnf` / `yum` / `rpm`
 2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + per-process metrics + file_log)
 3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, `KEEP_PROCESS_PIDS`, optional `OTEL_TOKEN`)
 4. Writes the systemd drop-in for process metrics (see below)
 5. Runs `otelcol-contrib validate` on the new config. If it fails, the previous config is restored, the running agent is left alone and the script exits 1
-6. **Restarts** `otelcol-contrib` and waits 8 s; if the service is not `active` or has auto-restarted, it prints the last journal lines and exits 1
+6. OTLP/HTTP only: **preflight** — POSTs an empty OTLP request to `<endpoint>/v1/metrics` with the same credentials and the same CA store (no proxy, like the systemd service). Anything but 2xx (401 = wrong token, certificate error = company CA missing) restores the previous config and exits 1
+7. **Restarts** `otelcol-contrib` and waits 8 s; if the service is not `active` or has auto-restarted, it prints the last journal lines and exits 1
 
 Other variables: `SERVICE_NAME` (default `centos-host`, letters/digits/`._-` only) becomes `service.name`, so logs land under that `service_name` in Loki and metrics get it as `job` in Prometheus. `ENABLE_LOGS`, `ENABLE_PROCESS_METRICS`, `PROCESS_CAPS` and `KEEP_PROCESS_PIDS` accept only `true` / `false`. Only the 5 newest `config.yaml.bak.*` / `otelcol-contrib.conf.bak.*` are kept (the conf backups contain `OTEL_TOKEN`).
 
@@ -45,12 +55,14 @@ The RPM is installed as root, so it is always verified before installation:
 
 - The script works in a fresh private `mktemp -d` directory (removed on exit). `WORKDIR` is honoured only if you set it explicitly (and is then not deleted). A pre-existing RPM in a predictable path is never trusted.
 - Downloaded RPMs are checked against the release's per-asset digest `${RPM_URL}.sha256`; a mismatch aborts with exit 1.
+- With `REPO_URL` (internal yum repo), the repo is used for this run only (`dnf repoquery --repofrompath`, metadata cached in the work dir, **no `.repo` file is written**); the package `otelcol-contrib-<OTEL_VERSION>` is downloaded into the work dir and verified like any other RPM. A repo copy is not proof of integrity by itself, so pass `RPM_SHA256` (or let the script fetch the official digest from GitHub when it is reachable).
 - With `RPM_PATH` (air-gapped), the file is copied to the private work dir and checked against `RPM_SHA256` if given; otherwise the script tries to fetch `${RPM_URL}.sha256`. If that fetch fails (offline) the install is **refused** unless you set `SKIP_RPM_VERIFY=true`, which prints a loud warning and installs unverified.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `RPM_SHA256` | unset | Expected sha256 (64 hex) of the RPM. Use this for offline installs |
-| `SKIP_RPM_VERIFY` | `false` | `true` allows an `RPM_PATH` install without any digest (insecure; only if the RPM source is otherwise trusted) |
+| `REPO_URL` | unset | Internal yum repo base URL (the directory holding `repodata/`) |
+| `SKIP_RPM_VERIFY` | `false` | `true` allows a `REPO_URL` / `RPM_PATH` install without any digest (insecure; only if the RPM source is otherwise trusted) |
 | `WORKDIR` | fresh `mktemp -d` | Override the work directory (not cleaned up) |
 
 ```bash
@@ -171,31 +183,72 @@ Real filesystems on loop or LVM devices are still reported (only the `disk` scra
 
 The central collector should still enforce the same policy (drop `process.pid` / `process.command_line` and cap series per tenant), because agents in a fleet run mixed versions and can be misconfigured.
 
-### Credentials (TLS / token)
+### Transport and credentials
+
+`COLLECTOR_ENDPOINT` picks the protocol:
+
+| `COLLECTOR_ENDPOINT` | Exporter | TLS |
+|---|---|---|
+| `https://gw:4318` | `otlp_http` | verified against the **system trust store** (company root CA via `update-ca-trust`); `TLS_CA_FILE` only adds a CA on top, `TLS_CERT_FILE`/`TLS_KEY_FILE` for mTLS |
+| `http://gw:4318` | `otlp_http` | clear text (`TLS_CA_FILE` is rejected) |
+| `gw:4317` | `otlp_grpc` | `TLS_CA_FILE` / `TLS_CERT_FILE` enable TLS, otherwise `tls.insecure: true` |
+
+`OTEL_TOKEN` is sent as `Authorization: <OTEL_AUTH_SCHEME> <OTEL_TOKEN>`:
+
+- `OTEL_AUTH_SCHEME=Bearer` (default): bearer token, no whitespace.
+- `OTEL_AUTH_SCHEME=Basic`: the token is `base64("user:password")` as handed out by the gateway team; the installer checks that it decodes to `user:password`. When the gateway maps the basic-auth account to a tenant, nothing tenant-specific is needed on the host.
+
+**Credentials require TLS.** With `OTEL_TOKEN` set over a clear-text connection (`http://`, or gRPC without TLS) the installer refuses with exit 1; set `TLS_INSECURE=true` explicitly to accept the risk on a trusted network or lab.
+
+**Proxies.** The systemd service does not inherit the login shell's `http_proxy`/`https_proxy`. If your hosts set a proxy for all services (`DefaultEnvironment` in systemd), make sure the internal collector is in `NO_PROXY`, otherwise the agent's traffic goes through the proxy.
 
 Do **not** commit tokens into git. Prefer Ansible Vault (or a secrets manager) to populate the host files below.
-
-```bash
-export COLLECTOR_ENDPOINT=otel-gateway.corp:4317
-export TLS_CA_FILE=/path/ca.crt              # enables TLS verify (insecure=false by default when CA is set)
-# export TLS_CERT_FILE=/path/client.crt      # optional mTLS
-# export TLS_KEY_FILE=/path/client.key
-# export OTEL_TOKEN='your-bearer-token'      # optional Authorization header; requires TLS (see below)
-# export TLS_INSECURE=false
-sudo -E bash centos-install.sh
-```
-
-**Bearer token requires TLS.** If `OTEL_TOKEN` is set while TLS is not configured (no `TLS_CA_FILE` / `TLS_CERT_FILE`, so `tls.insecure` would be `true`), the installer refuses with exit 1, because the token would be sent in clear text. To accept that risk on a trusted network or lab, set `TLS_INSECURE=true` explicitly; the installer then prints a warning and continues.
 
 Where secrets land on the host:
 
 | Secret | Location |
 |--------|----------|
 | CA / client certs | `/etc/otelcol-contrib/certs/` (`0640`, `root:otelcol-contrib`) |
-| Bearer token | `/etc/otelcol-contrib/otelcol-contrib.conf` as `OTEL_TOKEN=...` (`0640`) |
+| Token (Bearer or Basic) | `/etc/otelcol-contrib/otelcol-contrib.conf` as `OTEL_TOKEN=...` (`0640`) |
+| Host attributes | same conf file as `OTEL_RESOURCE_ATTRIBUTES=...` |
 | Endpoint | same conf file as `COLLECTOR_ENDPOINT=...` |
 
 YAML references env vars (`${env:COLLECTOR_ENDPOINT}`, `${env:OTEL_TOKEN}`). Values in the conf file survive reboot because systemd loads that `EnvironmentFile`.
+
+### Host identity and attributes (Mimir / Prometheus)
+
+Mimir and Prometheus build the series identity of OTLP data from `service.name` → `job` and `service.instance.id` → `instance`; every other resource attribute only goes to the `target_info` series unless it is promoted. All hosts share `service.name` (`SERVICE_NAME`, default `centos-host`), so the agent sets **`service.instance.id = host.name`**: without it, hosts would overwrite each other's series in Mimir.
+
+The agent also detects `host.id` (machine-id), `host.arch` and `os.description`, and adds `HOST_ATTRIBUTES` from config management (comma-separated `key=value`, keys `[A-Za-z0-9._-]`, values `[A-Za-z0-9._/:-]`; `service.name` / `service.instance.id` are rejected). They win over detected values.
+
+Recommended keys and what to promote to labels in Mimir. Attributes that are constant per host do **not** add series; promoting them only makes every series' label set a little longer, so promote only what nearly every query or alert route uses:
+
+| Attribute | Source | Promote in Mimir |
+|---|---|---|
+| `service.instance.id` | agent (= `host.name`) | automatic (`instance`) |
+| `host.name` | detected | yes |
+| `deployment.environment.name` | `HOST_ATTRIBUTES` | yes |
+| `datacenter` | `HOST_ATTRIBUTES` | yes |
+| `team` | `HOST_ATTRIBUTES` | yes |
+| `business_line`, `role` | `HOST_ATTRIBUTES` | no: `target_info` only (a role change then re-creates one series, not all of them) |
+| `host.id`, `host.arch`, `os.description` | detected | no: change with clones / patches |
+
+Mimir (per tenant, runtime config):
+
+```yaml
+overrides:
+  <tenant>:
+    promote_otel_resource_attributes: "host.name,deployment.environment.name,datacenter,team"
+```
+
+Attributes left in `target_info` are joined at query time:
+
+```promql
+system_memory_utilization_ratio{state="used"}
+  * on (job, instance) group_left (role, business_line) target_info{role="db"}
+```
+
+Cloned VMs keep the template's `/etc/machine-id` unless it is regenerated, so `host.id` is only unique if your image pipeline resets it.
 
 ### Ansible note
 
@@ -348,6 +401,10 @@ Allow **4317/tcp** (gRPC) or **4318/tcp** (HTTP) from agents to the gateway.
 | `ENABLE_LOGS=yes`, `SERVICE_NAME="a b"` | Pass: rejected with exit 1 |
 | mTLS (client cert) to gateway | Pass (CentOS Stream 9 VM) |
 | Bearer token with `$ # ' "` over TLS | Pass; a token containing a space is rejected by the gateway (`bearertokenauth`), as RFC 6750 tokens cannot contain spaces |
+| OTLP/HTTP `https://` + `Basic` token, company CA only in the system trust store (no `TLS_CA_FILE`), package from an internal repo (`REPO_URL`, createrepo over HTTP), `HOST_ATTRIBUTES` | Pass: preflight HTTP 200, metrics and logs arrive with `service.instance.id`, `host.id`, `host.arch`, `os.description` and all five host attributes; no `.repo` file left behind |
+| Preflight: wrong password / no token / CA removed from trust store | Pass: 401 / 401 / certificate error, exit 1, previous config and running agent untouched |
+| Invalid input: Basic token not base64 or without `:`, `http://` + token, `http://` + `TLS_CA_FILE`, `grpc://` URL, bad `HOST_ATTRIBUTES`, `service.name` in `HOST_ATTRIBUTES`, version missing in `REPO_URL` | Pass: exit 1 before anything is changed |
+| gRPC regression to Prometheus | Pass: `instance="lima-otel-cs9"`, `job="centos-host"` |
 | Live filelog (`file_log`) CentOS Stream 9 + podman + systemd, agent -> gateway | Pass: lines from `/var/log/messages`, `/var/log/secure`, `/var/log/myapp/*.log` (incl. file created after install) seen at gateway; works after logrotate |
 
 Raw samples and permission experiments: [`evidence/process-metrics-centos9.md`](evidence/process-metrics-centos9.md).
