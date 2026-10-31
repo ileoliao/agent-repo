@@ -73,7 +73,7 @@ The service loads them with `OTELCOL_OPTIONS="--config=… --config=…"` (maps 
 
 `PROCESS_NAMES` selects processes by exact name (Linux `comm`, max 15 characters). Exported: `process.cpu.time`, `process.cpu.utilization`, `process.memory.usage`, `process.memory.virtual`. `process.disk.io` is off: reading other users' `/proc/<pid>/io` needs `CAP_SYS_PTRACE`, which would let the agent read any process's memory.
 
-`process.pid` changes on every restart and would blow up cardinality, but dropping it makes several processes with the same name and owner (nginx / php-fpm workers) overwrite each other. So the agent copies name and owner onto the data points, regroups by them and **sums** them: one series per executable name + owner (verified: three `sleep` processes → one series with their total RSS). Name and owner end up as data point labels (`process_executable_name`, `process_owner`), not resource attributes: Mimir/Prometheus would otherwise keep them only in `target_info`, and every process of a host would land in the same series unless the backend promotes them. Summed CPU time drops when one process exits, which `rate()` treats as a counter reset. `process.command_line` / `command` can carry secrets (`mysql -pSECRET`) and are never exported, `KEEP_PROCESS_PIDS=true` included.
+`process.pid` changes on every restart and would blow up cardinality, but dropping it makes several processes with the same name and owner (nginx / php-fpm workers) overwrite each other. So the agent copies name and owner onto the data points, regroups by them and **sums** them: one series per executable name + owner (verified: three `sleep` processes → one series with their total RSS). Name and owner end up as data point labels (`process_executable_name`, `process_owner`), not resource attributes: as resource attributes Mimir would keep them only in `target_info` (or drop them with it), and every process of a host would land in the same series. Summed CPU time drops when one process exits, which `rate()` treats as a counter reset. `process.command_line` / `command` can carry secrets (`mysql -pSECRET`) and are never exported, `KEEP_PROCESS_PIDS=true` included.
 
 ## Cardinality guards
 
@@ -103,38 +103,39 @@ The systemd service does not inherit the login shell's proxy variables. If your 
 
 ## Host identity and attributes (Mimir)
 
-Mimir builds the series identity of OTLP data from `service.name` → `job` and `service.instance.id` → `instance`; other resource attributes only go to `target_info` unless promoted. All hosts share `service.name`, so the agent sets **`service.instance.id = host.name`** (otherwise hosts would overwrite each other's series). It also detects `host.id` (machine-id), `host.arch`, `os.description` and adds `HOST_ATTRIBUTES` (keys `[A-Za-z0-9._-]`, values `[A-Za-z0-9._/:-]`; they win over detected values).
+Mimir builds the series identity of OTLP data from `service.name` → `job` and `service.instance.id` → `instance`. Every other resource attribute becomes a label only if it is **promoted**; otherwise Mimir keeps it in the `target_info` series alone. All hosts share `service.name`, so the agent sets **`service.instance.id = host.name`** (otherwise hosts would overwrite each other's series). It also detects `host.id` (machine-id), `host.arch`, `os.description` and adds `HOST_ATTRIBUTES` (keys `[A-Za-z0-9._-]`, values `[A-Za-z0-9._/:-]`; they win over detected values).
 
-Attributes that are constant per host do not add series. Promote only what nearly every query or alert route uses:
+Our Mimir drops `target_info`, so **an attribute that is not promoted is lost for metrics** (logs keep all of them in Loki). Promote every attribute you filter or group by. Attributes that are constant per host do not add series; promoting them only lengthens each series' label set, and changing one (a host changes role) re-creates that host's series.
 
 | Attribute | Source | Promote in Mimir |
 |---|---|---|
 | `service.instance.id` | agent (= `host.name`) | automatic (`instance`) |
 | `host.name` | detected | yes |
-| `deployment.environment.name`, `datacenter`, `team` | `HOST_ATTRIBUTES` | yes |
-| `business_line`, `role` | `HOST_ATTRIBUTES` | no: `target_info` only (a role change then re-creates one series, not all of them) |
-| `host.id`, `host.arch`, `os.description` | detected | no: change with clones / patches |
+| `deployment.environment.name`, `datacenter`, `team`, `business_line`, `role` | `HOST_ATTRIBUTES` | yes (the dashboards filter on them) |
+| `host.id`, `host.arch`, `os.description` | detected | no: change with clones / patches; available in Loki |
 
 ```yaml
 # Mimir runtime config, per tenant
 overrides:
   <tenant>:
-    promote_otel_resource_attributes: "host.name,deployment.environment.name,datacenter,team"
-```
-
-```promql
-system_memory_utilization_ratio{state="used"}
-  * on (job, instance) group_left (role, business_line) target_info{role="db"}
+    promote_otel_resource_attributes: "host.name,deployment.environment.name,datacenter,team,business_line,role"
 ```
 
 Cloned VMs keep the template's `/etc/machine-id` unless the image pipeline resets it, so `host.id` is only unique if it does.
 
-## Grafana dashboard
+## Grafana dashboards
 
-`grafana/centos-host.json`: a host info row (environment, datacenter, team, business line, role, host.id, OS), overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory, log volume by level and the log stream. Import it in Grafana and pick the **Metrics** (Mimir, Prometheus type) and **Logs** (Loki) data sources in the variables at the top; the data source UIDs are not hard-coded.
+Two dashboards that link to each other like tabs (a dashboard link on the `centos-host` tag; switching keeps the time range and every filter):
 
-- Hosts are narrowed down with cascading, multi-select filters on the `HOST_ATTRIBUTES` keys: Environment (`deployment.environment.name`) → Datacenter → Team → Business line → Role → Host. The filters read `target_info`, which carries every resource attribute, so they also work for the attributes that are not promoted (`business_line`, `role`).
-- Panels select series by `job` (`SERVICE_NAME`) and `instance` (`service.instance.id` = host name), which every series has. The dashboard therefore needs **no** resource-attribute promotion in Mimir; promotion only makes ad-hoc queries on those labels cheaper.
+| File | Title | Content |
+|---|---|---|
+| `grafana/centos-host-metrics.json` | CentOS host · Metrics | host info, overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory |
+| `grafana/centos-host-logs.json` | CentOS host · Logs | host info, log volume by level, log stream (filters: level, systemd unit, regex search) |
+
+Import both and pick the **Metrics** (Mimir, Prometheus type) and **Logs** (Loki) data sources in the variables at the top; the data source UIDs are not hard-coded.
+
+- Hosts are narrowed down with cascading, multi-select filters: Environment (`deployment.environment.name`) → Datacenter → Team → Business line → Role → Host. They read the promoted labels on `system_cpu_logical_count` (one series per host) and do **not** use `target_info`, so these five attributes must be promoted (see above).
+- Panels select series by `job` (`SERVICE_NAME`) and `instance` (`service.instance.id` = host name), which every series has.
 - Metric names follow Mimir's default OTLP translation without unit/type suffixes (`system_cpu_time`, `system_memory_utilization`, `process_memory_usage`). If your Mimir sets `otel_metric_suffixes_enabled: true` (or you use Prometheus' OTLP receiver), names get suffixes (`system_cpu_time_seconds_total`) and the queries need them too.
 - Logs are filtered by `service_instance_id`, `detected_level` and `systemd_unit` (structured metadata), not by index labels.
 
@@ -158,8 +159,8 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 | Metrics | `process.disk.io`, `process.command_line` | Not exported |
 | Metrics | Dummy `veth`, bridge, tmpfs, container mount, loop device | Excluded; xfs on `/dev/loop0` still reported |
 | Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=centos-host` |
-| Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | Metrics arrive under the tenant only; promoted `host_name`, `deployment_environment_name`, `datacenter`, `team`; one `target_info` per host; one series per process name + owner (`sleep` sum = RSS sum) |
-| Grafana | Every dashboard query and variable through Grafana's Mimir and Loki data sources | All return data; `role=db` lists the host, `role=web` lists none; host info shows the five attributes |
+| Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | `target_info` dropped by relabeling, as in production; metrics arrive under the tenant only with promoted `host_name`, `deployment_environment_name`, `datacenter`, `team`, `business_line`, `role`; one series per process name + owner (`sleep` sum = RSS sum) |
+| Grafana | Every query and variable of both dashboards through Grafana's Mimir and Loki data sources, with `target_info` dropped | All return data; `role=db` / `business_line=payments` list the host, `role=web` lists none; the link to the other dashboard carries time range and filters |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
 
 ## Files
@@ -168,4 +169,4 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 |---|---|
 | `centos-install.sh` | installer |
 | `agent/*.yaml` | agent config fragments |
-| `grafana/centos-host.json` | Grafana dashboard (Mimir + Loki) |
+| `grafana/centos-host-metrics.json`, `grafana/centos-host-logs.json` | Grafana dashboards (Mimir + Loki) |

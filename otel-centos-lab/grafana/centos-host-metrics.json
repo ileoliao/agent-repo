@@ -1,14 +1,15 @@
 {
   "uid": "centos-host",
-  "title": "CentOS host (otelcol-contrib)",
+  "title": "CentOS host \u00b7 Metrics",
   "tags": [
     "centos",
-    "otel"
+    "otel",
+    "centos-host"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
-  "description": "Host agent from otel-centos-lab: metrics in Mimir (default OTLP names, no suffixes), logs in Loki.",
+  "description": "Host agent from otel-centos-lab: metrics in Mimir (default OTLP names, no suffixes). Logs: 'CentOS host \u00b7 Logs' (link at the top).",
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -36,7 +37,7 @@
             "type": "prometheus",
             "uid": "${metrics}"
           },
-          "expr": "max by (instance, deployment_environment_name, datacenter, team, business_line, role, host_id, os_description) (last_over_time(target_info{job=\"$job\",instance=\"$host\"}[2m]))",
+          "expr": "max by (instance, deployment_environment_name, datacenter, team, business_line, role) (last_over_time(system_cpu_logical_count{job=\"$job\",instance=\"$host\"}[2m]))",
           "instant": true,
           "format": "table"
         }
@@ -55,9 +56,7 @@
               "datacenter": 2,
               "team": 3,
               "business_line": 4,
-              "role": 5,
-              "host_id": 6,
-              "os_description": 7
+              "role": 5
             },
             "renameByName": {
               "instance": "Host",
@@ -65,9 +64,7 @@
               "datacenter": "Datacenter",
               "team": "Team",
               "business_line": "Business line",
-              "role": "Role",
-              "host_id": "host.id",
-              "os_description": "OS"
+              "role": "Role"
             }
           }
         }
@@ -790,175 +787,6 @@
           "mode": "multi"
         }
       }
-    },
-    {
-      "type": "row",
-      "title": "Logs",
-      "id": 16,
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 43,
-        "w": 24,
-        "h": 1
-      },
-      "panels": []
-    },
-    {
-      "type": "timeseries",
-      "title": "Log lines by level",
-      "id": 17,
-      "datasource": {
-        "type": "loki",
-        "uid": "${logs}"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 44,
-        "w": 24,
-        "h": 7
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${logs}"
-          },
-          "expr": "sum by (detected_level) (count_over_time({service_name=~\".+\"} | service_instance_id=\"$host\" | detected_level=~\"$level\" | systemd_unit=~\"$unit\" |~ \"$search\" [1m]))",
-          "legendFormat": "{{detected_level}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "fillOpacity": 60,
-            "stacking": {
-              "mode": "normal"
-            },
-            "showPoints": "never",
-            "drawStyle": "bars"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "fatal"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "dark-red"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "error"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "red"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "warn"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "orange"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "info"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "green"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "unknown"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "gray"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "type": "logs",
-      "title": "Logs",
-      "id": 18,
-      "datasource": {
-        "type": "loki",
-        "uid": "${logs}"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 51,
-        "w": 24,
-        "h": 14
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "${logs}"
-          },
-          "expr": "{service_name=~\".+\"} | service_instance_id=\"$host\" | detected_level=~\"$level\" | systemd_unit=~\"$unit\" |~ \"$search\""
-        }
-      ],
-      "options": {
-        "showTime": true,
-        "wrapLogMessage": true,
-        "sortOrder": "Descending",
-        "enableLogDetails": true
-      }
     }
   ],
   "templating": {
@@ -968,14 +796,6 @@
         "label": "Metrics",
         "type": "datasource",
         "query": "prometheus",
-        "current": {},
-        "hide": 0
-      },
-      {
-        "name": "logs",
-        "label": "Logs",
-        "type": "datasource",
-        "query": "loki",
         "current": {},
         "hide": 0
       },
@@ -1003,7 +823,7 @@
           "uid": "${metrics}"
         },
         "query": {
-          "query": "label_values(target_info{job=\"$job\"}, deployment_environment_name)",
+          "query": "label_values(system_cpu_logical_count{job=\"$job\"}, deployment_environment_name)",
           "refId": "env"
         },
         "refresh": 2,
@@ -1025,7 +845,7 @@
           "uid": "${metrics}"
         },
         "query": {
-          "query": "label_values(target_info{job=\"$job\",deployment_environment_name=~\"$env\"}, datacenter)",
+          "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\"}, datacenter)",
           "refId": "datacenter"
         },
         "refresh": 2,
@@ -1047,7 +867,7 @@
           "uid": "${metrics}"
         },
         "query": {
-          "query": "label_values(target_info{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\"}, team)",
+          "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\"}, team)",
           "refId": "team"
         },
         "refresh": 2,
@@ -1069,7 +889,7 @@
           "uid": "${metrics}"
         },
         "query": {
-          "query": "label_values(target_info{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\"}, business_line)",
+          "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\"}, business_line)",
           "refId": "business_line"
         },
         "refresh": 2,
@@ -1091,7 +911,7 @@
           "uid": "${metrics}"
         },
         "query": {
-          "query": "label_values(target_info{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\",business_line=~\"$business_line\"}, role)",
+          "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\",business_line=~\"$business_line\"}, role)",
           "refId": "role"
         },
         "refresh": 2,
@@ -1113,44 +933,26 @@
           "uid": "${metrics}"
         },
         "query": {
-          "query": "label_values(target_info{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\",business_line=~\"$business_line\",role=~\"$role\"}, instance)",
+          "query": "label_values(system_cpu_logical_count{job=\"$job\",deployment_environment_name=~\"$env\",datacenter=~\"$datacenter\",team=~\"$team\",business_line=~\"$business_line\",role=~\"$role\"}, instance)",
           "refId": "host"
         },
         "refresh": 2,
         "current": {},
         "sort": 1
-      },
-      {
-        "name": "level",
-        "label": "Level",
-        "type": "custom",
-        "query": ".*,fatal|error,warn,info,unknown",
-        "current": {
-          "text": ".*",
-          "value": ".*"
-        },
-        "options": []
-      },
-      {
-        "name": "unit",
-        "label": "systemd unit (regex)",
-        "type": "textbox",
-        "query": ".*",
-        "current": {
-          "text": ".*",
-          "value": ".*"
-        }
-      },
-      {
-        "name": "search",
-        "label": "Search (regex)",
-        "type": "textbox",
-        "query": "",
-        "current": {
-          "text": "",
-          "value": ""
-        }
       }
     ]
-  }
+  },
+  "links": [
+    {
+      "title": "CentOS host",
+      "type": "dashboards",
+      "tags": [
+        "centos-host"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false
+    }
+  ]
 }
