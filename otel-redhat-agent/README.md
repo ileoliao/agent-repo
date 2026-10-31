@@ -59,9 +59,16 @@ What the script does:
 
 1. Checks the inputs (values go into a systemd EnvironmentFile: no whitespace, quotes or control characters).
 2. Installs the RPM (skipped when `OTEL_VERSION` is already installed) from `REPO_URL` (`dnf --repofrompath`, no `.repo` file left; the RPM is unsigned, so `gpgcheck` is off for it and the URL must be `https://`/`file://`) or downloads the GitHub release over https into a private `mktemp -d` directory.
-3. Stages the selected fragments and the EnvironmentFile in that private directory, runs `otelcol-contrib validate` as the agent user, and **preflights** the collector: an empty OTLP export with the same token and the system CA store. Any failure (401 = wrong token, certificate error = company CA missing from the system trust store) exits 1 **before the running agent is touched**.
+3. Stages the selected fragments and the EnvironmentFile in that private directory, runs `otelcol-contrib validate` as the agent user, and **preflights** the collector: an empty OTLP export with the same token and the system CA store. Any failure (401 = wrong token, certificate error = company CA missing from the system trust store) exits 1 **before the running agent is touched** (except on a version change: the RPM's own scriptlet already restarted it in step 2, see [Upgrade and rollback](#upgrade-and-rollback)).
 4. Installs the fragments into `/etc/otelcol-contrib/`, writes `otelcol-contrib.conf` (`0640 root:otelcol-contrib`, holds the token) and the sandbox drop-in, removes leftovers that may hold an old token (`*.bak.*`, `*.rpmsave`).
 5. Restarts the service and fails unless it is still `active` with no auto-restart 8 s later.
+
+## Upgrade and rollback
+
+1. Put the new `otelcol-contrib` RPM into the internal repo (without `REPO_URL` the version must exist as a GitHub release).
+2. Change `OTEL_VERSION` in the profile, or override it for a test run: `sudo -E OTEL_VERSION=<new> bash redhat-install.sh <profile>`.
+3. **Re-run on one dev host first** and check its dashboards: the RPM restarts the agent on the new version with the current config before the script validates it, so an incompatible version breaks that host (the script exits 1).
+4. Then re-run on the remaining hosts. **Rollback** = set the previous `OTEL_VERSION` and re-run (dnf downgrades; tested 0.164.0 → 0.163.2 → 0.164.0).
 
 ## Configuration = static fragments + environment
 
