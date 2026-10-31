@@ -9,11 +9,14 @@
 # Optional:
 #   OTEL_VERSION=0.164.0
 #   RPM_PATH=/path/to/otelcol-contrib_*.rpm
+#   RPM_SHA256=<64 位 hex>                          # RPM_PATH 的期望 sha256（离线安装推荐）；未设置则尝试下载 ${RPM_URL}.sha256
+#   SKIP_RPM_VERIFY=true|false                      # 默认 false；仅当 RPM_PATH 离线且拿不到校验值时才可设 true（跳过完整性校验，不安全）
+#   WORKDIR=/path                                   # 默认每次 mktemp -d 新建并在退出时清理；显式设置时不会自动清理
 #   TLS_CA_FILE=/path/ca.crt
 #   TLS_CERT_FILE=/path/client.crt
 #   TLS_KEY_FILE=/path/client.key
 #   OTEL_TOKEN=...
-#   TLS_INSECURE=true|false
+#   TLS_INSECURE=true|false                         # 设置 OTEL_TOKEN 却没配 TLS 时，必须显式 TLS_INSECURE=true 才允许明文发送 token
 #   LOG_PATHS="/var/log/messages /var/log/secure"   # file_log 采集路径，空格分隔
 #   ENABLE_LOGS=true|false                          # 默认 true
 #   KEEP_PROCESS_PIDS=true|false                    # 默认 false: 导出前删除 process.pid / process.parent_pid（基数）；仅调试时设 true
@@ -53,12 +56,22 @@ esac
 
 RPM_NAME="otelcol-contrib_${OTEL_VERSION}_linux_${RPM_ARCH}.rpm"
 RPM_URL="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTEL_VERSION}/${RPM_NAME}"
-WORKDIR="${WORKDIR:-/tmp/otelcol-install}"
-mkdir -p "$WORKDIR"
+RPM_SHA256="${RPM_SHA256:-}"
+SKIP_RPM_VERIFY="${SKIP_RPM_VERIFY:-false}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "请用 root 或 sudo 跑这个脚本"
   exit 1
+fi
+
+# 工作目录: 默认用 mktemp -d 新建（0700，不可预测），退出时清理；
+# 仅当用户显式设置 WORKDIR 才使用该目录（且不自动删除）。
+# 不能用固定的 /tmp 路径：本地低权限用户可预先放置 RPM，被 root 安装。
+if [[ -n "${WORKDIR:-}" ]]; then
+  mkdir -p "$WORKDIR"
+else
+  WORKDIR="$(mktemp -d /tmp/otelcol-install.XXXXXXXX)"
+  trap 'rm -rf "$WORKDIR"' EXIT
 fi
 
 install_secret_file() {
@@ -98,6 +111,17 @@ elif [[ -n "$CA_PATH" || -n "$CERT_PATH" ]]; then
   INSECURE=false
 else
   INSECURE=true
+fi
+
+# Bearer token 不能在无 TLS 时静默明文发送
+if [[ -n "$OTEL_TOKEN" && "$INSECURE" == "true" ]]; then
+  if [[ "${TLS_INSECURE:-}" == "true" ]]; then
+    echo "警告: OTEL_TOKEN 将通过【明文】(tls.insecure=true) 发送，可被网络上的任何人截获。仅限受信任的内网/实验室。"
+  else
+    echo "错误: 设置了 OTEL_TOKEN 但没有配置 TLS (TLS_CA_FILE / TLS_CERT_FILE)，token 会以明文发送。"
+    echo "  请提供 TLS_CA_FILE（推荐），或在明确接受风险时显式设置 TLS_INSECURE=true。"
+    exit 1
+  fi
 fi
 
 TLS_YAML="    tls:
@@ -176,14 +200,59 @@ else
   PROCESS_SCRAPER=""
 fi
 
+# 取官方发布的 per-asset sha256（内容: 64 位 hex，可能后跟文件名）；失败返回非 0
+fetch_rpm_sha256() {
+  local out hex
+  out="$(curl -fsSL --retry 3 "${RPM_URL}.sha256")" || return 1
+  hex="$(awk 'NR==1 {print $1}' <<< "$out")"
+  [[ "$hex" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  echo "${hex,,}"
+}
+
+RPM_FILE="${WORKDIR}/${RPM_NAME}"
+rm -f "$RPM_FILE"
+VERIFY=true
 if [[ -n "${RPM_PATH:-}" ]]; then
-  RPM_FILE="$RPM_PATH"
-else
-  RPM_FILE="${WORKDIR}/${RPM_NAME}"
-  if [[ ! -f "$RPM_FILE" ]]; then
-    echo "下载 $RPM_URL ..."
-    curl -fL --retry 3 -o "$RPM_FILE" "$RPM_URL"
+  if [[ ! -f "$RPM_PATH" ]]; then
+    echo "找不到 RPM_PATH: $RPM_PATH"
+    exit 1
   fi
+  # 先复制到私有 WORKDIR 再校验/安装，避免校验后文件被替换 (TOCTOU)
+  install -m 0600 "$RPM_PATH" "$RPM_FILE"
+else
+  echo "下载 $RPM_URL ..."
+  curl -fL --retry 3 -o "$RPM_FILE" "$RPM_URL"
+fi
+
+if [[ -n "$RPM_SHA256" ]]; then
+  if [[ ! "$RPM_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "RPM_SHA256 必须是 64 位十六进制 sha256"
+    exit 1
+  fi
+  EXPECTED_SHA256="${RPM_SHA256,,}"
+elif EXPECTED_SHA256="$(fetch_rpm_sha256)"; then
+  :
+elif [[ -n "${RPM_PATH:-}" && "$SKIP_RPM_VERIFY" == "true" ]]; then
+  VERIFY=false
+  echo "!!!!!! 警告: 无法获取 RPM 的 sha256，且设置了 SKIP_RPM_VERIFY=true：将【不校验】RPM 完整性直接以 root 安装 !!!!!!"
+  echo "!!!!!! 请确认 ${RPM_PATH} 来源可信；建议改用 RPM_SHA256=<digest> !!!!!!"
+else
+  echo "错误: 无法获取 ${RPM_URL}.sha256，无法校验 RPM 完整性。"
+  if [[ -n "${RPM_PATH:-}" ]]; then
+    echo "  离线安装请设置 RPM_SHA256=<64 位 sha256>（推荐），或明确接受风险时设置 SKIP_RPM_VERIFY=true。"
+  fi
+  exit 1
+fi
+
+if [[ "$VERIFY" == "true" ]]; then
+  ACTUAL_SHA256="$(sha256sum "$RPM_FILE" | awk '{print $1}')"
+  if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
+    echo "错误: RPM sha256 校验失败，拒绝安装。"
+    echo "  期望: $EXPECTED_SHA256"
+    echo "  实际: $ACTUAL_SHA256"
+    exit 1
+  fi
+  echo "RPM sha256 校验通过: $ACTUAL_SHA256"
 fi
 
 echo "安装 RPM: $RPM_FILE"
@@ -228,7 +297,7 @@ if [[ "${ENABLE_LOGS}" == "true" ]]; then
   LOGS_PIPELINE="
     logs:
       receivers: [file_log]
-      processors: [resource_detection, batch]
+      processors: [memory_limiter, resource_detection, batch]
       exporters: [otlp_grpc]
 "
 else
@@ -259,6 +328,10 @@ receivers:
       processes:${PROCESS_SCRAPER}
 ${FILELOG_RECEIVER}
 processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
   # Drop per-process PID resource attributes (high cardinality). Set KEEP_PROCESS_PIDS=true to keep them for debugging.
   transform/drop_process_pids:
     error_mode: ignore
@@ -284,7 +357,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [transform/drop_process_pids, resource_detection, batch]
+      processors: [memory_limiter, transform/drop_process_pids, resource_detection, batch]
       exporters: [otlp_grpc]
 ${LOGS_PIPELINE}
   telemetry:
@@ -356,7 +429,13 @@ else
   rm -f "$DROPIN_FILE"
   rmdir "$DROPIN_DIR" 2>/dev/null || true
   if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
-    echo "PROCESS_CAPS=false: 不授予额外 capability；root 进程的 process.disk.io / executable.path 将缺失"
+    if [[ "${ENABLE_LOGS}" == "true" ]]; then
+      echo "PROCESS_CAPS=false: 不授予 CAP_SYS_PTRACE，root 进程的 executable.path 将缺失；"
+      echo "  但 ENABLE_LOGS=true 时日志 drop-in (10-read-logs.conf) 仍授予 CAP_DAC_READ_SEARCH（可读任意文件），"
+      echo "  所以 root 进程的 process.disk.io 仍可读取。要真正最小权限，需同时设置 ENABLE_LOGS=false。"
+    else
+      echo "PROCESS_CAPS=false: 不授予额外 capability；root 进程的 process.disk.io / executable.path 将缺失"
+    fi
   fi
 fi
 

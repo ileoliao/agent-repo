@@ -2,8 +2,23 @@
 # Smoke-test agent -> gateway on this box (no CentOS/Docker required).
 set -euo pipefail
 cd "$(dirname "$0")"
+if [[ ! -x ./bin/otelcol-contrib ]]; then
+  echo "missing ./bin/otelcol-contrib (not part of this repo)." >&2
+  echo "Download the otelcol-contrib release tarball for your OS/arch from" >&2
+  echo "https://github.com/open-telemetry/opentelemetry-collector-releases/releases and extract the binary into ./bin/." >&2
+  exit 1
+fi
 mkdir -p logs
-pkill -f 'otelcol-contrib --config' 2>/dev/null || true
+# Stop only the collectors a previous run started (pid files), never other collectors on this machine.
+for f in logs/gateway.pid logs/agent.pid; do
+  if [[ -f "$f" ]]; then
+    pid="$(cat "$f")"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+    rm -f "$f"
+  fi
+done
 sleep 1
 : > logs/gateway.log
 : > logs/agent.log

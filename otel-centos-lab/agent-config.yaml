@@ -49,6 +49,10 @@ receivers:
     include_file_name: true
 
 processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
   # Drop per-process PID resource attributes (high cardinality). Set KEEP_PROCESS_PIDS=true to keep them for debugging.
   transform/drop_process_pids:
     error_mode: ignore
@@ -70,20 +74,21 @@ exporters:
     endpoint: ${env:COLLECTOR_ENDPOINT}
     tls:
       insecure: true
-  # Lab-only local debug (optional). Comment out in production.
-  debug:
-    verbosity: basic
+  # Lab-only local debug: not wired into the pipelines (production-oriented). To use, uncomment
+  # and add `debug` to the pipelines' exporters lists.
+  # debug:
+  #   verbosity: basic
 
 service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [transform/drop_process_pids, resource_detection, batch]
-      exporters: [otlp_grpc, debug]
+      processors: [memory_limiter, transform/drop_process_pids, resource_detection, batch]
+      exporters: [otlp_grpc]
     logs:
       receivers: [file_log]
-      processors: [resource_detection, batch]
-      exporters: [otlp_grpc, debug]
+      processors: [memory_limiter, resource_detection, batch]
+      exporters: [otlp_grpc]
   telemetry:
     logs:
       level: info
