@@ -24,7 +24,7 @@ CentOS host
 # package from the internal repo, host attributes from config management:
 sudo COLLECTOR_ENDPOINT=https://otel-gw.corp.example:4318 \
   OTEL_AUTH_SCHEME=Basic OTEL_TOKEN="<base64 of user:password>" \
-  REPO_URL=https://repo.corp.example/otel/el9/ RPM_SHA256=<sha256 of the rpm> \
+  REPO_URL=https://repo.corp.example/otel/el9/ \
   HOST_ATTRIBUTES="deployment.environment.name=prod,datacenter=sh1,team=infra,business_line=payments,role=db" \
   PROCESS_NAMES="sshd nginx" \
   bash centos-install.sh
@@ -33,13 +33,12 @@ sudo COLLECTOR_ENDPOINT=https://otel-gw.corp.example:4318 \
 # sudo COLLECTOR_ENDPOINT=10.0.0.20:4317 bash centos-install.sh
 
 # Or use a pre-downloaded RPM (air-gapped / mirrored):
-# sudo RPM_PATH=./otelcol-contrib_0.164.0_linux_amd64.rpm \
-#   RPM_SHA256=<sha256 of the rpm> COLLECTOR_ENDPOINT=10.0.0.20:4317 bash centos-install.sh
+# sudo RPM_PATH=./otelcol-contrib_0.164.0_linux_amd64.rpm COLLECTOR_ENDPOINT=10.0.0.20:4317 bash centos-install.sh
 ```
 
 The script:
 
-1. Gets the RPM from the internal repo (`REPO_URL`), a local file (`RPM_PATH`) or GitHub, **verifies its sha256**, and installs it via `dnf` / `yum` / `rpm`
+1. Installs the RPM from a local file (`RPM_PATH`), the internal repo (`REPO_URL`) or the GitHub release, in that order of precedence
 2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + per-process metrics + file_log)
 3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, `KEEP_PROCESS_PIDS`, optional `OTEL_TOKEN`)
 4. Writes the systemd drop-in for process metrics (see below)
@@ -49,27 +48,16 @@ The script:
 
 Other variables: `SERVICE_NAME` (default `centos-host`, letters/digits/`._-` only) becomes `service.name`, so logs land under that `service_name` in Loki and metrics get it as `job` in Prometheus. `ENABLE_LOGS`, `ENABLE_PROCESS_METRICS`, `PROCESS_CAPS` and `KEEP_PROCESS_PIDS` accept only `true` / `false`. Only the 5 newest `config.yaml.bak.*` / `otelcol-contrib.conf.bak.*` are kept (the conf backups contain `OTEL_TOKEN`).
 
-### RPM integrity and work directory
+### Package source
 
-The RPM is installed as root, so it is always verified before installation:
-
-- The script works in a fresh private `mktemp -d` directory (removed on exit). `WORKDIR` is honoured only if you set it explicitly (and is then not deleted). A pre-existing RPM in a predictable path is never trusted.
-- Downloaded RPMs are checked against the release's per-asset digest `${RPM_URL}.sha256`; a mismatch aborts with exit 1.
-- With `REPO_URL` (internal yum repo), the repo is used for this run only (`dnf repoquery --repofrompath`, metadata cached in the work dir, **no `.repo` file is written**); the package `otelcol-contrib-<OTEL_VERSION>` is downloaded into the work dir and verified like any other RPM. A repo copy is not proof of integrity by itself, so pass `RPM_SHA256` (or let the script fetch the official digest from GitHub when it is reachable).
-- With `RPM_PATH` (air-gapped), the file is copied to the private work dir and checked against `RPM_SHA256` if given; otherwise the script tries to fetch `${RPM_URL}.sha256`. If that fetch fails (offline) the install is **refused** unless you set `SKIP_RPM_VERIFY=true`, which prints a loud warning and installs unverified.
+Packages are built and published by internal teams, so the installer does no separate digest check; it relies on the source:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `RPM_SHA256` | unset | Expected sha256 (64 hex) of the RPM. Use this for offline installs |
-| `REPO_URL` | unset | Internal yum repo base URL (the directory holding `repodata/`) |
-| `SKIP_RPM_VERIFY` | `false` | `true` allows a `REPO_URL` / `RPM_PATH` install without any digest (insecure; only if the RPM source is otherwise trusted) |
-| `WORKDIR` | fresh `mktemp -d` | Override the work directory (not cleaned up) |
-
-```bash
-sudo RPM_PATH=./otelcol-contrib_0.164.0_linux_amd64.rpm \
-  RPM_SHA256=c79d8f9faea63c43265ea027f3c7c6e72f42d1a54e90be6b8d1fe531b1ad8fdc \
-  COLLECTOR_ENDPOINT=10.0.0.20:4317 bash centos-install.sh
-```
+| `RPM_PATH` | unset | Install this local RPM file |
+| `REPO_URL` | unset | Internal yum repo base URL (the directory holding `repodata/`). Used for this run only: `dnf install --repofrompath ... otelcol-contrib-<OTEL_VERSION>`, metadata cached in the work dir, **no `.repo` file is written**. `gpgcheck` is off for this repo; use an `https://` URL |
+| neither | — | Download the GitHub release RPM over HTTPS |
+| `WORKDIR` | fresh `mktemp -d` | Work directory for downloads and dnf metadata, removed on exit unless set explicitly. Never a predictable path, so another local user cannot pre-place an RPM that root then installs |
 
 ### File logs (enabled by default)
 
