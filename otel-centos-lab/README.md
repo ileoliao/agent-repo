@@ -10,7 +10,7 @@ Release: https://github.com/open-telemetry/opentelemetry-collector-releases/rele
 ```
 CentOS host
   otelcol-contrib (agent)
-    receivers: host_metrics (incl. per-process) + file_log (optional)
+    receivers: host_metrics (incl. per-process) + journald (optional) + file_log (optional)
     processors: memory_limiter + per-process sum (no pid) + resource/service + resource_detection + batch
     exporter:  otlp_grpc  ──►  central Collector (gateway)
                                   OTLP :4317 / :4318
@@ -23,7 +23,7 @@ CentOS host
 # OTLP/HTTP gateway, company root CA already in the system trust store, basic auth handed out as one token,
 # package from the internal repo, host attributes from config management:
 sudo COLLECTOR_ENDPOINT=https://otel-gw.corp.example:4318 \
-  OTEL_AUTH_SCHEME=Basic OTEL_TOKEN="<base64 of user:password>" \
+  OTEL_AUTH_SCHEME=Basic OTEL_TOKEN_FILE=/root/otel.token \
   REPO_URL=https://repo.corp.example/otel/el9/ \
   HOST_ATTRIBUTES="deployment.environment.name=prod,datacenter=sh1,team=infra,business_line=payments,role=db" \
   PROCESS_NAMES="sshd nginx" \
@@ -39,14 +39,14 @@ sudo COLLECTOR_ENDPOINT=https://otel-gw.corp.example:4318 \
 The script:
 
 1. Installs the RPM from a local file (`RPM_PATH`), the internal repo (`REPO_URL`) or the GitHub release, in that order of precedence
-2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + per-process metrics + file_log)
+2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + per-process metrics + journald / file logs)
 3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, `KEEP_PROCESS_PIDS`, optional `OTEL_TOKEN`)
-4. Writes the systemd drop-in for process metrics (see below)
-5. Runs `otelcol-contrib validate` on the new config. If it fails, the previous config is restored, the running agent is left alone and the script exits 1
-6. OTLP/HTTP only: **preflight** — POSTs an empty OTLP request to `<endpoint>/v1/metrics` with the same credentials and the same CA store (no proxy, like the systemd service). Anything but 2xx (401 = wrong token, certificate error = company CA missing) restores the previous config and exits 1
+4. Runs `otelcol-contrib validate` on the new config. If it fails, the previous config is restored, the running agent is left alone and the script exits 1
+5. OTLP/HTTP only: **preflight** — POSTs an empty OTLP request to `<endpoint>/v1/metrics` with the same credentials and the same CA store (no proxy, like the systemd service). Anything but 2xx (401 = wrong token, certificate error = company CA missing) restores the previous config and exits 1
+6. Writes the one managed systemd drop-in `10-otelcol-agent.conf` (no capabilities + sandbox, see below) and removes drop-ins left by older versions
 7. **Restarts** `otelcol-contrib` and waits 8 s; if the service is not `active` or has auto-restarted, it prints the last journal lines and exits 1
 
-Other variables: `SERVICE_NAME` (default `centos-host`, letters/digits/`._-` only) becomes `service.name`, so logs land under that `service_name` in Loki and metrics get it as `job` in Prometheus. `ENABLE_LOGS`, `ENABLE_PROCESS_METRICS`, `PROCESS_CAPS` and `KEEP_PROCESS_PIDS` accept only `true` / `false`. Only the 5 newest `config.yaml.bak.*` / `otelcol-contrib.conf.bak.*` are kept (the conf backups contain `OTEL_TOKEN`).
+Other variables: `SERVICE_NAME` (default `centos-host`, letters/digits/`._-` only) becomes `service.name`, so logs land under that `service_name` in Loki and metrics get it as `job` in Prometheus. `SYSTEM_LOGS`, `LOG_CAPS`, `ENABLE_PROCESS_METRICS` and `KEEP_PROCESS_PIDS` accept only `true` / `false`; the removed `ENABLE_LOGS` / `PROCESS_CAPS` are rejected so an old command line cannot silently do something else. `OTEL_TOKEN_FILE` reads the token from a file instead of the command line. Only the 5 newest `config.yaml.bak.*` / `otelcol-contrib.conf.bak.*` are kept (the conf backups contain `OTEL_TOKEN`).
 
 ### Package source
 
@@ -59,45 +59,43 @@ Packages are built and published by internal teams, so the installer does no sep
 | neither | — | Download the GitHub release RPM over HTTPS |
 | `WORKDIR` | fresh `mktemp -d` | Work directory for downloads and dnf metadata, removed on exit unless set explicitly. Never a predictable path, so another local user cannot pre-place an RPM that root then installs |
 
-### File logs (enabled by default)
+### Logs (both optional)
 
-Default paths:
-
-- `/var/log/messages`
-- `/var/log/secure`
+| Source | Variable | Default | How it is read |
+|---|---|---|---|
+| System logs | `SYSTEM_LOGS` | `true` | `journald` receiver, priority `info` and above (includes `authpriv`, i.e. what rsyslog writes to `/var/log/secure`) |
+| Application log files | `LOG_PATHS` | none | `file_log` on the given absolute paths / globs |
 
 ```bash
-export LOG_PATHS="/var/log/messages /var/log/secure /var/log/myapp/*.log"
-# Metrics only:
-# export ENABLE_LOGS=false
+# system logs + application files
+sudo COLLECTOR_ENDPOINT=... LOG_PATHS="/var/log/myapp/*.log /opt/app/logs/*.log" bash centos-install.sh
+# metrics only
+sudo COLLECTOR_ENDPOINT=... SYSTEM_LOGS=false bash centos-install.sh
 ```
 
-The script adds the `otelcol-contrib` user to the `adm` group, **and** installs a systemd drop-in
-`/etc/systemd/system/otelcol-contrib.service.d/10-read-logs.conf` granting `CAP_DAC_READ_SEARCH`.
-The drop-in is required on CentOS/RHEL: `/var/log/messages` and `/var/log/secure` are `root:root 0600`, so `adm` alone
-gives `open /var/log/messages: permission denied`. The capability survives logrotate re-creating the files.
-`LOG_PATHS` globs (e.g. `/var/log/myapp/*.log`) are written to the config unexpanded, so files created later are picked up.
-Rotated files are excluded with `**/*.gz` and `**/*.[0-9]` (any directory), so a broad glob such as `/var/log/myapp/*` does not re-ship `app.log.1` / `app.log.2.gz`.
+System logs come from journald, the source rsyslog copies from, instead of `/var/log/messages`: no file permissions to bypass (the service only gets `SupplementaryGroups=systemd-journal`), works on hosts without rsyslog, and each record carries its priority and origin. The agent keeps `MESSAGE` as the body, maps `PRIORITY` to severity (`fatal`/`error`/`warn`/`info`) and keeps `systemd.unit` and `syslog.identifier`; the other journal fields are dropped. In Loki these land as `detected_level` and structured metadata (`systemd_unit`, `syslog_identifier`), not as index labels.
 
-Notes from live testing:
+Application log files must be readable by the `otelcol-contrib` user: that is the application owner's job (group ownership or an ACL). The installer warns about matching files it cannot read. `LOG_CAPS=true` grants `CAP_DAC_READ_SEARCH` as a stopgap, but then the agent can read **any** file (`/etc/shadow`, private keys); use it only during a migration. Paths under `/home`, `/root` and `/run/user` are rejected because the sandbox hides them. Globs are written unexpanded, so files created later are picked up; rotated files are excluded with `**/*.gz` and `**/*.[0-9]`.
 
-- **journald-only hosts** (no `rsyslog`): `/var/log/messages` and `/var/log/secure` do not exist, `file_log` stays silent (no error) and no logs are shipped; metrics still work. Install/enable `rsyslog`, or replace the receiver with `journald` (add `otelcol-contrib` to the `systemd-journal` group).
-- The agent's own stdout goes to journald -> rsyslog -> `/var/log/messages`, so its own log lines are shipped too. During a gateway outage this adds retry/error lines to the stream.
-- `file_log` persists its read offsets with the `file_storage` extension in `STORAGE_DIR` (default `/var/lib/otelcol-contrib/file_storage`), so lines written while the agent is stopped or the host reboots are collected once it is back. `start_at: end` only applies to files seen for the first time.
+Both receivers persist their read position (journald cursor, file offsets) with the `file_storage` extension in `STORAGE_DIR` (default `/var/lib/otelcol-contrib/file_storage`): lines written while the agent is stopped are collected once it is back.
+
+Notes:
+
+- **Volatile journal**: if `/var/log/journal` does not exist, journald keeps logs only in `/run/log/journal` and loses them at reboot, including lines the agent had not shipped yet. Make the journal persistent in your host baseline (`mkdir -p /var/log/journal`, or `Storage=persistent`); the installer does not change journald settings.
+- The agent's own log goes to journald too, so it is shipped as `systemd_unit=otelcol-contrib.service`. During a gateway outage this adds retry lines.
 - Gateway outage: the OTLP exporter retries with backoff for up to 5 minutes per batch (in-memory queue); batches older than that are dropped. Shorter outages are replayed with original timestamps.
 
 ### Per-process metrics (`process` scraper)
 
-CPU / memory / disk I/O of individual processes, via the `host_metrics` `process` scraper (separate from the aggregate `processes` scraper). Each process is a separate resource with `process.executable.name`, `process.executable.path`, `process.command_line`, `process.owner`, ...
+CPU and memory of individual processes, via the `host_metrics` `process` scraper (separate from the aggregate `processes` scraper). Each process is a separate resource with `process.executable.name`, `process.executable.path`, `process.command_line`, `process.owner`, ...
 
-Enabled metrics: `process.cpu.time`, `process.cpu.utilization` (opt-in in 0.164.0, enabled explicitly; first appears on the 2nd scrape), `process.memory.usage`, `process.memory.virtual`, `process.disk.io`.
+Enabled metrics: `process.cpu.time`, `process.cpu.utilization` (opt-in in 0.164.0, enabled explicitly; first appears on the 2nd scrape), `process.memory.usage`, `process.memory.virtual`. `process.disk.io` is switched off: reading other users' `/proc/<pid>/io` needs `CAP_SYS_PTRACE`, which would let the agent read the memory of any process.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PROCESS_NAMES` | unset | Process names to collect, **space- or comma-separated** (`"rsyslogd, sshd,otelcol-contrib"`) -> `include.names`. Unset (or empty) = **all processes** |
 | `PROCESS_MATCH_TYPE` | `strict` | `strict` = exact match on the process name; `regexp` = Go regexp, **unanchored** (`ssh` also matches `sshd`; use `^sshd$`) |
-| `ENABLE_PROCESS_METRICS` | `true` | `false` removes the `process` scraper (and the systemd drop-in) entirely |
-| `PROCESS_CAPS` | `true` | write the capability drop-in below; `false` skips `CAP_SYS_PTRACE`, so `process.disk.io` (and `executable.path`) is missing for every process not owned by the collector |
+| `ENABLE_PROCESS_METRICS` | `true` | `false` removes the `process` scraper entirely |
 
 Why `strict` is the default: exact names are predictable and cheap; `regexp` is unanchored and easy to over-match. Note Linux process names (`comm`) are truncated to 15 characters, and `,`/whitespace are separators, so a regexp cannot contain them (use `|` for alternation).
 
@@ -112,21 +110,42 @@ sudo -E env COLLECTOR_ENDPOINT=... ENABLE_PROCESS_METRICS=false bash centos-inst
 
 > **Strongly recommended: set `PROCESS_NAMES` in production.** With it unset, every process on the host is collected. Same-name processes are summed (see below), so the series count is bounded by the number of distinct executable names + owners rather than PIDs, but every short-lived command still creates its own name. That is acceptable for a lab, not for a fleet. The installer prints a warning in this mode.
 
-**Permissions on CentOS.** The RPM service runs as the non-root user `otelcol-contrib`. On CentOS Stream 9 (verified with podman + systemd):
+### Privileges and sandbox
 
-- `/proc/<pid>/stat|statm|cmdline` of other users are readable -> cpu time, memory, name, command line work out of the box.
-- `/proc/<pid>/io` is mode `0400` **and** gated by a ptrace access check; `/proc/<pid>/exe` is gated by the ptrace check. So `process.disk.io` of other users' processes needs **both** `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH` (verified on a CentOS Stream 9 VM: with only `CAP_DAC_READ_SEARCH`, `process.disk.io` is missing for every process, while memory and CPU are fine).
-- Without them the scraper logs `Error scraping metrics ... permission denied` every interval, for every PID (including ones your `include` would skip), so the generated config also sets `mute_process_{name,exe,io,user,cgroup}_error: true`.
-
-The installer writes `/etc/systemd/system/otelcol-contrib.service.d/10-process-metrics.conf`:
+The service runs as the RPM's non-root user `otelcol-contrib` with **no capabilities** and inside a systemd sandbox. The installer manages exactly one drop-in, `/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf`:
 
 ```ini
 [Service]
-AmbientCapabilities=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
-CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=                 # LOG_CAPS=true: CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+SupplementaryGroups=systemd-journal    # only with SYSTEM_LOGS=true
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/otelcol-contrib/file_storage
+ProtectHome=yes
+PrivateTmp=yes
+InaccessiblePaths=-/etc/ssh -/etc/sudoers -/etc/sudoers.d -/etc/pki/tls/private
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
 ```
 
-This drop-in sits next to `10-read-logs.conf` (file_log, `CAP_DAC_READ_SEARCH`); systemd merges `AmbientCapabilities` / `CapabilityBoundingSet` across drop-ins, so with both enabled the service has `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`. It grants the collector read access to arbitrary files (`CAP_DAC_READ_SEARCH`) and ptrace-read of other processes — a real privilege increase. If your security policy forbids it, use `PROCESS_CAPS=false` and accept missing exe path for other users' processes. `CAP_SYS_PTRACE` is close to root (it allows attaching to any process), so weigh per-process disk I/O against it: `PROCESS_CAPS=false` drops it and only loses `process.disk.io` / `executable.path` of other users' processes. With logs enabled, `10-read-logs.conf` still grants `CAP_DAC_READ_SEARCH` (read any file); for real least privilege also set `ENABLE_LOGS=false`. SELinux: verified on a CentOS Stream 9 VM (kernel 5.14, `Enforcing`): the RPM ships no SELinux policy, so the service runs as `unconfined_service_t` and SELinux does not restrict it; logs, wildcard/new files and root-process metrics all worked with 0 AVC denials. If your hosts confine it with a custom policy, check `ausearch --input-logs -m avc -ts recent` after enabling.
+Why no capabilities (verified on a CentOS Stream 9 VM, SELinux `Enforcing`):
+
+| Capability | Would give | Granted? |
+|---|---|---|
+| `CAP_SYS_PTRACE` | per-process disk I/O of other users' processes, **and** reading any process's environment and memory (read 64 bytes of `sshd` memory in the test) | never |
+| `CAP_DAC_READ_SEARCH` | reading 0600 log files, **and** any file: `/etc/shadow`, SSH host keys | only with `LOG_CAPS=true` |
+
+With the drop-in the running agent has `CapEff=0`, `NoNewPrivs=1`, and cannot read `/etc/shadow`, SSH host keys, `/root`, or `/proc/<pid>/{environ,mem}` of `sshd`; `systemd-analyze security` goes from 7.2 MEDIUM to 4.2 OK. `/etc/shadow` cannot be listed in `InaccessiblePaths`: SELinux denies systemd mounting over `shadow_t` files and the service fails to start; without capabilities its `0000` mode already protects it. Older versions added the agent to the `adm` group and wrote `10-process-metrics.conf` / `10-read-logs.conf`; the installer removes all three.
+
+Non-root also means other users' `/proc/<pid>/exe` and `io` are unreadable, so the generated config sets `mute_process_{name,exe,io,user,cgroup}_error: true` to avoid an error line per PID per interval.
+
+SELinux: the RPM ships no policy, so the service runs as `unconfined_service_t`; logs, metrics and the sandbox worked with 0 AVC denials. If your hosts confine it with a custom policy, check `ausearch --input-logs -m avc -ts recent` after enabling.
 
 #### Same-name processes are summed, PIDs are stripped (default)
 
@@ -140,7 +159,7 @@ So by default the metrics pipeline:
 3. `metrics_transform/sum_processes` sums them: memory with no labels, CPU per `state`, disk I/O per `direction`
 
 Result: one series per executable name + owner, holding the total of all matching processes (verified: three `sleep` processes of 1820 KiB RSS each -> one series of 5460 KiB).
-`process.cpu.time` / `process.disk.io` are sums of cumulative counters, so when one of the processes exits the total drops and `rate()` sees a counter reset.
+`process.cpu.time` is a sum of cumulative counters, so when one of the processes exits the total drops and `rate()` sees a counter reset.
 
 To see every process separately (with `process.pid`) for a debugging session, set `KEEP_PROCESS_PIDS=true`; all three steps are then skipped:
 
@@ -185,6 +204,8 @@ The central collector should still enforce the same policy (drop `process.pid` /
 
 - `OTEL_AUTH_SCHEME=Bearer` (default): bearer token, no whitespace.
 - `OTEL_AUTH_SCHEME=Basic`: the token is `base64("user:password")` as handed out by the gateway team; the installer checks that it decodes to `user:password`. When the gateway maps the basic-auth account to a tenant, nothing tenant-specific is needed on the host.
+
+**Pass the token as a file.** `sudo` logs its full command line to the journal (`authpriv`), and with `SYSTEM_LOGS=true` those lines are shipped to Loki: `sudo OTEL_TOKEN=... bash centos-install.sh` would put the token into the central log store (observed in the test VM). Use `OTEL_TOKEN_FILE=/root/otel.token` (mode `0600`, written by config management); the token is then also absent from `ps` and shell history.
 
 **Credentials require TLS.** With `OTEL_TOKEN` set over a clear-text connection (`http://`, or gRPC without TLS) the installer refuses with exit 1; set `TLS_INSECURE=true` explicitly to accept the risk on a trusted network or lab.
 
@@ -270,7 +291,7 @@ sudo journalctl -u otelcol-contrib -f
 
 ## Agent config sketch
 
-Component names for 0.164.0+: `host_metrics`, `file_log`, `resource_detection`, `otlp_grpc` (old aliases such as `filelog` still work but warn).
+Component names for 0.164.0+: `host_metrics`, `journald`, `file_log`, `resource_detection`, `otlp_grpc` / `otlp_http` (old aliases such as `filelog` still work but warn).
 
 ```yaml
 receivers:
@@ -305,11 +326,11 @@ receivers:
           process.cpu.utilization: {enabled: true}
           process.memory.usage: {enabled: true}
           process.memory.virtual: {enabled: true}
-          process.disk.io: {enabled: true}
+          process.disk.io: {enabled: false}   # needs CAP_SYS_PTRACE
+  journald: {priority: info, start_at: end, storage: file_storage}
   file_log:
     include:
-      - /var/log/messages
-      - /var/log/secure
+      - /var/log/myapp/*.log
     start_at: end
     storage: file_storage          # resume from saved offsets after a restart
     include_file_path: true
@@ -343,8 +364,8 @@ service:
       processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, resource/service, resource_detection, batch]
       exporters: [otlp_grpc]
     logs:
-      receivers: [file_log]
-      processors: [memory_limiter, resource/service, resource_detection, batch]
+      receivers: [journald, file_log]
+      processors: [memory_limiter, transform/journald, resource/service, resource_detection, transform/instance_id, batch]
       exporters: [otlp_grpc]
 ```
 
@@ -360,44 +381,36 @@ Allow **4317/tcp** (gRPC) or **4318/tcp** (HTTP) from agents to the gateway.
 
 ## Verification status
 
-| Check | Result |
-|-------|--------|
-| Binary pipeline agent → gateway (host metrics) | Pass (0.164.0) |
-| CentOS Stream 9 + RPM + systemd (`centos-install.sh`) | Pass (Cursor VM + podman) |
-| TLS with CA to gateway | Pass |
-| Bearer token written to conf | Pass (gateway did not enforce auth in lab) |
-| Process metrics without `process.pid` / `process.parent_pid` (default) | Pass: CentOS Stream 9 + podman + systemd, installer-generated config; no pid attributes at gateway, `process.executable.name`/`command`/`owner` present |
-| `KEEP_PROCESS_PIDS=true` (conf edit + restart) | Pass: pid and parent_pid present again after restart |
-| Per-process metrics, filtered (`PROCESS_NAMES="rsyslogd, sshd,otelcol-contrib"`, strict) | Pass — CentOS Stream 9 + systemd + podman; `process.cpu.time/utilization`, `process.memory.usage/virtual`, `process.disk.io` seen at gateway with `process.pid` / `process.executable.name` |
-| `PROCESS_MATCH_TYPE=regexp` | Pass (`^ssh,rsyslog` -> sshd, rsyslogd only) |
-| `ENABLE_PROCESS_METRICS=false` | Pass (no process scraper, drop-in removed) |
-| `PROCESS_NAMES` unset (all processes) | Pass (lab smoke; installer warns) |
-| Reading other users' `io` / `exe` as `otelcol-contrib` | Needs `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH` (installed by default). With `CAP_DAC_READ_SEARCH` only, `process.disk.io` is missing for all processes |
-| SELinux enforcing, TLS/mTLS with process metrics | Pass (CentOS Stream 9 VM, see rows below) |
-| TLS (CA only, no mTLS) + bearer token, gateway verifies both | Pass: metrics + logs arrive; wrong token -> `Unauthenticated`, wrong CA -> x509 failure |
-| `ENABLE_LOGS=false` | Pass: drop-in removed (`CapEff=0`), no file_log/logs pipeline, metrics still flow |
-| Container restart (systemd reboot) | Pass: service enabled, conf/certs/drop-in persist, data resumes |
-| Rotation with `/var/log/myapp/*` + logrotate | Pass after fix: no `.1`/`.gz` content shipped, new active file collected |
-| Gateway outage 70s / 6.5min, 4 agents | Short: replayed; long: batches older than 5 min dropped, newer replayed |
-| SELinux enforcing | Pass: CentOS Stream 9 VM (Lima, `Enforcing`), service runs as `unconfined_service_t`, 0 AVC denials |
-| Scraper excludes: `veth-test`, `br-test` (dummy/bridge), tmpfs, tmpfs under `/var/lib/containers`, loop device | Pass: only `eth0`, real filesystems and real disks reported; an xfs mounted from `/dev/loop0` (`/data-test`) is still reported |
-| `process.command_line` / `command` | Pass: never exported, `KEEP_PROCESS_PIDS=true` included (a `-pSECRET` argument did not leave the host) |
-| Same-name processes (3x `sleep`, same owner) | Pass: one series = sum of the three (5460 KiB = 3 x 1820); `KEEP_PROCESS_PIDS=true` gives three series with `process.pid` |
-| Agent stopped / VM rebooted while lines are written | Pass: lines collected after restart (`file_storage` offsets) |
-| Invalid generated config (`PROCESS_MATCH_TYPE=regexp PROCESS_NAMES="(sshd"`) | Pass: exit 1, old config restored, running agent untouched |
-| Valid config but collector cannot start (port 8888 taken) | Pass: exit 1 with journal tail |
-| `ENABLE_LOGS=yes`, `SERVICE_NAME="a b"` | Pass: rejected with exit 1 |
-| mTLS (client cert) to gateway | Pass (CentOS Stream 9 VM) |
-| Bearer token with `$ # ' "` over TLS | Pass; a token containing a space is rejected by the gateway (`bearertokenauth`), as RFC 6750 tokens cannot contain spaces |
-| OTLP/HTTP `https://` + `Basic` token, company CA only in the system trust store (no `TLS_CA_FILE`), package from an internal repo (`REPO_URL`, createrepo over HTTP), `HOST_ATTRIBUTES` | Pass: preflight HTTP 200, metrics and logs arrive with `service.instance.id`, `host.id`, `host.arch`, `os.description` and all five host attributes; no `.repo` file left behind |
-| Preflight: wrong password / no token / CA removed from trust store | Pass: 401 / 401 / certificate error, exit 1, previous config and running agent untouched |
-| Invalid input: Basic token not base64 or without `:`, `http://` + token, `http://` + `TLS_CA_FILE`, `grpc://` URL, bad `HOST_ATTRIBUTES`, `service.name` in `HOST_ATTRIBUTES`, version missing in `REPO_URL` | Pass: exit 1 before anything is changed |
-| gRPC regression to Prometheus | Pass: `instance="lima-otel-cs9"`, `job="centos-host"` |
-| Live filelog (`file_log`) CentOS Stream 9 + podman + systemd, agent -> gateway | Pass: lines from `/var/log/messages`, `/var/log/secure`, `/var/log/myapp/*.log` (incl. file created after install) seen at gateway; works after logrotate |
+Current behaviour, verified on a CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`) with otelcol-contrib 0.164.0:
+
+| Area | Check | Result |
+|---|---|---|
+| Install | Upgrade over the previous version (two capability drop-ins, agent in `adm`) | Pass: replaced by `10-otelcol-agent.conf`, removed from `adm`, service `active` |
+| Install | Package from internal repo (`REPO_URL=file://` / `https://`), `RPM_PATH`, GitHub | Pass; no `.repo` file or dnf cache left; `http://` repo rejected |
+| Install | Invalid generated config / collector cannot start (port taken) | Pass: exit 1; config restored and running agent untouched / journal tail printed |
+| Install | Removed `ENABLE_LOGS` / `PROCESS_CAPS`, `LOG_PATHS` under `/home` or relative, newline in `COLLECTOR_ENDPOINT`, `OTEL_TOKEN` + `OTEL_TOKEN_FILE` | Pass: exit 1 before anything is changed |
+| Privileges | Running agent | `CapEff=0`, `NoNewPrivs=1`, groups `otelcol-contrib systemd-journal`; `systemd-analyze security` 4.2 OK |
+| Privileges | Agent reading `/etc/shadow`, SSH host key, `/root`, `/proc/<sshd>/environ`, `/proc/<sshd>/mem` | Pass: all denied (root outside the sandbox can read them) |
+| Privileges | `LOG_CAPS=true` | `CapEff` = `CAP_DAC_READ_SEARCH` only; installer prints the warning |
+| Transport | OTLP/HTTP `https://` + `Basic` token, company CA only in the system trust store | Pass: preflight HTTP 200, data arrives |
+| Transport | Preflight with wrong password / no token / CA missing | Pass: 401 / 401 / certificate error, exit 1, previous config kept |
+| Transport | `OTEL_TOKEN_FILE` | Pass: preflight 200 |
+| Transport | mTLS to gateway; gRPC to Prometheus | Pass; `instance=<host.name>`, `job=centos-host` |
+| Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description`, `service.instance.id` | Pass: all on metrics and logs |
+| Logs | journald: `authpriv` (sshd login), `err`, `warning` | Pass: severity `info` / `error` / `warn`, `systemd_unit`, `syslog_identifier`; body is the message only |
+| Logs | Lines written while the agent is stopped (journald and file) | Pass: collected after start |
+| Logs | 0600 application log without `LOG_CAPS` | Installer warns; file not read |
+| Logs | `SYSTEM_LOGS=false`, no `LOG_PATHS` | Pass: no log receivers, no journal group |
+| Metrics | Same-name processes (3x `sleep`) | Pass: one series = sum (5460 KiB = 3 x 1820); `KEEP_PROCESS_PIDS=true` gives one series per pid |
+| Metrics | `process.disk.io` | Not exported (0 series) |
+| Metrics | `process.command_line` / `command` | Never exported, `KEEP_PROCESS_PIDS=true` included |
+| Metrics | Excludes: dummy `veth`, bridge, tmpfs, container mount, loop device | Pass: only real interfaces, filesystems, disks; xfs on `/dev/loop0` still reported |
+| Resilience | Collector down 90 s | Pass: metrics and logs replayed, no gap |
+| Resilience | VM reboot | Pass: agent back, offsets kept |
 
 Raw samples and permission experiments: [`evidence/process-metrics-centos9.md`](evidence/process-metrics-centos9.md).
 
-Sample metric names observed: `system.cpu.utilization`, `system.memory.usage`, `system.disk.io`, `system.filesystem.usage`, `system.network.io`, `system.cpu.load_average.*`, `system.paging.*`, `system.processes.*`, `process.cpu.time`, `process.cpu.utilization`, `process.memory.usage`, `process.memory.virtual`, `process.disk.io`.
+Sample metric names observed: `system.cpu.utilization`, `system.memory.usage`, `system.disk.io`, `system.filesystem.usage`, `system.network.io`, `system.cpu.load_average.*`, `system.paging.*`, `system.processes.*`, `process.cpu.time`, `process.cpu.utilization`, `process.memory.usage`, `process.memory.virtual`.
 
 ## Files in this folder
 

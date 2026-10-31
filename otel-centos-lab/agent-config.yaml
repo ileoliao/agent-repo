@@ -43,7 +43,7 @@ receivers:
         include:
           match_type: strict        # strict = exact process name (default in centos-install.sh); regexp = unanchored regex
           names: [rsyslogd, sshd, otelcol-contrib]
-        # Collector runs as non-root: mute EACCES noise for other users' /proc entries.
+        # Collector runs without capabilities: mute EACCES noise for other users' /proc entries.
         mute_process_name_error: true
         mute_process_exe_error: true
         mute_process_io_error: true
@@ -58,12 +58,18 @@ receivers:
             enabled: true
           process.memory.virtual:
             enabled: true
+          # needs CAP_SYS_PTRACE (would let the agent read any process's memory): off
           process.disk.io:
-            enabled: true
+            enabled: false
+  # System logs from journald; the service needs SupplementaryGroups=systemd-journal (see README)
+  journald:
+    priority: info
+    start_at: end
+    storage: file_storage
+  # Application log files (optional)
   file_log:
     include:
-      - /var/log/messages
-      - /var/log/secure
+      - /var/log/myapp/*.log
     start_at: end
     # Persist read offsets: resume after agent/host restart instead of skipping to the end
     storage: file_storage
@@ -118,6 +124,27 @@ processors:
         action: update
         operations:
           - {action: aggregate_labels, label_set: [direction], aggregation_type: sum}
+  # journald records arrive as a map of all journal fields: keep MESSAGE as the body, map PRIORITY to
+  # severity, keep unit + identifier, drop the rest
+  transform/journald:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        conditions:
+          - IsMap(log.body) and log.body["MESSAGE"] != nil
+        statements:
+          - set(log.attributes["systemd.unit"], log.body["_SYSTEMD_UNIT"]) where log.body["_SYSTEMD_UNIT"] != nil
+          - set(log.attributes["syslog.identifier"], log.body["SYSLOG_IDENTIFIER"]) where log.body["SYSLOG_IDENTIFIER"] != nil
+          - set(log.severity_number, SEVERITY_NUMBER_FATAL) where log.body["PRIORITY"] == "0" or log.body["PRIORITY"] == "1" or log.body["PRIORITY"] == "2"
+          - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.body["PRIORITY"] == "3"
+          - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.body["PRIORITY"] == "4"
+          - set(log.severity_number, SEVERITY_NUMBER_INFO2) where log.body["PRIORITY"] == "5"
+          - set(log.severity_number, SEVERITY_NUMBER_INFO) where log.body["PRIORITY"] == "6"
+          - set(log.severity_text, "fatal") where log.severity_number == SEVERITY_NUMBER_FATAL
+          - set(log.severity_text, "error") where log.severity_number == SEVERITY_NUMBER_ERROR
+          - set(log.severity_text, "warn") where log.severity_number == SEVERITY_NUMBER_WARN
+          - set(log.severity_text, "info") where log.severity_number == SEVERITY_NUMBER_INFO or log.severity_number == SEVERITY_NUMBER_INFO2
+          - set(log.body, log.body["MESSAGE"])
   resource/service:
     attributes:
       - key: service.name
@@ -172,8 +199,8 @@ service:
       processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, resource/service, resource_detection, transform/instance_id, batch]
       exporters: [otlp_grpc]
     logs:
-      receivers: [file_log]
-      processors: [memory_limiter, resource/service, resource_detection, transform/instance_id, batch]
+      receivers: [journald, file_log]
+      processors: [memory_limiter, transform/journald, resource/service, resource_detection, transform/instance_id, batch]
       exporters: [otlp_grpc]
   telemetry:
     logs:
