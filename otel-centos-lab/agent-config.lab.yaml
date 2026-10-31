@@ -34,7 +34,7 @@ receivers:
       processes:
       process:
         # Lab smoke: no include block = ALL processes (noisy). Production should set include.names.
-        # Collector runs as non-root: mute EACCES noise for other users' /proc entries.
+        # Collector runs without capabilities: mute EACCES noise for other users' /proc entries.
         mute_process_name_error: true
         mute_process_exe_error: true
         mute_process_io_error: true
@@ -49,8 +49,9 @@ receivers:
             enabled: true
           process.memory.virtual:
             enabled: true
+          # needs CAP_SYS_PTRACE (would let the agent read any process's memory): off
           process.disk.io:
-            enabled: true
+            enabled: false
 
 processors:
   # Per-process metrics without pid: copy name/owner onto the data points, regroup by them and SUM
@@ -101,10 +102,27 @@ processors:
       - key: service.name
         value: centos-host
         action: insert
+  # env first: OTEL_RESOURCE_ATTRIBUTES (host attributes from config management) win over detected values
   resource_detection:
-    detectors: [system, env]
+    detectors: [env, system]
     system:
       hostname_sources: [os]
+      resource_attributes:
+        host.id: {enabled: true}
+        host.arch: {enabled: true}
+        os.description: {enabled: true}
+  # service.instance.id becomes the "instance" label in Mimir/Prometheus; without it all hosts
+  # sharing a service.name write into the same series
+  transform/instance_id:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(resource.attributes["service.instance.id"], resource.attributes["host.name"]) where resource.attributes["service.instance.id"] == nil
+    log_statements:
+      - context: resource
+        statements:
+          - set(resource.attributes["service.instance.id"], resource.attributes["host.name"]) where resource.attributes["service.instance.id"] == nil
   batch:
     send_batch_size: 1024
     timeout: 5s
@@ -121,7 +139,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, resource/service, resource_detection, batch]
+      processors: [transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, resource/service, resource_detection, transform/instance_id, batch]
       exporters: [otlp_grpc, debug]
   telemetry:
     logs:
