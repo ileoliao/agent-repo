@@ -119,21 +119,16 @@ The systemd service does not inherit the login shell's proxy variables. If your 
 
 Mimir builds the series identity of OTLP data from `service.name` → `job` and `service.instance.id` → `instance`. Every other resource attribute becomes a label only if it is **promoted**; otherwise Mimir keeps it in the `target_info` series alone. All hosts share `service.name`, so the agent sets **`service.instance.id = host.name`** (otherwise hosts would overwrite each other's series). `host.name` is the OS host name (`hostname`), so host names must be unique within a tenant; where they are not, set `host.name=<fqdn>` in `HOST_ATTRIBUTES` (it also becomes `instance`). It also detects `host.id` (machine-id), `host.arch`, `os.description` and adds `HOST_ATTRIBUTES` (keys `[A-Za-z0-9._-]`, values `[A-Za-z0-9._/:-]`; they win over detected values).
 
-Our Mimir drops `target_info`, so **an attribute that is not promoted is lost for metrics** (logs keep all of them in Loki). Promote every attribute you filter or group by. Attributes that are constant per host do not add series; promoting them only lengthens each series' label set, and changing one (a host changes role) re-creates that host's series.
+**No Mimir configuration is needed.** Our Mimir drops `target_info`, so the agent (`transform/host_labels` in `agent/agent.yaml`) copies a fixed set of host attributes onto every metric data point, where they become ordinary labels:
 
-| Attribute | Source | Promote in Mimir |
+| Attribute | Label | Source |
 |---|---|---|
-| `service.instance.id` | agent (= `host.name`) | automatic (`instance`) |
-| `host.name` | detected | yes |
-| `deployment.environment.name`, `team`, `business_line`, `role`, `region` | `HOST_ATTRIBUTES` (profile) | yes (the dashboards filter on them) |
-| `host.id`, `host.arch`, `os.description` | detected | no: change with clones / patches; available in Loki |
+| `service.instance.id` | `instance` | agent (= `host.name`) |
+| `service.name` | `job` | `SERVICE_NAME` |
+| `host.name` | `host_name` | detected |
+| `deployment.environment.name`, `team`, `business_line`, `role`, `region` | `deployment_environment_name`, `team`, `business_line`, `role`, `region` | `HOST_ATTRIBUTES` (profile) |
 
-```yaml
-# Mimir runtime config, per tenant
-overrides:
-  <tenant>:
-    promote_otel_resource_attributes: "host.name,deployment.environment.name,team,business_line,role,region"
-```
+These are constant per host, so they add no series; changing one (a host changes role) re-creates that host's series. Any other `HOST_ATTRIBUTES` key, and `host.id`, `host.arch`, `os.description`, stays a resource attribute: present in Loki, not on metrics. To label another key, add it to `transform/host_labels`. A `promote_otel_resource_attributes` setting in Mimir is not needed and does no harm if present (verified: same labels, no conflict).
 
 Cloned VMs keep the template's `/etc/machine-id` unless the image pipeline resets it, so `host.id` is only unique if it does.
 
@@ -148,7 +143,7 @@ Two dashboards that link to each other like tabs (a dashboard link on the `redha
 
 Import both (Dashboards → New → Import). Grafana asks once for the **Mimir** (Prometheus type) and **Loki** data sources and writes their UIDs into the panels; there is no data source selector on the dashboards. For file provisioning, replace `${DS_MIMIR}` / `${DS_LOKI}` with your data source UIDs first.
 
-- Hosts are narrowed down with cascading, multi-select filters: Environment (`deployment.environment.name`) → Team → Business line → Role → Region → Host. They read the promoted labels on `system_cpu_logical_count` (one series per host) and do **not** use `target_info`, so these five attributes must be promoted (see above).
+- Hosts are narrowed down with cascading, multi-select filters: Environment (`deployment.environment.name`) → Team → Business line → Role → Region → Host. They read the labels on `system_cpu_logical_count` (one series per host), which the agent puts on every series; no `target_info`, no Mimir promotion.
 - Panels select series by `job` and `instance`, which every series has. `job` is the agent's `service.name` (`SERVICE_NAME`, default `redhat-host`): it marks the data as coming from this host agent and keeps the dashboards from mixing in other sources of the same metric names in the tenant; it is the same on every host. `instance` is the host (`service.instance.id` = host name).
 - Metric names follow Mimir's default OTLP translation without unit/type suffixes (`system_cpu_time`, `system_memory_utilization`, `process_memory_usage`). If your Mimir sets `otel_metric_suffixes_enabled: true` (or you use Prometheus' OTLP receiver), names get suffixes (`system_cpu_time_seconds_total`) and the queries need them too.
 - Logs are filtered by `service_instance_id`, `detected_level` and `systemd_unit` (structured metadata), not by index labels.
@@ -174,7 +169,7 @@ RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164
 | Metrics | `process.disk.io`, `process.command_line` | Not exported |
 | Metrics | Dummy `veth`, bridge, tmpfs, container mount, loop device | Excluded; xfs on `/dev/loop0` still reported |
 | Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=redhat-host` |
-| Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | `target_info` dropped by relabeling, as in production; metrics arrive under the tenant only with promoted `host_name`, `deployment_environment_name`, `team`, `business_line`, `role`, `region`; one series per process name + owner (`sleep` sum = RSS sum) |
+| Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | `target_info` dropped by relabeling and **no** attribute promotion, as in production; metrics arrive under the tenant only with `host_name`, `deployment_environment_name`, `team`, `business_line`, `role`, `region` as labels from the agent (identical with promotion configured too, no conflict); one series per process name + owner (`sleep` sum = RSS sum) |
 | Grafana | Every query and variable of both dashboards through Grafana's Mimir and Loki data sources, with `target_info` dropped | All return data; `role=db` / `business_line=payments` list the host, `role=web` lists none; the link to the other dashboard carries time range and filters |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
 

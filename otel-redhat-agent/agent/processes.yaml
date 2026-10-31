@@ -79,4 +79,4 @@ processors:
 service:
   pipelines:
     metrics:
-      processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, transform/process_labels, resource_detection, resource/identity, batch]
+      processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, transform/process_labels, resource_detection, resource/identity, transform/host_labels, batch]
