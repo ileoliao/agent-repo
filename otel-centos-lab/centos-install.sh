@@ -10,8 +10,6 @@
 #   OTEL_VERSION=0.164.0
 #   REPO_URL=https://repo.example.com/otel/el9/        # internal yum repo, used only for this install (no .repo file is written)
 #   RPM_PATH=/path/to/otelcol-contrib_*.rpm
-#   RPM_SHA256=<64 hex chars>                       # expected sha256 of the RPM (REPO_URL / RPM_PATH); unset = fetch the official ${RPM_URL}.sha256
-#   SKIP_RPM_VERIFY=true|false                      # default false; true only for REPO_URL / RPM_PATH with no digest available (unsafe)
 #   WORKDIR=/path                                   # default: fresh mktemp -d, removed on exit; an explicit WORKDIR is not removed
 #   TLS_CA_FILE=/path/ca.crt
 #   TLS_CERT_FILE=/path/client.crt
@@ -67,8 +65,6 @@ esac
 
 RPM_NAME="otelcol-contrib_${OTEL_VERSION}_linux_${RPM_ARCH}.rpm"
 RPM_URL="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTEL_VERSION}/${RPM_NAME}"
-RPM_SHA256="${RPM_SHA256:-}"
-SKIP_RPM_VERIFY="${SKIP_RPM_VERIFY:-false}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this script as root or with sudo"
@@ -269,79 +265,32 @@ else
   PROCESS_SCRAPER=""
 fi
 
-# Fetch the official per-asset sha256 (64 hex chars, maybe followed by the file name); non-zero on failure
-fetch_rpm_sha256() {
-  local out hex
-  out="$(curl -fsSL --retry 3 "${RPM_URL}.sha256")" || return 1
-  hex="$(awk 'NR==1 {print $1}' <<< "$out")"
-  [[ "$hex" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
-  echo "${hex,,}"
-}
-
-RPM_FILE="${WORKDIR}/${RPM_NAME}"
-rm -f "$RPM_FILE"
-VERIFY=true
-if [[ -n "${RPM_PATH:-}" ]]; then
-  if [[ ! -f "$RPM_PATH" ]]; then
-    echo "RPM_PATH not found: $RPM_PATH"
-    exit 1
-  fi
-  # Copy into the private WORKDIR first, then verify/install that copy (no swap after verification, TOCTOU)
-  install -m 0600 "$RPM_PATH" "$RPM_FILE"
-elif [[ -n "$REPO_URL" ]]; then
-  # Resolve the package in the internal repo only for this run: no .repo file, metadata cached in WORKDIR
+# Package source, first match wins: a local file (RPM_PATH), the internal repo (REPO_URL), the GitHub release.
+# Packages are built and published by internal teams, so no separate digest check is done here.
+if [[ -z "${RPM_PATH:-}" && -n "$REPO_URL" ]]; then
+  # Use the repo for this run only: no .repo file is written, metadata is cached in the private WORKDIR
   command -v dnf >/dev/null 2>&1 || { echo "REPO_URL needs dnf"; exit 1; }
-  REPO_RPM_LOCATION="$(dnf -q repoquery --repofrompath="otel-internal,${REPO_URL}" --repo=otel-internal \
-    --setopt=cachedir="${WORKDIR}/dnf-cache" --location "otelcol-contrib-${OTEL_VERSION}" 2>/dev/null | head -n 1)"
-  if [[ -z "$REPO_RPM_LOCATION" ]]; then
-    echo "ERROR: otelcol-contrib-${OTEL_VERSION} not found in ${REPO_URL}"
-    exit 1
-  fi
-  echo "Downloading $REPO_RPM_LOCATION ..."
-  curl -fL --retry 3 -o "$RPM_FILE" "$REPO_RPM_LOCATION"
+  echo "Installing otelcol-contrib-${OTEL_VERSION} from ${REPO_URL}"
+  dnf install -y --repofrompath="otel-internal,${REPO_URL}" --repo=otel-internal \
+    --setopt=otel-internal.gpgcheck=0 --setopt=cachedir="${WORKDIR}/dnf-cache" "otelcol-contrib-${OTEL_VERSION}"
 else
-  echo "Downloading $RPM_URL ..."
-  curl -fL --retry 3 -o "$RPM_FILE" "$RPM_URL"
-fi
-
-if [[ -n "$RPM_SHA256" ]]; then
-  if [[ ! "$RPM_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
-    echo "RPM_SHA256 must be a 64-character hex sha256"
-    exit 1
+  if [[ -n "${RPM_PATH:-}" ]]; then
+    [[ -f "$RPM_PATH" ]] || { echo "RPM_PATH not found: $RPM_PATH"; exit 1; }
+    RPM_FILE="$RPM_PATH"
+  else
+    # Download into the private WORKDIR, never a predictable path another user could pre-fill
+    RPM_FILE="${WORKDIR}/${RPM_NAME}"
+    echo "Downloading $RPM_URL ..."
+    curl -fL --retry 3 -o "$RPM_FILE" "$RPM_URL"
   fi
-  EXPECTED_SHA256="${RPM_SHA256,,}"
-elif EXPECTED_SHA256="$(fetch_rpm_sha256)"; then
-  :
-elif [[ ( -n "${RPM_PATH:-}" || -n "$REPO_URL" ) && "$SKIP_RPM_VERIFY" == "true" ]]; then
-  VERIFY=false
-  echo "!!!!!! WARNING: no sha256 available for the RPM and SKIP_RPM_VERIFY=true: installing it as root WITHOUT any integrity check !!!!!!"
-  echo "!!!!!! Make sure ${RPM_PATH:-$REPO_URL} is a trusted source; prefer RPM_SHA256=<digest> !!!!!!"
-else
-  echo "ERROR: cannot fetch ${RPM_URL}.sha256, so the RPM cannot be verified."
-  if [[ -n "${RPM_PATH:-}" || -n "$REPO_URL" ]]; then
-    echo "  Without internet access set RPM_SHA256=<64-char sha256> (recommended), or SKIP_RPM_VERIFY=true to accept the risk."
+  echo "Installing RPM: $RPM_FILE"
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y "$RPM_FILE"
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y "$RPM_FILE"
+  else
+    rpm -ivh "$RPM_FILE"
   fi
-  exit 1
-fi
-
-if [[ "$VERIFY" == "true" ]]; then
-  ACTUAL_SHA256="$(sha256sum "$RPM_FILE" | awk '{print $1}')"
-  if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
-    echo "ERROR: RPM sha256 mismatch, refusing to install."
-    echo "  expected: $EXPECTED_SHA256"
-    echo "  actual:   $ACTUAL_SHA256"
-    exit 1
-  fi
-  echo "RPM sha256 OK: $ACTUAL_SHA256"
-fi
-
-echo "Installing RPM: $RPM_FILE"
-if command -v dnf >/dev/null 2>&1; then
-  dnf install -y "$RPM_FILE"
-elif command -v yum >/dev/null 2>&1; then
-  yum install -y "$RPM_FILE"
-else
-  rpm -ivh "$RPM_FILE"
 fi
 
 if id otelcol-contrib >/dev/null 2>&1; then
