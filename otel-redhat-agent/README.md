@@ -14,24 +14,38 @@ host: otelcol-contrib (user otelcol-contrib, no capabilities, systemd sandbox)
 
 ## Install
 
+Settings live in **profiles**: plain `KEY=VALUE` files kept in this repo (`profiles/`), typically one per environment, machine role and region, e.g. `profiles/prod-db-hk.env`. Name them as you like (a prefix such as `payments-prod-db-hk.env` is fine); `profiles/example.env` is the template. A profile holds everything except the token:
+
 ```bash
-read -rs OTEL_TOKEN && export OTEL_TOKEN      # base64("user:password"); not echoed, not in shell history
-sudo -E COLLECTOR_ENDPOINT=https://otel-gw.corp.example:4318 \
-  REPO_URL=https://repo.corp.example/otel/el9/ \
-  HOST_ATTRIBUTES="deployment.environment.name=prod,datacenter=sh1,team=infra,business_line=payments,role=db" \
-  PROCESS_NAMES="sshd nginx" \
-  LOG_PATHS="/var/log/nginx/*.log" \
-  bash redhat-install.sh
+COLLECTOR_ENDPOINT=https://otel-gw.hk.corp.example:4318
+REPO_URL=https://repo.corp.example/otel/el9/
+HOST_ATTRIBUTES=deployment.environment.name=prod,team=infra,business_line=payments,role=db,region=hk
+PROCESS_NAMES=sshd mysqld
+LOG_PATHS=/var/log/mysql/*.log
 ```
 
-Run it from this folder: the script installs the config fragments in `agent/`.
+```bash
+# first install: with the token
+read -rs OTEL_TOKEN && export OTEL_TOKEN      # base64("user:password"); not echoed, not in shell history
+sudo -E bash otel-redhat-agent/redhat-install.sh otel-redhat-agent/profiles/prod-db-hk.env
+
+# change settings: edit the profile in the repo, then re-run; the installed token is kept
+sudo bash otel-redhat-agent/redhat-install.sh otel-redhat-agent/profiles/prod-db-hk.env
+
+# one host differs: a variable on the command line overrides the profile
+sudo SYSTEM_LOGS=false bash otel-redhat-agent/redhat-install.sh otel-redhat-agent/profiles/prod-db-hk.env
+```
+
+- A profile may only contain the variables below except `OTEL_TOKEN`; a token, an unknown key or a malformed line is refused. Profiles are parsed, never executed.
+- A re-run without `OTEL_TOKEN` keeps the installed token; pass a new one to rotate it (the preflight checks it either way). Without a profile, all variables come from the command line.
+- A re-run with the installed `OTEL_VERSION` skips the package step. `otelcol-contrib.conf` records which profile the host was installed with.
 
 **Never put the token on the sudo command line.** `sudo` logs its command line to the journal, and the variables passed with `--preserve-env=...` as well (`ENV=OTEL_TOKEN=...`); with `SYSTEM_LOGS=true` those lines are shipped to Loki. With `sudo -E` the environment is not logged (verified). `sudo -E` needs `SETENV` in sudoers; alternatively run the script from a root shell.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `COLLECTOR_ENDPOINT` | required | `https://host:port` of the central collector (`http://` only without a token, e.g. a lab) |
-| `OTEL_TOKEN` | none | Basic auth token `base64("user:password")`; sent as `Authorization: Basic …`, requires `https://` |
+| `COLLECTOR_ENDPOINT` | required | `https://host:port` of the central collector; https only, verified against the system trust store |
+| `OTEL_TOKEN` | installed one | Basic auth token `base64("user:password")`, sent as `Authorization: Basic …`; environment only, never in a profile |
 | `REPO_URL` | GitHub release | Internal yum repo (`https://` or `file://`), used for this run only |
 | `OTEL_VERSION` | `0.164.0` | Package version |
 | `HOST_ATTRIBUTES` | none | `key=value,…` resource attributes for this host (see [Host identity](#host-identity-and-attributes-mimir)) |
@@ -44,7 +58,7 @@ Run it from this folder: the script installs the config fragments in `agent/`.
 What the script does:
 
 1. Checks the inputs (values go into a systemd EnvironmentFile: no whitespace, quotes or control characters).
-2. Installs the RPM from `REPO_URL` (`dnf --repofrompath`, no `.repo` file left; the RPM is unsigned, so `gpgcheck` is off for it and the URL must be `https://`/`file://`) or downloads the GitHub release over https into a private `mktemp -d` directory.
+2. Installs the RPM (skipped when `OTEL_VERSION` is already installed) from `REPO_URL` (`dnf --repofrompath`, no `.repo` file left; the RPM is unsigned, so `gpgcheck` is off for it and the URL must be `https://`/`file://`) or downloads the GitHub release over https into a private `mktemp -d` directory.
 3. Stages the selected fragments and the EnvironmentFile in that private directory, runs `otelcol-contrib validate` as the agent user, and **preflights** the collector: an empty OTLP export with the same token and the system CA store. Any failure (401 = wrong token, certificate error = company CA missing from the system trust store) exits 1 **before the running agent is touched**.
 4. Installs the fragments into `/etc/otelcol-contrib/`, writes `otelcol-contrib.conf` (`0640 root:otelcol-contrib`, holds the token) and the sandbox drop-in, removes leftovers that may hold an old token (`*.bak.*`, `*.rpmsave`).
 5. Restarts the service and fails unless it is still `active` with no auto-restart 8 s later.
@@ -111,14 +125,14 @@ Our Mimir drops `target_info`, so **an attribute that is not promoted is lost fo
 |---|---|---|
 | `service.instance.id` | agent (= `host.name`) | automatic (`instance`) |
 | `host.name` | detected | yes |
-| `deployment.environment.name`, `datacenter`, `team`, `business_line`, `role` | `HOST_ATTRIBUTES` | yes (the dashboards filter on them) |
+| `deployment.environment.name`, `team`, `business_line`, `role`, `region` | `HOST_ATTRIBUTES` (profile) | yes (the dashboards filter on them) |
 | `host.id`, `host.arch`, `os.description` | detected | no: change with clones / patches; available in Loki |
 
 ```yaml
 # Mimir runtime config, per tenant
 overrides:
   <tenant>:
-    promote_otel_resource_attributes: "host.name,deployment.environment.name,datacenter,team,business_line,role"
+    promote_otel_resource_attributes: "host.name,deployment.environment.name,team,business_line,role,region"
 ```
 
 Cloned VMs keep the template's `/etc/machine-id` unless the image pipeline resets it, so `host.id` is only unique if it does.
@@ -134,7 +148,7 @@ Two dashboards that link to each other like tabs (a dashboard link on the `redha
 
 Import both (Dashboards → New → Import). Grafana asks once for the **Mimir** (Prometheus type) and **Loki** data sources and writes their UIDs into the panels; there is no data source selector on the dashboards. For file provisioning, replace `${DS_MIMIR}` / `${DS_LOKI}` with your data source UIDs first.
 
-- Hosts are narrowed down with cascading, multi-select filters: Environment (`deployment.environment.name`) → Datacenter → Team → Business line → Role → Host. They read the promoted labels on `system_cpu_logical_count` (one series per host) and do **not** use `target_info`, so these five attributes must be promoted (see above).
+- Hosts are narrowed down with cascading, multi-select filters: Environment (`deployment.environment.name`) → Team → Business line → Role → Region → Host. They read the promoted labels on `system_cpu_logical_count` (one series per host) and do **not** use `target_info`, so these five attributes must be promoted (see above).
 - Panels select series by `job` and `instance`, which every series has. `job` is the agent's `service.name` (`SERVICE_NAME`, default `redhat-host`): it marks the data as coming from this host agent and keeps the dashboards from mixing in other sources of the same metric names in the tenant; it is the same on every host. `instance` is the host (`service.instance.id` = host name).
 - Metric names follow Mimir's default OTLP translation without unit/type suffixes (`system_cpu_time`, `system_memory_utilization`, `process_memory_usage`). If your Mimir sets `otel_metric_suffixes_enabled: true` (or you use Prometheus' OTLP receiver), names get suffixes (`system_cpu_time_seconds_total`) and the queries need them too.
 - Logs are filtered by `service_instance_id`, `detected_level` and `systemd_unit` (structured metadata), not by index labels.
@@ -147,8 +161,9 @@ RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164
 |---|---|---|
 | Install | Over an older install; from internal repo (`file://`) and from GitHub | Pass; only the managed fragments, conf and drop-in remain |
 | Install | `https://` + Basic token via `sudo -E` | Pass: preflight 200, data arrives; token appears 0 times in the journal |
+| Profiles | Install from a profile (name with a prefix), re-run without token, command-line override, profile with `OTEL_TOKEN` / unknown key / malformed line / `http://` endpoint | Token kept on re-run; override applied; package step skipped on re-run; invalid profiles refused; conf records the profile |
 | Install | Wrong password | Exit 1 at preflight (401), running agent and config unchanged |
-| Install | Invalid inputs: `host:port` endpoint, token over `http://`, process name > 15 chars, `LOG_PATHS` under `/home`, `http://` repo, malformed `HOST_ATTRIBUTES`, non-boolean flag | Exit 1 before anything is changed |
+| Install | Invalid inputs: `host:port` or `http://` endpoint, process name > 15 chars, `LOG_PATHS` under `/home`, `http://` repo, malformed `HOST_ATTRIBUTES`, non-boolean flag | Exit 1 before anything is changed |
 | Privileges | Running agent | `CapEff=0`, `NoNewPrivs=1`; groups `otelcol-contrib` (+ `systemd-journal` with system logs); `systemd-analyze security` 4.9 OK |
 | Privileges | Reading `/etc/shadow`, SSH host key, `/root`, `/proc/<sshd>/environ`, `/proc/<sshd>/mem` | Denied (root outside the sandbox can read them) |
 | Logs | journald `err` / `warning` / `authpriv` lines | `error` / `warn` / `info` with `syslog_identifier`, `systemd_unit` |
@@ -159,7 +174,7 @@ RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164
 | Metrics | `process.disk.io`, `process.command_line` | Not exported |
 | Metrics | Dummy `veth`, bridge, tmpfs, container mount, loop device | Excluded; xfs on `/dev/loop0` still reported |
 | Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=redhat-host` |
-| Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | `target_info` dropped by relabeling, as in production; metrics arrive under the tenant only with promoted `host_name`, `deployment_environment_name`, `datacenter`, `team`, `business_line`, `role`; one series per process name + owner (`sleep` sum = RSS sum) |
+| Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | `target_info` dropped by relabeling, as in production; metrics arrive under the tenant only with promoted `host_name`, `deployment_environment_name`, `team`, `business_line`, `role`, `region`; one series per process name + owner (`sleep` sum = RSS sum) |
 | Grafana | Every query and variable of both dashboards through Grafana's Mimir and Loki data sources, with `target_info` dropped | All return data; `role=db` / `business_line=payments` list the host, `role=web` lists none; the link to the other dashboard carries time range and filters |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
 

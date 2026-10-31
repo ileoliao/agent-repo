@@ -5,22 +5,43 @@
 # EnvironmentFile written here.
 #
 #   read -rs OTEL_TOKEN && export OTEL_TOKEN          # not echoed, not in shell history
-#   sudo -E COLLECTOR_ENDPOINT=https://otel-gw.example:4318 bash redhat-install.sh
+#   sudo -E bash redhat-install.sh profiles/prod-db-hk.env
 # sudo logs its command line to the journal (shipped by this agent!) and also the variables given with
 # --preserve-env=...; with -E the environment is not logged. Never put the token on the sudo command line.
 #
+# Profile: any file of KEY=VALUE lines with the variables below except OTEL_TOKEN, named as you like
+# (e.g. profiles/prod-db-hk.env: environment, role, region). A variable set on the command line overrides
+# the profile. Without OTEL_TOKEN, a re-run keeps the installed token.
+#
 # Variables:
-#   COLLECTOR_ENDPOINT   required; https://host:port (http:// only without a token)
-#   OTEL_TOKEN           Basic auth token, base64("user:password"); requires https:// (checked by the preflight)
+#   COLLECTOR_ENDPOINT   required; https://host:port (TLS only, verified against the system trust store)
+#   OTEL_TOKEN           Basic auth token, base64("user:password") (checked by the preflight)
 #   REPO_URL             internal yum repo (https:// or file://); default: GitHub release download
 #   OTEL_VERSION         default 0.164.0
-#   HOST_ATTRIBUTES      "deployment.environment.name=prod,datacenter=sh1,team=infra"
+#   HOST_ATTRIBUTES      "deployment.environment.name=prod,team=infra,business_line=payments,role=db,region=hk"
 #   SERVICE_NAME         default redhat-host
 #   PROCESS_NAMES        "sshd nginx" (exact names, space/comma-separated); unset = no per-process metrics
 #   KEEP_PROCESS_PIDS    default false; true = one series per pid instead of per name+owner (debugging)
 #   SYSTEM_LOGS          default true; journald, priority info and above
 #   LOG_PATHS            "/var/log/myapp/*.log" application log files; unset = none
 set -euo pipefail
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Profile values fill in whatever the command line did not set. Parsed, not sourced: a profile is data.
+PROFILE="${1:-}"
+PROFILE_KEYS=" COLLECTOR_ENDPOINT REPO_URL OTEL_VERSION HOST_ATTRIBUTES SERVICE_NAME PROCESS_NAMES KEEP_PROCESS_PIDS SYSTEM_LOGS LOG_PATHS "
+if [[ -n "$PROFILE" ]]; then
+  [[ -f "$PROFILE" ]] || die "profile not found: ${PROFILE}"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" =~ ^([A-Z_]+)=(.*)$ ]] || die "${PROFILE}: expected KEY=VALUE, got: ${line}"
+    key="${BASH_REMATCH[1]}" val="${BASH_REMATCH[2]}"
+    [[ "$PROFILE_KEYS" == *" ${key} "* ]] || die "${PROFILE}: ${key} is not allowed in a profile (the token never is)"
+    [[ "$val" =~ ^\"(.*)\"$ ]] && val="${BASH_REMATCH[1]}"
+    [[ -n "${!key+set}" ]] || printf -v "$key" '%s' "$val"   # command line wins
+  done < "$PROFILE"
+fi
 
 COLLECTOR_ENDPOINT="${COLLECTOR_ENDPOINT:-}"
 OTEL_TOKEN="${OTEL_TOKEN:-}"
@@ -39,20 +60,21 @@ CONF="${ETC}/otelcol-contrib.conf"
 STORAGE_DIR=/var/lib/otelcol-contrib/file_storage
 DROPIN=/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf
 
-die() { echo "ERROR: $*" >&2; exit 1; }
-
 [[ "$EUID" -eq 0 ]] || die "run as root"
 [[ -d "$SRC" ]] || die "config fragments not found in ${SRC}"
+[[ -n "$COLLECTOR_ENDPOINT" ]] || die "COLLECTOR_ENDPOINT is not set (pass a profile or set it)"
+
+# A re-run without OTEL_TOKEN (e.g. a profile change) keeps the installed token; the preflight still checks it
+if [[ -z "$OTEL_TOKEN" && -f "$CONF" ]]; then
+  OTEL_TOKEN="$(sed -n 's/^OTEL_TOKEN=//p' "$CONF")"
+  [[ -z "$OTEL_TOKEN" ]] || echo "Keeping the installed OTEL_TOKEN"
+fi
 
 # ---------- inputs (values end up in a systemd EnvironmentFile: no whitespace, quotes or control chars)
 for v in COLLECTOR_ENDPOINT OTEL_TOKEN REPO_URL OTEL_VERSION SERVICE_NAME HOST_ATTRIBUTES; do
   [[ ! "${!v}" =~ [[:space:][:cntrl:]\'\"] ]] || die "${v} must not contain whitespace, quotes or control characters"
 done
-case "$COLLECTOR_ENDPOINT" in
-  https://*) ;;
-  http://*) [[ -z "$OTEL_TOKEN" ]] || die "OTEL_TOKEN requires an https:// COLLECTOR_ENDPOINT" ;;
-  *) die "COLLECTOR_ENDPOINT must be https://host:port (got: '${COLLECTOR_ENDPOINT}')" ;;
-esac
+[[ "$COLLECTOR_ENDPOINT" == https://* ]] || die "COLLECTOR_ENDPOINT must be https://host:port (got: '${COLLECTOR_ENDPOINT}')"
 # No signature or digest check on the package, so its transport must be authenticated
 case "$REPO_URL" in ""|https://*|file:///*) ;; *) die "REPO_URL must be https:// or file://" ;; esac
 for v in KEEP_PROCESS_PIDS SYSTEM_LOGS; do
@@ -81,7 +103,9 @@ set +f
 # ---------- package
 WORK="$(mktemp -d /tmp/otelcol-install.XXXXXXXX)"   # unpredictable, root-only: nobody can pre-place an RPM
 trap 'rm -rf "$WORK"' EXIT
-if [[ -n "$REPO_URL" ]]; then
+if rpm -q "otelcol-contrib-${OTEL_VERSION}" >/dev/null 2>&1; then
+  echo "otelcol-contrib ${OTEL_VERSION} already installed"
+elif [[ -n "$REPO_URL" ]]; then
   # repo used for this run only: no .repo file; RPMs are unsigned, so gpgcheck is off and https is required above
   dnf install -y --repofrompath="otel-internal,${REPO_URL}" --repo=otel-internal \
     --setopt=otel-internal.gpgcheck=0 --setopt=cachedir="${WORK}/dnf" "otelcol-contrib-${OTEL_VERSION}"
@@ -110,7 +134,7 @@ done
 PROCESS_NAMES_JSON="$(to_json "${names[@]}")"
 set -f; LOG_PATHS_JSON="$(to_json "${paths[@]}")"; set +f
 {
-  echo "# Managed by redhat-install.sh"
+  echo "# Managed by redhat-install.sh${PROFILE:+ (profile: $(basename "$PROFILE"))}"
   echo "OTELCOL_OPTIONS=\"${opts}\""
   echo "COLLECTOR_ENDPOINT=${COLLECTOR_ENDPOINT}"
   echo "SERVICE_NAME=${SERVICE_NAME}"
