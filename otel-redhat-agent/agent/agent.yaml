@@ -51,6 +51,19 @@ processors:
     attributes:
       - {key: service.name, value: "${env:SERVICE_NAME}", action: insert}
       - {key: service.instance.id, from_attribute: host.name, action: insert}
+  # Host attributes as labels on every metric data point, so the backend needs no resource-attribute
+  # promotion (and they survive a backend that drops target_info). Constant per host: no extra series.
+  transform/host_labels:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(datapoint.attributes["host.name"], resource.attributes["host.name"]) where resource.attributes["host.name"] != nil
+          - set(datapoint.attributes["deployment.environment.name"], resource.attributes["deployment.environment.name"]) where resource.attributes["deployment.environment.name"] != nil
+          - set(datapoint.attributes["team"], resource.attributes["team"]) where resource.attributes["team"] != nil
+          - set(datapoint.attributes["business_line"], resource.attributes["business_line"]) where resource.attributes["business_line"] != nil
+          - set(datapoint.attributes["role"], resource.attributes["role"]) where resource.attributes["role"] != nil
+          - set(datapoint.attributes["region"], resource.attributes["region"]) where resource.attributes["region"] != nil
   batch:
     send_batch_size: 1024
     timeout: 10s
@@ -63,7 +76,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [memory_limiter, resource_detection, resource/identity, batch]
+      processors: [memory_limiter, resource_detection, resource/identity, transform/host_labels, batch]
       exporters: [otlp_http]
   telemetry:
     logs:
