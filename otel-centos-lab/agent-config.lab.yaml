@@ -12,8 +12,23 @@ receivers:
           system.memory.utilization:
             enabled: true
       disk:
+        # Skip pseudo/removable devices (loop: snaps & images, ram/zram, sr: CD-ROM)
+        exclude:
+          devices: ['^(loop|ram|zram|sr|fd)[0-9]+$']
+          match_type: regexp
       filesystem:
+        # Only real filesystems: container overlays, tmpfs and pseudo filesystems would add series per container/mount
+        exclude_fs_types:
+          fs_types: [autofs, binfmt_misc, bpf, cgroup, cgroup2, configfs, debugfs, devpts, devtmpfs, fusectl, hugetlbfs, iso9660, mqueue, nsfs, overlay, proc, pstore, rpc_pipefs, securityfs, selinuxfs, squashfs, sysfs, tmpfs, tracefs]
+          match_type: strict
+        exclude_mount_points:
+          mount_points: ['^/(dev|proc|sys|run)($|/)', '^/var/lib/(docker|containers|kubelet)/']
+          match_type: regexp
       network:
+        # Per-container / per-VM virtual interfaces churn (new names on every restart)
+        exclude:
+          interfaces: ['^(lo|veth.*|docker.*|br-.*|cni.*|cali.*|flannel.*|cilium.*|lxc.*|virbr.*|vnet.*)$']
+          match_type: regexp
       load:
       paging:
       processes:
@@ -38,14 +53,54 @@ receivers:
             enabled: true
 
 processors:
-  # Drop per-process PID resource attributes (high cardinality). Set KEEP_PROCESS_PIDS=true to keep them for debugging.
-  transform/drop_process_pids:
+  # Per-process metrics without pid: copy name/owner onto the data points, regroup by them and SUM
+  # same-name processes (nginx/php-fpm workers...) into one series instead of letting them overwrite
+  # each other. KEEP_PROCESS_PIDS=true skips all of it (one series per process, with process.pid).
+  transform/process_identity:
     error_mode: ignore
     metric_statements:
+      - context: datapoint
+        conditions:
+          - IsMatch(metric.name, "^process\\.") and "${env:KEEP_PROCESS_PIDS:-false}" != "true"
+        statements:
+          - set(datapoint.attributes["process.executable.name"], resource.attributes["process.executable.name"])
+          - set(datapoint.attributes["process.owner"], resource.attributes["process.owner"]) where resource.attributes["process.owner"] != nil
+          # start_time differs per process; aligning it lets metrics_transform merge the points
+          - set(datapoint.start_time_unix_nano, 0)
+          - set(datapoint.time, TruncateTime(datapoint.time, Duration("1s")))
+      # command_line can carry secrets (e.g. "mysql -pSECRET"): never let it leave the host, debug mode included
       - context: resource
         statements:
-          - 'delete_key(resource.attributes, "process.pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
-          - 'delete_key(resource.attributes, "process.parent_pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
+          - delete_key(resource.attributes, "process.command_line")
+          - delete_key(resource.attributes, "process.command")
+      - context: resource
+        conditions:
+          - "\"${env:KEEP_PROCESS_PIDS:-false}\" != \"true\""
+        statements:
+          - delete_matching_keys(resource.attributes, "^process\\.")
+  groupbyattrs/processes:
+    keys: [process.executable.name, process.owner]
+  metrics_transform/sum_processes:
+    transforms:
+      - include: ^process\.memory\.
+        match_type: regexp
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [], aggregation_type: sum}
+      - include: ^process\.cpu\.
+        match_type: regexp
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [state], aggregation_type: sum}
+      - include: process.disk.io
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [direction], aggregation_type: sum}
+  resource/service:
+    attributes:
+      - key: service.name
+        value: centos-host
+        action: insert
   resource_detection:
     detectors: [system, env]
     system:
@@ -66,7 +121,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [transform/drop_process_pids, resource_detection, batch]
+      processors: [transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, resource/service, resource_detection, batch]
       exporters: [otlp_grpc, debug]
   telemetry:
     logs:
