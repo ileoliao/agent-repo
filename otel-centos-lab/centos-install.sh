@@ -15,7 +15,7 @@
 #   REPO_URL             internal yum repo (https:// or file://); default: GitHub release download
 #   OTEL_VERSION         default 0.164.0
 #   HOST_ATTRIBUTES      "deployment.environment.name=prod,datacenter=sh1,team=infra"
-#   SERVICE_NAME         default centos-host
+#   SERVICE_NAME         default redhat-host
 #   PROCESS_NAMES        "sshd nginx" (exact names, space/comma-separated); unset = no per-process metrics
 #   KEEP_PROCESS_PIDS    default false; true = one series per pid instead of per name+owner (debugging)
 #   SYSTEM_LOGS          default true; journald, priority info and above
@@ -27,7 +27,7 @@ OTEL_TOKEN="${OTEL_TOKEN:-}"
 REPO_URL="${REPO_URL:-}"
 OTEL_VERSION="${OTEL_VERSION:-0.164.0}"
 HOST_ATTRIBUTES="${HOST_ATTRIBUTES:-}"
-SERVICE_NAME="${SERVICE_NAME:-centos-host}"
+SERVICE_NAME="${SERVICE_NAME:-redhat-host}"
 PROCESS_NAMES="${PROCESS_NAMES:-}"
 KEEP_PROCESS_PIDS="${KEEP_PROCESS_PIDS:-false}"
 SYSTEM_LOGS="${SYSTEM_LOGS:-true}"

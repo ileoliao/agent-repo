@@ -35,7 +35,7 @@ Run it from this folder: the script installs the config fragments in `agent/`.
 | `REPO_URL` | GitHub release | Internal yum repo (`https://` or `file://`), used for this run only |
 | `OTEL_VERSION` | `0.164.0` | Package version |
 | `HOST_ATTRIBUTES` | none | `key=value,…` resource attributes for this host (see [Host identity](#host-identity-and-attributes-mimir)) |
-| `SERVICE_NAME` | `centos-host` | `service.name` → `job` in Mimir, `service_name` in Loki |
+| `SERVICE_NAME` | `redhat-host` | `service.name` → `job` in Mimir, `service_name` in Loki |
 | `PROCESS_NAMES` | none | Exact process names (space/comma-separated) for per-process CPU/memory; none = no per-process metrics |
 | `KEEP_PROCESS_PIDS` | `false` | `true` = one series per pid instead of per name+owner (debugging only) |
 | `SYSTEM_LOGS` | `true` | System logs from journald, priority `info` and above |
@@ -135,7 +135,7 @@ Two dashboards that link to each other like tabs (a dashboard link on the `cento
 Import both (Dashboards → New → Import). Grafana asks once for the **Mimir** (Prometheus type) and **Loki** data sources and writes their UIDs into the panels; there is no data source selector on the dashboards. For file provisioning, replace `${DS_MIMIR}` / `${DS_LOKI}` with your data source UIDs first.
 
 - Hosts are narrowed down with cascading, multi-select filters: Environment (`deployment.environment.name`) → Datacenter → Team → Business line → Role → Host. They read the promoted labels on `system_cpu_logical_count` (one series per host) and do **not** use `target_info`, so these five attributes must be promoted (see above).
-- Panels select series by `job` and `instance`, which every series has. `job` is the agent's `service.name` (`SERVICE_NAME`, default `centos-host`): it marks the data as coming from this host agent and keeps the dashboards from mixing in other sources of the same metric names in the tenant; it is the same on every host. `instance` is the host (`service.instance.id` = host name).
+- Panels select series by `job` and `instance`, which every series has. `job` is the agent's `service.name` (`SERVICE_NAME`, default `redhat-host`): it marks the data as coming from this host agent and keeps the dashboards from mixing in other sources of the same metric names in the tenant; it is the same on every host. `instance` is the host (`service.instance.id` = host name).
 - Metric names follow Mimir's default OTLP translation without unit/type suffixes (`system_cpu_time`, `system_memory_utilization`, `process_memory_usage`). If your Mimir sets `otel_metric_suffixes_enabled: true` (or you use Prometheus' OTLP receiver), names get suffixes (`system_cpu_time_seconds_total`) and the queries need them too.
 - Logs are filtered by `service_instance_id`, `detected_level` and `systemd_unit` (structured metadata), not by index labels.
 
@@ -158,7 +158,7 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 | Metrics | `KEEP_PROCESS_PIDS=true` | One series per pid |
 | Metrics | `process.disk.io`, `process.command_line` | Not exported |
 | Metrics | Dummy `veth`, bridge, tmpfs, container mount, loop device | Excluded; xfs on `/dev/loop0` still reported |
-| Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=centos-host` |
+| Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=redhat-host` |
 | Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | `target_info` dropped by relabeling, as in production; metrics arrive under the tenant only with promoted `host_name`, `deployment_environment_name`, `datacenter`, `team`, `business_line`, `role`; one series per process name + owner (`sleep` sum = RSS sum) |
 | Grafana | Every query and variable of both dashboards through Grafana's Mimir and Loki data sources, with `target_info` dropped | All return data; `role=db` / `business_line=payments` list the host, `role=web` lists none; the link to the other dashboard carries time range and filters |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
