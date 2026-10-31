@@ -11,7 +11,7 @@ Release: https://github.com/open-telemetry/opentelemetry-collector-releases/rele
 CentOS host
   otelcol-contrib (agent)
     receivers: host_metrics (incl. per-process) + file_log (optional)
-    processors: memory_limiter + transform (drop process.pid / parent_pid) + resource_detection + batch
+    processors: memory_limiter + per-process sum (no pid) + resource/service + resource_detection + batch
     exporter:  otlp_grpc  ──►  central Collector (gateway)
                                   OTLP :4317 / :4318
                                   → your backend
@@ -33,7 +33,11 @@ The script:
 1. Downloads (or uses `RPM_PATH`), **verifies its sha256**, and installs the contrib RPM via `dnf` / `yum` / `rpm`
 2. Writes `/etc/otelcol-contrib/config.yaml` (host metrics + per-process metrics + file_log)
 3. Writes `/etc/otelcol-contrib/otelcol-contrib.conf` (`COLLECTOR_ENDPOINT`, `KEEP_PROCESS_PIDS`, optional `OTEL_TOKEN`)
-4. Writes the systemd drop-in for process metrics (see below) and **restarts** `otelcol-contrib`
+4. Writes the systemd drop-in for process metrics (see below)
+5. Runs `otelcol-contrib validate` on the new config. If it fails, the previous config is restored, the running agent is left alone and the script exits 1
+6. **Restarts** `otelcol-contrib` and waits 8 s; if the service is not `active` or has auto-restarted, it prints the last journal lines and exits 1
+
+Other variables: `SERVICE_NAME` (default `centos-host`, letters/digits/`._-` only) becomes `service.name`, so logs land under that `service_name` in Loki and metrics get it as `job` in Prometheus. `ENABLE_LOGS`, `ENABLE_PROCESS_METRICS`, `PROCESS_CAPS` and `KEEP_PROCESS_PIDS` accept only `true` / `false`. Only the 5 newest `config.yaml.bak.*` / `otelcol-contrib.conf.bak.*` are kept (the conf backups contain `OTEL_TOKEN`).
 
 ### RPM integrity and work directory
 
@@ -79,7 +83,7 @@ Notes from live testing:
 
 - **journald-only hosts** (no `rsyslog`): `/var/log/messages` and `/var/log/secure` do not exist, `file_log` stays silent (no error) and no logs are shipped; metrics still work. Install/enable `rsyslog`, or replace the receiver with `journald` (add `otelcol-contrib` to the `systemd-journal` group).
 - The agent's own stdout goes to journald -> rsyslog -> `/var/log/messages`, so its own log lines are shipped too. During a gateway outage this adds retry/error lines to the stream.
-- `file_log` has no offset storage and uses `start_at: end`: lines written while the agent is stopped/rebooting are not collected afterwards.
+- `file_log` persists its read offsets with the `file_storage` extension in `STORAGE_DIR` (default `/var/lib/otelcol-contrib/file_storage`), so lines written while the agent is stopped or the host reboots are collected once it is back. `start_at: end` only applies to files seen for the first time.
 - Gateway outage: the OTLP exporter retries with backoff for up to 5 minutes per batch (in-memory queue); batches older than that are dropped. Shorter outages are replayed with original timestamps.
 
 ### Per-process metrics (`process` scraper)
@@ -124,13 +128,21 @@ CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 
 This drop-in sits next to `10-read-logs.conf` (file_log, `CAP_DAC_READ_SEARCH`); systemd merges `AmbientCapabilities` / `CapabilityBoundingSet` across drop-ins, so with both enabled the service has `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`. It grants the collector read access to arbitrary files (`CAP_DAC_READ_SEARCH`) and ptrace-read of other processes — a real privilege increase. If your security policy forbids it, use `PROCESS_CAPS=false` and accept missing exe path for other users' processes. Note that `PROCESS_CAPS=false` alone is **not** least privilege: with logs enabled (the default) the `10-read-logs.conf` drop-in still grants `CAP_DAC_READ_SEARCH` (read any file), which is the broader capability, so root processes' `process.disk.io` stays readable and only `CAP_SYS_PTRACE` / `executable.path` is lost. For real least privilege set `PROCESS_CAPS=false` **and** `ENABLE_LOGS=false` (then `process.disk.io` and `executable.path` of root processes are both missing). SELinux: verified on a CentOS Stream 9 VM (kernel 5.14, `Enforcing`): the RPM ships no SELinux policy, so the service runs as `unconfined_service_t` and SELinux does not restrict it; logs, wildcard/new files and root-process metrics all worked with 0 AVC denials. If your hosts confine it with a custom policy, check `ausearch --input-logs -m avc -ts recent` after enabling.
 
-#### PIDs are stripped by default
+#### Same-name processes are summed, PIDs are stripped (default)
 
 `process.pid` and `process.parent_pid` change on every process restart, so exporting them creates a new time series each time and blows up cardinality in the backend.
-The agent therefore runs a `transform/drop_process_pids` processor at the start of the metrics pipeline that deletes these two resource attributes before the OTLP export.
-Stable attributes are kept: `process.executable.name`, `process.executable.path`, `process.command`, `process.command_line`, `process.owner`, plus `host.name` / `os.type`.
+But simply deleting them makes several processes with the same name and owner (nginx / php-fpm / httpd workers, two `sleep`s...) carry identical attributes, and the backend keeps only one of them: the value is silently wrong.
 
-To keep the PIDs for a debugging session, set `KEEP_PROCESS_PIDS=true`:
+So by default the metrics pipeline:
+
+1. `transform/process_identity` copies `process.executable.name` and `process.owner` onto every `process.*` data point, aligns their timestamps, and deletes all `process.*` resource attributes (pid, parent_pid, command, command_line, executable.path)
+2. `groupbyattrs/processes` regroups the points by name + owner
+3. `metrics_transform/sum_processes` sums them: memory with no labels, CPU per `state`, disk I/O per `direction`
+
+Result: one series per executable name + owner, holding the total of all matching processes (verified: three `sleep` processes of 1820 KiB RSS each -> one series of 5460 KiB).
+`process.cpu.time` / `process.disk.io` are sums of cumulative counters, so when one of the processes exits the total drops and `rate()` sees a counter reset.
+
+To see every process separately (with `process.pid`) for a debugging session, set `KEEP_PROCESS_PIDS=true`; all three steps are then skipped:
 
 ```bash
 # at install time
@@ -143,13 +155,6 @@ sudo systemctl restart otelcol-contrib
 
 Set it back to `false` (or re-run the installer without the variable, which resets it to `false`) when done.
 When running `agent-config.yaml` by hand, export `KEEP_PROCESS_PIDS` in the environment; unset means `false`.
-
-Caveats:
-
-- Without the PID, processes that share the same executable/command line/owner (e.g. several `nginx` workers matched by `PROCESS_NAMES`) produce identical resource attributes, so their series
-  collapse into one. Per-process values are only meaningful for singleton processes; aggregate per executable name in the backend or gateway if you need totals.
-- `process.command_line` is kept because it is stable per service, but it can still be high cardinality for processes launched with changing arguments.
-  Delete it in the same processor if that is a problem on your hosts.
 
 ### Credentials (TLS / token)
 
@@ -250,17 +255,15 @@ receivers:
       - /var/log/messages
       - /var/log/secure
     start_at: end
+    storage: file_storage          # resume from saved offsets after a restart
     include_file_path: true
 
 processors:
-  transform/drop_process_pids:
-    error_mode: ignore
-    metric_statements:
-      - context: resource
-        statements:
-          - 'delete_key(resource.attributes, "process.pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
-          - 'delete_key(resource.attributes, "process.parent_pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
   memory_limiter: {check_interval: 1s, limit_mib: 256, spike_limit_mib: 64}
+  # transform/process_identity + groupbyattrs/processes + metrics_transform/sum_processes:
+  # see agent-config.yaml (sums same-name processes, strips pid)
+  resource/service:
+    attributes: [{key: service.name, value: centos-host, action: insert}]
   resource_detection:
     detectors: [system, env]
     system:
@@ -273,15 +276,19 @@ exporters:
     tls:
       insecure: true   # production: CA / mTLS
 
+extensions:
+  file_storage: {directory: /var/lib/otelcol-contrib/file_storage, create_directory: true}
+
 service:
+  extensions: [file_storage]
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [memory_limiter, transform/drop_process_pids, resource_detection, batch]
+      processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, resource/service, resource_detection, batch]
       exporters: [otlp_grpc]
     logs:
       receivers: [file_log]
-      processors: [memory_limiter, resource_detection, batch]
+      processors: [memory_limiter, resource/service, resource_detection, batch]
       exporters: [otlp_grpc]
 ```
 
@@ -310,13 +317,20 @@ Allow **4317/tcp** (gRPC) or **4318/tcp** (HTTP) from agents to the gateway.
 | `ENABLE_PROCESS_METRICS=false` | Pass (no process scraper, drop-in removed) |
 | `PROCESS_NAMES` unset (all processes) | Pass (lab smoke; installer warns) |
 | Reading root processes' `io` / `exe` as `otelcol-contrib` | Needs `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH` drop-in (installed by default, `PROCESS_CAPS=false` to skip) |
-| SELinux enforcing, TLS/mTLS with process metrics | Not tested |
+| SELinux enforcing, TLS/mTLS with process metrics | Pass (CentOS Stream 9 VM, see rows below) |
 | TLS (CA only, no mTLS) + bearer token, gateway verifies both | Pass: metrics + logs arrive; wrong token -> `Unauthenticated`, wrong CA -> x509 failure |
 | `ENABLE_LOGS=false` | Pass: drop-in removed (`CapEff=0`), no file_log/logs pipeline, metrics still flow |
 | Container restart (systemd reboot) | Pass: service enabled, conf/certs/drop-in persist, data resumes |
 | Rotation with `/var/log/myapp/*` + logrotate | Pass after fix: no `.1`/`.gz` content shipped, new active file collected |
 | Gateway outage 70s / 6.5min, 4 agents | Short: replayed; long: batches older than 5 min dropped, newer replayed |
-| SELinux enforcing | Not tested (lab VM has no SELinux policy loaded) |
+| SELinux enforcing | Pass: CentOS Stream 9 VM (Lima, `Enforcing`), service runs as `unconfined_service_t`, 0 AVC denials |
+| Same-name processes (3x `sleep`, same owner) | Pass: one series = sum of the three (5460 KiB = 3 x 1820); `KEEP_PROCESS_PIDS=true` gives three series with `process.pid` |
+| Agent stopped / VM rebooted while lines are written | Pass: lines collected after restart (`file_storage` offsets) |
+| Invalid generated config (`PROCESS_MATCH_TYPE=regexp PROCESS_NAMES="(sshd"`) | Pass: exit 1, old config restored, running agent untouched |
+| Valid config but collector cannot start (port 8888 taken) | Pass: exit 1 with journal tail |
+| `ENABLE_LOGS=yes`, `SERVICE_NAME="a b"` | Pass: rejected with exit 1 |
+| mTLS (client cert) to gateway | Pass (CentOS Stream 9 VM) |
+| Bearer token with `$ # ' "` over TLS | Pass; a token containing a space is rejected by the gateway (`bearertokenauth`), as RFC 6750 tokens cannot contain spaces |
 | Live filelog (`file_log`) CentOS Stream 9 + podman + systemd, agent -> gateway | Pass: lines from `/var/log/messages`, `/var/log/secure`, `/var/log/myapp/*.log` (incl. file created after install) seen at gateway; works after logrotate |
 
 Raw samples and permission experiments: [`evidence/process-metrics-centos9.md`](evidence/process-metrics-centos9.md).

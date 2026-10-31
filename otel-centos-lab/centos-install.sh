@@ -9,22 +9,25 @@
 # Optional:
 #   OTEL_VERSION=0.164.0
 #   RPM_PATH=/path/to/otelcol-contrib_*.rpm
-#   RPM_SHA256=<64 位 hex>                          # RPM_PATH 的期望 sha256（离线安装推荐）；未设置则尝试下载 ${RPM_URL}.sha256
-#   SKIP_RPM_VERIFY=true|false                      # 默认 false；仅当 RPM_PATH 离线且拿不到校验值时才可设 true（跳过完整性校验，不安全）
-#   WORKDIR=/path                                   # 默认每次 mktemp -d 新建并在退出时清理；显式设置时不会自动清理
+#   RPM_SHA256=<64 hex chars>                       # expected sha256 of RPM_PATH (recommended offline); unset = fetch ${RPM_URL}.sha256
+#   SKIP_RPM_VERIFY=true|false                      # default false; true only for an offline RPM_PATH with no digest (skips integrity check, unsafe)
+#   WORKDIR=/path                                   # default: fresh mktemp -d, removed on exit; an explicit WORKDIR is not removed
 #   TLS_CA_FILE=/path/ca.crt
 #   TLS_CERT_FILE=/path/client.crt
 #   TLS_KEY_FILE=/path/client.key
 #   OTEL_TOKEN=...
-#   TLS_INSECURE=true|false                         # 设置 OTEL_TOKEN 却没配 TLS 时，必须显式 TLS_INSECURE=true 才允许明文发送 token
-#   LOG_PATHS="/var/log/messages /var/log/secure"   # file_log 采集路径，空格分隔
-#   ENABLE_LOGS=true|false                          # 默认 true
-#   KEEP_PROCESS_PIDS=true|false                    # 默认 false: 导出前删除 process.pid / process.parent_pid（基数）；仅调试时设 true
-#   ENABLE_PROCESS_METRICS=true|false               # 默认 true；per-process CPU/内存/IO
-#   PROCESS_NAMES="rsyslogd sshd otelcol-contrib"   # 空格或逗号分隔；未设置 = 采集全部进程（噪声大，仅实验室）
-#   PROCESS_MATCH_TYPE=strict|regexp                # 默认 strict（精确匹配进程名）
-#   PROCESS_CAPS=true|false                         # 默认 true；给 systemd 单元加 CAP_SYS_PTRACE+CAP_DAC_READ_SEARCH drop-in，
-#                                                   # 才能读其他用户进程的 /proc/<pid>/io 与 exe（process.disk.io、executable.path）
+#   TLS_INSECURE=true|false                         # with OTEL_TOKEN but no TLS, TLS_INSECURE=true is required to send the token in clear text
+#   LOG_PATHS="/var/log/messages /var/log/secure"   # file_log paths, space-separated
+#   ENABLE_LOGS=true|false                          # default true
+#   SERVICE_NAME=centos-host                        # service.name (Loki service_name, Prometheus job); only [A-Za-z0-9._-]
+#   STORAGE_DIR=/var/lib/otelcol-contrib/file_storage  # file_log offset storage, so reading resumes after a restart
+#   KEEP_PROCESS_PIDS=true|false                    # default false: drop pid & co. and SUM same-name, same-owner processes into one series;
+#                                                   # true = one series per process (with process.pid), for debugging only
+#   ENABLE_PROCESS_METRICS=true|false               # default true; per-process CPU/memory/IO
+#   PROCESS_NAMES="rsyslogd sshd otelcol-contrib"   # space- or comma-separated; unset = ALL processes (noisy, lab only)
+#   PROCESS_MATCH_TYPE=strict|regexp                # default strict (exact process name)
+#   PROCESS_CAPS=true|false                         # default true; systemd drop-in with CAP_SYS_PTRACE+CAP_DAC_READ_SEARCH,
+#                                                   # needed to read other users' /proc/<pid>/io and exe (process.disk.io, executable.path)
 set -euo pipefail
 
 OTEL_VERSION="${OTEL_VERSION:-0.164.0}"
@@ -35,7 +38,9 @@ TLS_KEY_FILE="${TLS_KEY_FILE:-}"
 OTEL_TOKEN="${OTEL_TOKEN:-}"
 CERTS_DIR="${CERTS_DIR:-/etc/otelcol-contrib/certs}"
 ENABLE_LOGS="${ENABLE_LOGS:-true}"
-# CentOS/RHEL 常见系统日志；可用 LOG_PATHS 覆盖
+SERVICE_NAME="${SERVICE_NAME:-centos-host}"
+STORAGE_DIR="${STORAGE_DIR:-/var/lib/otelcol-contrib/file_storage}"
+# Usual CentOS/RHEL system logs; override with LOG_PATHS
 LOG_PATHS="${LOG_PATHS:-/var/log/messages /var/log/secure}"
 ENABLE_PROCESS_METRICS="${ENABLE_PROCESS_METRICS:-true}"
 PROCESS_NAMES="${PROCESS_NAMES:-}"
@@ -44,7 +49,7 @@ PROCESS_CAPS="${PROCESS_CAPS:-true}"
 KEEP_PROCESS_PIDS="${KEEP_PROCESS_PIDS:-false}"
 case "$KEEP_PROCESS_PIDS" in
   true|false) ;;
-  *) echo "KEEP_PROCESS_PIDS 只能是 true 或 false (当前: $KEEP_PROCESS_PIDS)"; exit 1 ;;
+  *) echo "KEEP_PROCESS_PIDS must be true or false (got: $KEEP_PROCESS_PIDS)"; exit 1 ;;
 esac
 
 ARCH="$(uname -m)"
@@ -60,13 +65,13 @@ RPM_SHA256="${RPM_SHA256:-}"
 SKIP_RPM_VERIFY="${SKIP_RPM_VERIFY:-false}"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "请用 root 或 sudo 跑这个脚本"
+  echo "Run this script as root or with sudo"
   exit 1
 fi
 
-# 工作目录: 默认用 mktemp -d 新建（0700，不可预测），退出时清理；
-# 仅当用户显式设置 WORKDIR 才使用该目录（且不自动删除）。
-# 不能用固定的 /tmp 路径：本地低权限用户可预先放置 RPM，被 root 安装。
+# Work dir: by default a fresh mktemp -d (0700, unpredictable) removed on exit;
+# an explicitly set WORKDIR is used as is (and not removed).
+# Never a fixed /tmp path: a local unprivileged user could plant an RPM there that root then installs.
 if [[ -n "${WORKDIR:-}" ]]; then
   mkdir -p "$WORKDIR"
 else
@@ -77,7 +82,7 @@ fi
 install_secret_file() {
   local src="$1" dest="$2"
   if [[ ! -f "$src" ]]; then
-    echo "找不到文件: $src"
+    echo "File not found: $src"
     exit 1
   fi
   install -d -m 0755 "$(dirname "$dest")"
@@ -86,7 +91,7 @@ install_secret_file() {
 }
 
 if [[ -n "$TLS_CERT_FILE" && -z "$TLS_KEY_FILE" ]] || [[ -z "$TLS_CERT_FILE" && -n "$TLS_KEY_FILE" ]]; then
-  echo "TLS_CERT_FILE 和 TLS_KEY_FILE 必须成对提供"
+  echo "TLS_CERT_FILE and TLS_KEY_FILE must be given together"
   exit 1
 fi
 
@@ -113,13 +118,13 @@ else
   INSECURE=true
 fi
 
-# Bearer token 不能在无 TLS 时静默明文发送
+# Never send the bearer token in clear text silently
 if [[ -n "$OTEL_TOKEN" && "$INSECURE" == "true" ]]; then
   if [[ "${TLS_INSECURE:-}" == "true" ]]; then
-    echo "警告: OTEL_TOKEN 将通过【明文】(tls.insecure=true) 发送，可被网络上的任何人截获。仅限受信任的内网/实验室。"
+    echo "WARNING: OTEL_TOKEN will be sent in CLEAR TEXT (tls.insecure=true) and can be captured by anyone on the network. Trusted networks / labs only."
   else
-    echo "错误: 设置了 OTEL_TOKEN 但没有配置 TLS (TLS_CA_FILE / TLS_CERT_FILE)，token 会以明文发送。"
-    echo "  请提供 TLS_CA_FILE（推荐），或在明确接受风险时显式设置 TLS_INSECURE=true。"
+    echo "ERROR: OTEL_TOKEN is set but TLS is not configured (TLS_CA_FILE / TLS_CERT_FILE), so the token would be sent in clear text."
+    echo "  Provide TLS_CA_FILE (recommended), or set TLS_INSECURE=true explicitly to accept the risk."
     exit 1
   fi
 fi
@@ -141,27 +146,35 @@ fi
 
 # Build file_log include list YAML
 FILELOG_INCLUDE=""
-set -f  # 不要在安装时展开 LOG_PATHS 里的通配符，交给 file_log 运行时匹配
+set -f  # do not expand LOG_PATHS globs at install time; file_log matches them at runtime
 for p in $LOG_PATHS; do
   FILELOG_INCLUDE+=$'\n'"      - ${p}"
 done
 set +f
 
+case "$ENABLE_LOGS" in
+  true|false) ;;
+  *) echo "ENABLE_LOGS must be true or false (got: ${ENABLE_LOGS})"; exit 1 ;;
+esac
+if [[ ! "$SERVICE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "SERVICE_NAME may only contain letters, digits and . _ - (got: ${SERVICE_NAME})"
+  exit 1
+fi
 case "$ENABLE_PROCESS_METRICS" in
   true|false) ;;
-  *) echo "ENABLE_PROCESS_METRICS 只能是 true 或 false (当前: ${ENABLE_PROCESS_METRICS})"; exit 1 ;;
+  *) echo "ENABLE_PROCESS_METRICS must be true or false (got: ${ENABLE_PROCESS_METRICS})"; exit 1 ;;
 esac
 case "$PROCESS_CAPS" in
   true|false) ;;
-  *) echo "PROCESS_CAPS 只能是 true 或 false (当前: ${PROCESS_CAPS})"; exit 1 ;;
+  *) echo "PROCESS_CAPS must be true or false (got: ${PROCESS_CAPS})"; exit 1 ;;
 esac
 case "$PROCESS_MATCH_TYPE" in
   strict|regexp) ;;
-  *) echo "PROCESS_MATCH_TYPE 只能是 strict 或 regexp (当前: ${PROCESS_MATCH_TYPE})"; exit 1 ;;
+  *) echo "PROCESS_MATCH_TYPE must be strict or regexp (got: ${PROCESS_MATCH_TYPE})"; exit 1 ;;
 esac
 
-# process scraper: PROCESS_NAMES 按空格/逗号拆分 -> include.names
-# 注意: Linux 进程名 (comm) 最长 15 字符；逗号/空格是分隔符，regexp 模式下单个模式里不能含它们（可用 | 做或）
+# process scraper: PROCESS_NAMES split on spaces/commas -> include.names
+# Note: Linux process names (comm) are at most 15 chars; comma/space are separators, so a regexp cannot contain them (use | for alternation)
 PROCESS_NAME_LIST=()
 if [[ "$ENABLE_PROCESS_METRICS" == "true" && -n "$PROCESS_NAMES" ]]; then
   read -r -a PROCESS_NAME_LIST <<< "${PROCESS_NAMES//,/ }"
@@ -179,7 +192,7 @@ fi
 if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
   PROCESS_SCRAPER="
       process:
-        # otelcol-contrib 以非 root 用户运行：读其他用户进程的 exe/io/user 会 EACCES，静音这些错误日志
+        # otelcol-contrib runs as non-root: reading other users' exe/io/user gives EACCES, mute those errors
         mute_process_name_error: true
         mute_process_exe_error: true
         mute_process_io_error: true
@@ -200,7 +213,7 @@ else
   PROCESS_SCRAPER=""
 fi
 
-# 取官方发布的 per-asset sha256（内容: 64 位 hex，可能后跟文件名）；失败返回非 0
+# Fetch the official per-asset sha256 (64 hex chars, maybe followed by the file name); non-zero on failure
 fetch_rpm_sha256() {
   local out hex
   out="$(curl -fsSL --retry 3 "${RPM_URL}.sha256")" || return 1
@@ -214,19 +227,19 @@ rm -f "$RPM_FILE"
 VERIFY=true
 if [[ -n "${RPM_PATH:-}" ]]; then
   if [[ ! -f "$RPM_PATH" ]]; then
-    echo "找不到 RPM_PATH: $RPM_PATH"
+    echo "RPM_PATH not found: $RPM_PATH"
     exit 1
   fi
-  # 先复制到私有 WORKDIR 再校验/安装，避免校验后文件被替换 (TOCTOU)
+  # Copy into the private WORKDIR first, then verify/install that copy (no swap after verification, TOCTOU)
   install -m 0600 "$RPM_PATH" "$RPM_FILE"
 else
-  echo "下载 $RPM_URL ..."
+  echo "Downloading $RPM_URL ..."
   curl -fL --retry 3 -o "$RPM_FILE" "$RPM_URL"
 fi
 
 if [[ -n "$RPM_SHA256" ]]; then
   if [[ ! "$RPM_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
-    echo "RPM_SHA256 必须是 64 位十六进制 sha256"
+    echo "RPM_SHA256 must be a 64-character hex sha256"
     exit 1
   fi
   EXPECTED_SHA256="${RPM_SHA256,,}"
@@ -234,12 +247,12 @@ elif EXPECTED_SHA256="$(fetch_rpm_sha256)"; then
   :
 elif [[ -n "${RPM_PATH:-}" && "$SKIP_RPM_VERIFY" == "true" ]]; then
   VERIFY=false
-  echo "!!!!!! 警告: 无法获取 RPM 的 sha256，且设置了 SKIP_RPM_VERIFY=true：将【不校验】RPM 完整性直接以 root 安装 !!!!!!"
-  echo "!!!!!! 请确认 ${RPM_PATH} 来源可信；建议改用 RPM_SHA256=<digest> !!!!!!"
+  echo "!!!!!! WARNING: no sha256 available for the RPM and SKIP_RPM_VERIFY=true: installing it as root WITHOUT any integrity check !!!!!!"
+  echo "!!!!!! Make sure ${RPM_PATH} comes from a trusted source; prefer RPM_SHA256=<digest> !!!!!!"
 else
-  echo "错误: 无法获取 ${RPM_URL}.sha256，无法校验 RPM 完整性。"
+  echo "ERROR: cannot fetch ${RPM_URL}.sha256, so the RPM cannot be verified."
   if [[ -n "${RPM_PATH:-}" ]]; then
-    echo "  离线安装请设置 RPM_SHA256=<64 位 sha256>（推荐），或明确接受风险时设置 SKIP_RPM_VERIFY=true。"
+    echo "  For an offline install set RPM_SHA256=<64-char sha256> (recommended), or SKIP_RPM_VERIFY=true to accept the risk."
   fi
   exit 1
 fi
@@ -247,15 +260,15 @@ fi
 if [[ "$VERIFY" == "true" ]]; then
   ACTUAL_SHA256="$(sha256sum "$RPM_FILE" | awk '{print $1}')"
   if [[ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]]; then
-    echo "错误: RPM sha256 校验失败，拒绝安装。"
-    echo "  期望: $EXPECTED_SHA256"
-    echo "  实际: $ACTUAL_SHA256"
+    echo "ERROR: RPM sha256 mismatch, refusing to install."
+    echo "  expected: $EXPECTED_SHA256"
+    echo "  actual:   $ACTUAL_SHA256"
     exit 1
   fi
-  echo "RPM sha256 校验通过: $ACTUAL_SHA256"
+  echo "RPM sha256 OK: $ACTUAL_SHA256"
 fi
 
-echo "安装 RPM: $RPM_FILE"
+echo "Installing RPM: $RPM_FILE"
 if command -v dnf >/dev/null 2>&1; then
   dnf install -y "$RPM_FILE"
 elif command -v yum >/dev/null 2>&1; then
@@ -272,7 +285,7 @@ if id otelcol-contrib >/dev/null 2>&1; then
     [[ -n "$CERT_PATH" ]] && chmod 0640 "$CERT_PATH" || true
     [[ -n "$KEY_PATH" ]] && chmod 0640 "$KEY_PATH" || true
   fi
-  # 读 /var/log/messages、secure 通常需要 adm 组
+  # reading /var/log/messages and secure usually needs the adm group
   if getent group adm >/dev/null 2>&1; then
     usermod -aG adm otelcol-contrib || true
   fi
@@ -291,23 +304,82 @@ if [[ "${ENABLE_LOGS}" == "true" ]]; then
       - \"**/*.gz\"
       - \"**/*.[0-9]\"
     start_at: end
+    # persist read offsets: after an agent/host restart, resume where it stopped instead of skipping lines written meanwhile
+    storage: file_storage
     include_file_path: true
     include_file_name: true
 "
   LOGS_PIPELINE="
     logs:
       receivers: [file_log]
-      processors: [memory_limiter, resource_detection, batch]
+      processors: [memory_limiter, resource/service, resource_detection, batch]
       exporters: [otlp_grpc]
 "
+  EXTENSIONS_YAML="
+extensions:
+  file_storage:
+    directory: ${STORAGE_DIR}
+    create_directory: true
+"
+  SERVICE_EXTENSIONS="
+  extensions: [file_storage]"
 else
   FILELOG_RECEIVER=""
   LOGS_PIPELINE=""
+  EXTENSIONS_YAML=""
+  SERVICE_EXTENSIONS=""
+fi
+
+# Process metrics: once pid & co. are dropped, several processes with the same name and owner (nginx/php-fpm workers...)
+# end up on the same series and overwrite each other. So move name/owner onto the data points, regroup by them, then sum.
+# KEEP_PROCESS_PIDS=true skips every transform statement: pid stays on the resource and each process stays its own series.
+if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
+  PROCESS_PROCESSORS_YAML='
+  transform/process_identity:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        conditions:
+          - IsMatch(metric.name, "^process\\.") and "${env:KEEP_PROCESS_PIDS:-false}" != "true"
+        statements:
+          - set(datapoint.attributes["process.executable.name"], resource.attributes["process.executable.name"])
+          - set(datapoint.attributes["process.owner"], resource.attributes["process.owner"]) where resource.attributes["process.owner"] != nil
+          # start_time differs per process; aligning it lets metrics_transform merge the points
+          - set(datapoint.start_time_unix_nano, 0)
+          - set(datapoint.time, TruncateTime(datapoint.time, Duration("1s")))
+      - context: resource
+        conditions:
+          - "\"${env:KEEP_PROCESS_PIDS:-false}\" != \"true\""
+        statements:
+          - delete_matching_keys(resource.attributes, "^process\\.")
+  groupbyattrs/processes:
+    keys: [process.executable.name, process.owner]
+  metrics_transform/sum_processes:
+    transforms:
+      - include: ^process\.memory\.
+        match_type: regexp
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [], aggregation_type: sum}
+      - include: ^process\.cpu\.
+        match_type: regexp
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [state], aggregation_type: sum}
+      - include: process.disk.io
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [direction], aggregation_type: sum}'
+  PROCESS_PROCESSOR_LIST="transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, "
+else
+  PROCESS_PROCESSORS_YAML=""
+  PROCESS_PROCESSOR_LIST=""
 fi
 
 cat > "$CONFIG" << YAML
 # otelcol-contrib host agent — OS metrics + optional file logs
 # Generated by centos-install.sh (otelcol-contrib ${OTEL_VERSION})
+${EXTENSIONS_YAML}
 receivers:
   host_metrics:
     collection_interval: 30s
@@ -331,15 +403,12 @@ processors:
   memory_limiter:
     check_interval: 1s
     limit_mib: 256
-    spike_limit_mib: 64
-  # Drop per-process PID resource attributes (high cardinality). Set KEEP_PROCESS_PIDS=true to keep them for debugging.
-  transform/drop_process_pids:
-    error_mode: ignore
-    metric_statements:
-      - context: resource
-        statements:
-          - 'delete_key(resource.attributes, "process.pid") where "\${env:KEEP_PROCESS_PIDS:-false}" != "true"'
-          - 'delete_key(resource.attributes, "process.parent_pid") where "\${env:KEEP_PROCESS_PIDS:-false}" != "true"'
+    spike_limit_mib: 64${PROCESS_PROCESSORS_YAML}
+  resource/service:
+    attributes:
+      - key: service.name
+        value: ${SERVICE_NAME}
+        action: insert
   resource_detection:
     detectors: [system, env]
     system:
@@ -353,11 +422,11 @@ exporters:
     endpoint: \${env:COLLECTOR_ENDPOINT}
 ${TLS_YAML}${HEADERS_YAML}
 
-service:
+service:${SERVICE_EXTENSIONS}
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [memory_limiter, transform/drop_process_pids, resource_detection, batch]
+      processors: [memory_limiter, ${PROCESS_PROCESSOR_LIST}resource/service, resource_detection, batch]
       exporters: [otlp_grpc]
 ${LOGS_PIPELINE}
   telemetry:
@@ -387,33 +456,34 @@ if id otelcol-contrib >/dev/null 2>&1; then
 fi
 
 echo
-echo "认证配置:"
+echo "Auth settings:"
 echo "  tls.insecure=${INSECURE}"
 [[ -n "$CA_PATH" ]] && echo "  ca_file=${CA_PATH}"
 [[ -n "$CERT_PATH" ]] && echo "  cert_file=${CERT_PATH} key_file=${KEY_PATH}"
-[[ -n "$OTEL_TOKEN" ]] && echo "  headers.authorization=Bearer \${OTEL_TOKEN} (在 ${CONF})"
+[[ -n "$OTEL_TOKEN" ]] && echo "  headers.authorization=Bearer \${OTEL_TOKEN} (from ${CONF})"
+echo "service.name=${SERVICE_NAME}"
 if [[ "${ENABLE_LOGS}" == "true" ]]; then
-  echo "日志采集路径 (file_log): ${LOG_PATHS}"
+  echo "Log collection (file_log): ${LOG_PATHS}  (offsets kept in ${STORAGE_DIR})"
 else
-  echo "日志采集: 已关闭 (ENABLE_LOGS=false)"
+  echo "Log collection: disabled (ENABLE_LOGS=false)"
 fi
 if [[ "$KEEP_PROCESS_PIDS" == "true" ]]; then
-  echo "进程指标: 保留 process.pid / process.parent_pid (KEEP_PROCESS_PIDS=true, 仅用于调试)"
+  echo "Process metrics: one series per process, process.pid kept (KEEP_PROCESS_PIDS=true, debugging only)"
 else
-  echo "进程指标: 已删除 process.pid / process.parent_pid (默认, 避免高基数)"
+  echo "Process metrics: same-name, same-owner processes summed into one series, no pid (default, avoids high cardinality)"
 fi
 if [[ "$ENABLE_PROCESS_METRICS" != "true" ]]; then
-  echo "进程指标 (process scraper): 已关闭 (ENABLE_PROCESS_METRICS=false)"
+  echo "Process metrics (process scraper): disabled (ENABLE_PROCESS_METRICS=false)"
 elif [[ "${#PROCESS_NAME_LIST[@]}" -gt 0 ]]; then
-  echo "进程指标 (process scraper): match_type=${PROCESS_MATCH_TYPE} names=${PROCESS_NAME_LIST[*]}"
+  echo "Process metrics (process scraper): match_type=${PROCESS_MATCH_TYPE} names=${PROCESS_NAME_LIST[*]}"
 else
-  echo "警告: 未设置 PROCESS_NAMES，将采集【全部】进程（高基数、噪声大，仅建议实验室使用）。生产请设置 PROCESS_NAMES。"
+  echo "WARNING: PROCESS_NAMES is not set, so ALL processes are collected (high cardinality, noisy; lab use only). Set PROCESS_NAMES in production."
 fi
 
-# 非 root 的 otelcol-contrib 读不了 root 进程的 /proc/<pid>/io (0400) 和 /proc/<pid>/exe：
+# Non-root otelcol-contrib cannot read root processes' /proc/<pid>/io (0400) or /proc/<pid>/exe:
 #   CAP_SYS_PTRACE       -> readlink /proc/<pid>/exe (executable.path)
 #   CAP_DAC_READ_SEARCH  -> open /proc/<pid>/io (process.disk.io)
-# CentOS Stream 9 (podman + systemd) 实测两者缺一不可。
+# Tested on CentOS Stream 9 (podman + systemd): both are required.
 DROPIN_DIR=/etc/systemd/system/otelcol-contrib.service.d
 DROPIN_FILE="${DROPIN_DIR}/10-process-metrics.conf"
 if [[ "$ENABLE_PROCESS_METRICS" == "true" && "$PROCESS_CAPS" == "true" ]]; then
@@ -430,17 +500,17 @@ else
   rmdir "$DROPIN_DIR" 2>/dev/null || true
   if [[ "$ENABLE_PROCESS_METRICS" == "true" ]]; then
     if [[ "${ENABLE_LOGS}" == "true" ]]; then
-      echo "PROCESS_CAPS=false: 不授予 CAP_SYS_PTRACE，root 进程的 executable.path 将缺失；"
-      echo "  但 ENABLE_LOGS=true 时日志 drop-in (10-read-logs.conf) 仍授予 CAP_DAC_READ_SEARCH（可读任意文件），"
-      echo "  所以 root 进程的 process.disk.io 仍可读取。要真正最小权限，需同时设置 ENABLE_LOGS=false。"
+      echo "PROCESS_CAPS=false: CAP_SYS_PTRACE not granted, so executable.path of root processes will be missing;"
+      echo "  but with ENABLE_LOGS=true the log drop-in (10-read-logs.conf) still grants CAP_DAC_READ_SEARCH (read any file),"
+      echo "  so process.disk.io of root processes stays readable. For real least privilege also set ENABLE_LOGS=false."
     else
-      echo "PROCESS_CAPS=false: 不授予额外 capability；root 进程的 process.disk.io / executable.path 将缺失"
+      echo "PROCESS_CAPS=false: no extra capabilities; process.disk.io / executable.path of root processes will be missing"
     fi
   fi
 fi
 
-# CentOS/RHEL 的 /var/log/messages、secure 默认是 root:root 0600，adm 组读不了；
-# 用 CAP_DAC_READ_SEARCH（只读绕过权限检查）比改成 root 运行或 chmod 日志更稳，logrotate 重建文件后依然有效。
+# On CentOS/RHEL /var/log/messages and secure are root:root 0600 by default, so the adm group cannot read them;
+# CAP_DAC_READ_SEARCH (read-only permission bypass) is more robust than running as root or chmod-ing logs, and survives logrotate re-creating the files.
 DROPIN_DIR=/etc/systemd/system/otelcol-contrib.service.d
 DROPIN="${DROPIN_DIR}/10-read-logs.conf"
 if [[ "${ENABLE_LOGS}" == "true" ]]; then
@@ -454,20 +524,49 @@ else
   rm -f "$DROPIN"
 fi
 
+if [[ "${ENABLE_LOGS}" == "true" ]]; then
+  install -d -m 0750 "$STORAGE_DIR"
+  chown otelcol-contrib:otelcol-contrib "$STORAGE_DIR" 2>/dev/null || true
+fi
+
+# Keep only the 5 newest backups (conf backups contain OTEL_TOKEN and must not pile up)
+for f in "$CONFIG" "$CONF"; do
+  ls -1t "${f}".bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f --
+done
+
+# Validate the new config first; on failure restore the old one, so a running agent is never switched to a config that cannot start
+# Variables are passed as prefix assignments (not in argv), so the token does not show up in ps
+if ! COLLECTOR_ENDPOINT="$COLLECTOR_ENDPOINT" KEEP_PROCESS_PIDS="$KEEP_PROCESS_PIDS" OTEL_TOKEN="$OTEL_TOKEN" \
+    runuser -u otelcol-contrib -- /usr/bin/otelcol-contrib validate --config="$CONFIG"; then
+  echo "ERROR: the generated config failed otelcol-contrib validate; the previous config was restored and the agent was not restarted."
+  if [[ -f "${CONFIG}.bak.${BACKUP_SUFFIX}" ]]; then
+    cp -a "${CONFIG}.bak.${BACKUP_SUFFIX}" "$CONFIG"
+    [[ -f "${CONF}.bak.${BACKUP_SUFFIX}" ]] && cp -a "${CONF}.bak.${BACKUP_SUFFIX}" "$CONF"
+  fi
+  exit 1
+fi
+
 if [[ "$COLLECTOR_ENDPOINT" == "REPLACE_ME:4317" ]]; then
-  echo "警告: COLLECTOR_ENDPOINT 还是占位符，请改 ${CONF} 后再启动"
-  echo "示例: COLLECTOR_ENDPOINT=10.0.0.20:4317"
+  echo "WARNING: COLLECTOR_ENDPOINT is still the placeholder; edit ${CONF} before starting"
+  echo "Example: COLLECTOR_ENDPOINT=10.0.0.20:4317"
   systemctl daemon-reload
   systemctl enable otelcol-contrib
-  echo "已 enable，未 start。改好 endpoint 后执行: systemctl start otelcol-contrib"
+  echo "Enabled but not started. After setting the endpoint run: systemctl start otelcol-contrib"
   exit 0
 fi
 
 systemctl daemon-reload
 systemctl enable otelcol-contrib
 systemctl restart otelcol-contrib
+# Type=simple + Restart=on-failure: restart itself always succeeds, so wait a few seconds and check the process did not exit and restart
+sleep 8
+if [[ "$(systemctl show -p ActiveState --value otelcol-contrib)" != "active" || "$(systemctl show -p NRestarts --value otelcol-contrib)" != "0" ]]; then
+  echo "ERROR: otelcol-contrib is not running steadily after start; recent log:"
+  journalctl -u otelcol-contrib -n 20 --no-pager || true
+  exit 1
+fi
 systemctl --no-pager --full status otelcol-contrib || true
 echo
-echo "看日志: journalctl -u otelcol-contrib -f"
-echo "配置:   $CONFIG"
-echo "环境:   $CONF  (COLLECTOR_ENDPOINT=$COLLECTOR_ENDPOINT)"
+echo "Logs:   journalctl -u otelcol-contrib -f"
+echo "Config: $CONFIG"
+echo "Env:    $CONF  (COLLECTOR_ENDPOINT=$COLLECTOR_ENDPOINT)"

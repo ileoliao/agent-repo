@@ -38,14 +38,49 @@ receivers:
             enabled: true
 
 processors:
-  # Drop per-process PID resource attributes (high cardinality). Set KEEP_PROCESS_PIDS=true to keep them for debugging.
-  transform/drop_process_pids:
+  # Per-process metrics without pid: copy name/owner onto the data points, regroup by them and SUM
+  # same-name processes (nginx/php-fpm workers...) into one series instead of letting them overwrite
+  # each other. KEEP_PROCESS_PIDS=true skips all of it (one series per process, with process.pid).
+  transform/process_identity:
     error_mode: ignore
     metric_statements:
-      - context: resource
+      - context: datapoint
+        conditions:
+          - IsMatch(metric.name, "^process\\.") and "${env:KEEP_PROCESS_PIDS:-false}" != "true"
         statements:
-          - 'delete_key(resource.attributes, "process.pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
-          - 'delete_key(resource.attributes, "process.parent_pid") where "${env:KEEP_PROCESS_PIDS:-false}" != "true"'
+          - set(datapoint.attributes["process.executable.name"], resource.attributes["process.executable.name"])
+          - set(datapoint.attributes["process.owner"], resource.attributes["process.owner"]) where resource.attributes["process.owner"] != nil
+          # start_time differs per process; aligning it lets metrics_transform merge the points
+          - set(datapoint.start_time_unix_nano, 0)
+          - set(datapoint.time, TruncateTime(datapoint.time, Duration("1s")))
+      - context: resource
+        conditions:
+          - "\"${env:KEEP_PROCESS_PIDS:-false}\" != \"true\""
+        statements:
+          - delete_matching_keys(resource.attributes, "^process\\.")
+  groupbyattrs/processes:
+    keys: [process.executable.name, process.owner]
+  metrics_transform/sum_processes:
+    transforms:
+      - include: ^process\.memory\.
+        match_type: regexp
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [], aggregation_type: sum}
+      - include: ^process\.cpu\.
+        match_type: regexp
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [state], aggregation_type: sum}
+      - include: process.disk.io
+        action: update
+        operations:
+          - {action: aggregate_labels, label_set: [direction], aggregation_type: sum}
+  resource/service:
+    attributes:
+      - key: service.name
+        value: centos-host
+        action: insert
   resource_detection:
     detectors: [system, env]
     system:
@@ -66,7 +101,7 @@ service:
   pipelines:
     metrics:
       receivers: [host_metrics]
-      processors: [transform/drop_process_pids, resource_detection, batch]
+      processors: [transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, resource/service, resource_detection, batch]
       exporters: [otlp_grpc, debug]
   telemetry:
     logs:
