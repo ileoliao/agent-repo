@@ -131,9 +131,10 @@ Cloned VMs keep the template's `/etc/machine-id` unless the image pipeline reset
 
 ## Grafana dashboard
 
-`grafana/centos-host.json`: overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory, log volume by level and the log stream. Import it in Grafana and pick the **Metrics** (Mimir, Prometheus type) and **Logs** (Loki) data sources in the variables at the top; the data source UIDs are not hard-coded.
+`grafana/centos-host.json`: a host info row (environment, datacenter, team, business line, role, host.id, OS), overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory, log volume by level and the log stream. Import it in Grafana and pick the **Metrics** (Mimir, Prometheus type) and **Logs** (Loki) data sources in the variables at the top; the data source UIDs are not hard-coded.
 
-- Hosts are selected by `job` (`SERVICE_NAME`) and `instance` (`service.instance.id` = host name), which every series has, so the dashboard needs **no** resource-attribute promotion in Mimir.
+- Hosts are narrowed down with cascading, multi-select filters on the `HOST_ATTRIBUTES` keys: Environment (`deployment.environment.name`) → Datacenter → Team → Business line → Role → Host. The filters read `target_info`, which carries every resource attribute, so they also work for the attributes that are not promoted (`business_line`, `role`).
+- Panels select series by `job` (`SERVICE_NAME`) and `instance` (`service.instance.id` = host name), which every series has. The dashboard therefore needs **no** resource-attribute promotion in Mimir; promotion only makes ad-hoc queries on those labels cheaper.
 - Metric names follow Mimir's default OTLP translation without unit/type suffixes (`system_cpu_time`, `system_memory_utilization`, `process_memory_usage`). If your Mimir sets `otel_metric_suffixes_enabled: true` (or you use Prometheus' OTLP receiver), names get suffixes (`system_cpu_time_seconds_total`) and the queries need them too.
 - Logs are filtered by `service_instance_id`, `detected_level` and `systemd_unit` (structured metadata), not by index labels.
 
@@ -158,7 +159,7 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 | Metrics | Dummy `veth`, bridge, tmpfs, container mount, loop device | Excluded; xfs on `/dev/loop0` still reported |
 | Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=centos-host` |
 | Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | Metrics arrive under the tenant only; promoted `host_name`, `deployment_environment_name`, `datacenter`, `team`; one `target_info` per host; one series per process name + owner (`sleep` sum = RSS sum) |
-| Grafana | Every dashboard query through Grafana's Mimir and Loki data sources | All 16 return data |
+| Grafana | Every dashboard query and variable through Grafana's Mimir and Loki data sources | All return data; `role=db` lists the host, `role=web` lists none; host info shows the five attributes |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
 
 ## Files
