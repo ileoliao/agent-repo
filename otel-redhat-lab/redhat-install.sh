@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# CentOS Stream / RHEL / Rocky / Alma: install otelcol-contrib as a host agent shipping host metrics and,
+# RHEL and RHEL-compatible distributions: install otelcol-contrib as a host agent shipping host metrics and,
 # optionally, journald / application logs to a central collector over OTLP/HTTP. The agent runs without
 # capabilities in a systemd sandbox. Config = the static fragments in ./agent + per-host values in the
 # EnvironmentFile written here.
 #
 #   read -rs OTEL_TOKEN && export OTEL_TOKEN          # not echoed, not in shell history
-#   sudo -E COLLECTOR_ENDPOINT=https://otel-gw.example:4318 bash centos-install.sh
+#   sudo -E COLLECTOR_ENDPOINT=https://otel-gw.example:4318 bash redhat-install.sh
 # sudo logs its command line to the journal (shipped by this agent!) and also the variables given with
 # --preserve-env=...; with -E the environment is not logged. Never put the token on the sudo command line.
 #
@@ -110,7 +110,7 @@ done
 PROCESS_NAMES_JSON="$(to_json "${names[@]}")"
 set -f; LOG_PATHS_JSON="$(to_json "${paths[@]}")"; set +f
 {
-  echo "# Managed by centos-install.sh"
+  echo "# Managed by redhat-install.sh"
   echo "OTELCOL_OPTIONS=\"${opts}\""
   echo "COLLECTOR_ENDPOINT=${COLLECTOR_ENDPOINT}"
   echo "SERVICE_NAME=${SERVICE_NAME}"
@@ -148,7 +148,7 @@ install -d -m 0755 "$(dirname "$DROPIN")"
 journal_group=""
 [[ "$SYSTEM_LOGS" != "true" ]] || journal_group="SupplementaryGroups=systemd-journal"
 cat > "$DROPIN" << UNIT
-# Managed by centos-install.sh. No capabilities: file permissions already keep the agent user away from
+# Managed by redhat-install.sh. No capabilities: file permissions already keep the agent user away from
 # secrets (shadow, SSH keys, other processes' memory). The rest limits privilege escalation and kernel
 # attack surface (setuid binaries, user namespaces) and keeps writes to the storage directory.
 [Service]

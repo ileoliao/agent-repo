@@ -1,8 +1,8 @@
-# CentOS / RHEL OpenTelemetry host agent
+# Red Hat (RHEL) OpenTelemetry host agent
 
-Install **otelcol-contrib** on CentOS Stream / RHEL / Rocky / Alma hosts to ship **host metrics**, **system logs (journald)** and optional **application log files** over **OTLP/HTTP** to a central OpenTelemetry Collector (Mimir for metrics, Loki for logs). The agent runs **without capabilities** in a systemd sandbox.
+Install **otelcol-contrib** on Red Hat Enterprise Linux and RHEL-compatible hosts to ship **host metrics**, **system logs (journald)** and optional **application log files** over **OTLP/HTTP** to a central OpenTelemetry Collector (Mimir for metrics, Loki for logs). The agent runs **without capabilities** in a systemd sandbox.
 
-Verified with **otelcol-contrib 0.164.0** (linux amd64) on CentOS Stream 9 with SELinux `Enforcing`.
+Verified with **otelcol-contrib 0.164.0** (linux amd64) on a RHEL 9-family VM with SELinux `Enforcing`.
 
 ```
 host: otelcol-contrib (user otelcol-contrib, no capabilities, systemd sandbox)
@@ -21,7 +21,7 @@ sudo -E COLLECTOR_ENDPOINT=https://otel-gw.corp.example:4318 \
   HOST_ATTRIBUTES="deployment.environment.name=prod,datacenter=sh1,team=infra,business_line=payments,role=db" \
   PROCESS_NAMES="sshd nginx" \
   LOG_PATHS="/var/log/nginx/*.log" \
-  bash centos-install.sh
+  bash redhat-install.sh
 ```
 
 Run it from this folder: the script installs the config fragments in `agent/`.
@@ -90,7 +90,7 @@ Real filesystems on loop or LVM devices are still reported. The central collecto
 
 The service runs as `otelcol-contrib` with **no capabilities**. The installer writes one drop-in, `/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf`: empty `CapabilityBoundingSet`, `SupplementaryGroups=systemd-journal` (only with `SYSTEM_LOGS=true`), `NoNewPrivileges`, `ProtectSystem=strict` with `ReadWritePaths=/var/lib/otelcol-contrib/file_storage`, `ProtectHome`, `PrivateTmp`, `RestrictNamespaces`, `LockPersonality`, `SystemCallArchitectures=native`.
 
-Without capabilities, plain file permissions already keep the agent user away from secrets: verified on CentOS Stream 9, it cannot read `/etc/shadow`, SSH host keys, sudoers, `/root` or `/proc/<pid>/{environ,mem}` of other processes, even outside the sandbox. The sandbox therefore only adds what file permissions do not cover: no privilege escalation through setuid binaries (`NoNewPrivileges`), no user namespaces (a common kernel-exploit entry point), no writes outside the storage directory, and hidden home directories (some hosts have world-readable ones). Running agent: `CapEff=0`, `NoNewPrivs=1`; `systemd-analyze security` 4.9 OK (7.2 MEDIUM without the drop-in). Why no capabilities:
+Without capabilities, plain file permissions already keep the agent user away from secrets: verified on a RHEL 9-family VM, it cannot read `/etc/shadow`, SSH host keys, sudoers, `/root` or `/proc/<pid>/{environ,mem}` of other processes, even outside the sandbox. The sandbox therefore only adds what file permissions do not cover: no privilege escalation through setuid binaries (`NoNewPrivileges`), no user namespaces (a common kernel-exploit entry point), no writes outside the storage directory, and hidden home directories (some hosts have world-readable ones). Running agent: `CapEff=0`, `NoNewPrivs=1`; `systemd-analyze security` 4.9 OK (7.2 MEDIUM without the drop-in). Why no capabilities:
 
 | Capability | Would give | |
 |---|---|---|
@@ -125,12 +125,12 @@ Cloned VMs keep the template's `/etc/machine-id` unless the image pipeline reset
 
 ## Grafana dashboards
 
-Two dashboards that link to each other like tabs (a dashboard link on the `centos-host` tag; switching keeps the time range and every filter):
+Two dashboards that link to each other like tabs (a dashboard link on the `redhat-host` tag; switching keeps the time range and every filter):
 
 | File | Title | Content |
 |---|---|---|
-| `grafana/centos-host-metrics.json` | CentOS host · Metrics | host info, overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory |
-| `grafana/centos-host-logs.json` | CentOS host · Logs | host info, log volume by level, log stream (filters: level, systemd unit, regex search) |
+| `grafana/redhat-host-metrics.json` | Red Hat host · Metrics | host info, overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory |
+| `grafana/redhat-host-logs.json` | Red Hat host · Logs | host info, log volume by level, log stream (filters: level, systemd unit, regex search) |
 
 Import both (Dashboards → New → Import). Grafana asks once for the **Mimir** (Prometheus type) and **Loki** data sources and writes their UIDs into the panels; there is no data source selector on the dashboards. For file provisioning, replace `${DS_MIMIR}` / `${DS_LOKI}` with your data source UIDs first.
 
@@ -141,7 +141,7 @@ Import both (Dashboards → New → Import). Grafana asks once for the **Mimir**
 
 ## Verification
 
-CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164.0; test collector with OTLP/HTTP + TLS (test CA in the system trust store) + basic auth; local collector → single-instance Mimir 2.16 + Loki 3.5, Grafana 11.4.
+RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164.0; test collector with OTLP/HTTP + TLS (test CA in the system trust store) + basic auth; local collector → single-instance Mimir 2.16 + Loki 3.5, Grafana 11.4.
 
 | Area | Check | Result |
 |---|---|---|
@@ -167,6 +167,6 @@ CentOS Stream 9 VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.1
 
 | Path | Description |
 |---|---|
-| `centos-install.sh` | installer |
+| `redhat-install.sh` | installer |
 | `agent/*.yaml` | agent config fragments |
-| `grafana/centos-host-metrics.json`, `grafana/centos-host-logs.json` | Grafana dashboards (Mimir + Loki) |
+| `grafana/redhat-host-metrics.json`, `grafana/redhat-host-logs.json` | Grafana dashboards (Mimir + Loki) |

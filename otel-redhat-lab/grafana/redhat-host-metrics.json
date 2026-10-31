@@ -23,17 +23,17 @@
       "version": "1.0.0"
     }
   ],
-  "uid": "centos-host",
-  "title": "CentOS host \u00b7 Metrics",
+  "uid": "redhat-host",
+  "title": "Red Hat host \u00b7 Metrics",
   "tags": [
-    "centos",
+    "redhat",
     "otel",
-    "centos-host"
+    "redhat-host"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
-  "description": "Host agent from otel-centos-lab: metrics in Mimir (default OTLP names, no suffixes). Logs: 'CentOS host \u00b7 Logs' (link at the top).",
+  "description": "Host agent from otel-redhat-lab: metrics in Mimir (default OTLP names, no suffixes). Logs: 'Red Hat host \u00b7 Logs' (link at the top).",
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -960,10 +960,10 @@
   },
   "links": [
     {
-      "title": "CentOS host",
+      "title": "Red Hat host",
       "type": "dashboards",
       "tags": [
-        "centos-host"
+        "redhat-host"
       ],
       "asDropdown": false,
       "includeVars": true,

@@ -37,17 +37,17 @@
       "version": "1.0.0"
     }
   ],
-  "uid": "centos-host-logs",
-  "title": "CentOS host \u00b7 Logs",
+  "uid": "redhat-host-logs",
+  "title": "Red Hat host \u00b7 Logs",
   "tags": [
-    "centos",
+    "redhat",
     "otel",
-    "centos-host"
+    "redhat-host"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
-  "description": "Host agent from otel-centos-lab: system logs (journald) and application log files in Loki; host filters use labels on Mimir series.",
+  "description": "Host agent from otel-redhat-lab: system logs (journald) and application log files in Loki; host filters use labels on Mimir series.",
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -451,10 +451,10 @@
   },
   "links": [
     {
-      "title": "CentOS host",
+      "title": "Red Hat host",
       "type": "dashboards",
       "tags": [
-        "centos-host"
+        "redhat-host"
       ],
       "asDropdown": false,
       "includeVars": true,
