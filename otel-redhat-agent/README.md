@@ -200,6 +200,16 @@ RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164
 | Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | `target_info` dropped by relabeling and **no** attribute promotion, as in production; metrics arrive under the tenant only with `host_name`, `deployment_environment_name`, `team`, `business_line`, `role`, `region` as labels from the agent (identical with promotion configured too, no conflict); one series per process name + owner (`sleep` sum = RSS sum) |
 | Grafana | Every query and variable of both dashboards through Grafana's Mimir and Loki data sources, with `target_info` dropped | All return data; `role=db` / `business_line=payments` list the host, `role=web` lists none; the link to the other dashboard carries time range and filters |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
+| End to end | Clean host, install from `main` with a dev profile (`dev-app-hk.env`), then switched to a prod profile (`prod-db-hk.env`) without passing the token | Both: service active, 0 restarts; labels follow the profile (`deployment_environment_name`, `role`, `region`); process metrics, journald and file logs in Mimir/Loki; both dashboards show data; token kept on the switch |
+| Upgrade | `OTEL_VERSION` 0.164.0 → 0.163.2 → 0.164.0 via re-run | dnf downgrades / upgrades, config unchanged, 0 restarts; a version that does not exist (404) exits 1 with the agent unchanged |
+| Resources | Normal load, 2 vCPU (2018 laptop CPU), 30 s interval | Host metrics 0.12% of a core, + processes 0.17%, + journald 0.42%, + file logs 0.66%; ~55–75 MiB anonymous memory |
+| Resources | `AGENT_CPU_QUOTA` / `AGENT_MEMORY_MAX`: `0%`, `50`, `300K`, `100M`; 300M/50%, 600M/150%, 1G/300% | Invalid values refused; `MemoryHigh`, `GOMEMLIMIT`, `GOMAXPROCS` and the agent's `limit_mib` match the derived values; an `override.conf` survives a re-run |
+| Resources | Log flood 10,000 lines/s | 6–10% of a core (≤ 21% in a 5 s window), host ≥ 86% idle, 0 restarts |
+| Resources | Flood with the collector overloaded (Loki 503) and then stopped, before `retry_on_failure` | Memory levelled off at ~150 MiB (cgroup ≤ 214M < `MemoryHigh`): `memory_limiter` refused and data was dropped; queue drained ~10 s after recovery |
+| Resources | `MemoryMax` forced to 90M under flood | OOM kill + restart every ~5 s, host unaffected; normal again once restored |
+| Resilience | Collector down 150 s while 182,900 file lines and 2,000 journald lines were written (`retry_on_failure`) | All arrived in Loki; 0 refused / failed in the agent; ≤ 154 MiB, ≤ 23% of a core while catching up |
+| Resilience | Known gap (not tested, accepted): host reboot while the collector is down | With the default volatile journal, journald lines not shipped yet are lost; the complete copy stays on disk in rsyslog's `/var/log/messages`, `secure` (~4 weeks) |
+| Central collector | Backlog flushed after an outage through a collector with an unbounded batch | Batches up to ~7 MB exceeded Loki's 4 MiB gRPC limit and were dropped there; fixed with `send_batch_max_size: 2048` (see [Logs](#logs)) |
 
 ## Files
 
