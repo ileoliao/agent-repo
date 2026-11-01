@@ -51,6 +51,7 @@ sudo SYSTEM_LOGS=false bash otel-redhat-agent/redhat-install.sh otel-redhat-agen
 | `HOST_ATTRIBUTES` | none | `key=value,…` resource attributes for this host (see [Host identity](#host-identity-and-attributes-mimir)) |
 | `SERVICE_NAME` | `redhat-host` | `service.name` → `job` in Mimir, `service_name` in Loki |
 | `PROCESS_ALLOW_REGEX` | none | **Preferred.** Go (RE2) regex on the executable name; only matching processes are exported (unanchored: `^(sshd\|chronyd\|mysqld)$` for exact names, `.*` = every process, fully open). No whitespace, quotes or backslash (use `[.]` for a dot). Neither this nor `PROCESS_NAMES` set = no per-process metrics |
+| `PROCESS_EXCLUDE_REGEX` | empty (off) | Optional blacklist, same syntax and restrictions as `PROCESS_ALLOW_REGEX`: userland process names to drop **after** the allowlist (`.*` allow + `^(sshd-session)$` exclude = everything except that). Empty = no extra filter. Kernel threads are not handled here: they are always excluded at scrape time. Ignored (with a warning) when per-process metrics are off |
 | `PROCESS_NAMES` | none | Legacy, deprecated: exact names (space/comma-separated), converted to `^(name1\|name2)$` when `PROCESS_ALLOW_REGEX` is unset; ignored (with a warning) when both are set |
 | `KEEP_PROCESS_PIDS` | `false` | `true` = one series per pid instead of per name+owner (debugging only) |
 | `SYSTEM_LOGS` | `true` | System logs from journald, priority `info` and above |
@@ -80,6 +81,7 @@ What the script does:
 | `agent/agent.yaml` | always | host metrics with cardinality guards, host identity, `otlp_http` exporter |
 | `agent/auth.yaml` | `OTEL_TOKEN` set | `Authorization: Basic ${env:OTEL_TOKEN}` |
 | `agent/processes.yaml` | `PROCESS_ALLOW_REGEX` (or `PROCESS_NAMES`) set | per-process CPU/memory: scrape all but kernel threads, regex allowlist, same-name processes summed |
+| `agent/processes-exclude.yaml` | `PROCESS_EXCLUDE_REGEX` non-empty | overlay: `filter/process_exclude` after the allowlist (and the full pipeline list, which must stay in sync with `processes.yaml`) |
 | `agent/logs-journald.yaml` | `SYSTEM_LOGS=true` | journald receiver + severity mapping |
 | `agent/logs-files.yaml` | `LOG_PATHS` set | `file_log` receiver |
 
@@ -100,6 +102,15 @@ The agent **scrapes broadly and filters at export time**: the `process` scraper 
 
 - `PROCESS_ALLOW_REGEX` is the preferred setting, e.g. `^(sshd|chronyd|mysqld)$`. It is **unanchored** (`sshd` also matches `sshd-keygen`); anchor it for exact names. It is validated by `otelcol-contrib validate` in the installer (an invalid regex exits 1 before the running agent is touched).
 - `PROCESS_NAMES` (legacy, exact names) is still accepted: the installer converts it to `^(a|b)$` (`.` and `+` become `[.]`, `[+]`) and prints the result. If both are set, `PROCESS_ALLOW_REGEX` wins.
+
+**Blacklist (optional, `PROCESS_EXCLUDE_REGEX`).** The allowlist says what to keep; the blacklist says what to explicitly drop. Order: `filter/process_allow` → `filter/process_exclude` → identity / sum / labels. It is **empty by default** and only when non-empty does the installer load `agent/processes-exclude.yaml`. Kernel threads stay excluded at scrape time by the `exclude` list in `agent/processes.yaml` whatever these two variables say; the blacklist is an overlay for userland names you want dropped (typically with a wide allowlist such as `.*`). Both regexes are changed in the profile and applied by re-running `redhat-install.sh` (validated with `otelcol-contrib validate` first), not by hand-editing `/etc/otelcol-contrib/otelcol-contrib.conf`.
+
+| `PROCESS_ALLOW_REGEX` | `PROCESS_EXCLUDE_REGEX` | Exported |
+|---|---|---|
+| `^(sshd\|mysqld)$` | empty | `sshd`, `mysqld` |
+| `.*` | empty | every non-kernel process |
+| `.*` | `^(sshd-session\|bash)$` | every non-kernel process except `sshd-session` and `bash` |
+| unset | any | nothing (per-process metrics off, exclude ignored) |
 
 Exported: `process.cpu.time`, `process.cpu.utilization`, `process.memory.usage`, `process.memory.virtual`. `process.disk.io` is off: reading other users' `/proc/<pid>/io` needs `CAP_SYS_PTRACE`, which would let the agent read any process's memory.
 
@@ -201,6 +212,7 @@ RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164
 | Metrics | Three `sleep` processes, same owner | One series = sum of their RSS |
 | Metrics | `KEEP_PROCESS_PIDS=true` | One series per pid |
 | Metrics | `PROCESS_ALLOW_REGEX=^(sleep\|bash)$` on a host running ~30 processes; then `.*`; invalid regex; `PROCESS_NAMES` conversion (`php-fpm8.2`, `g++`) | Only `sleep` / `bash` series exported (`system.*` untouched, no pid / command line); `.*` exports all non-kernel processes; invalid regex fails `otelcol-contrib validate` (0.164.0); converted regexes load |
+| Metrics | `PROCESS_ALLOW_REGEX=^(sleep\|bash\|sh)$` with `PROCESS_EXCLUDE_REGEX=^(sleep)$` vs empty; bad exclude regex; effective pipeline order | With exclude: only `bash`/`sh`; empty: `sleep` too; bad regex fails `otelcol-contrib validate`; order `memory_limiter`, `filter/process_allow`, `filter/process_exclude`, `transform/process_identity`, … (0.164.0, local run) |
 | Metrics | `process.disk.io`, `process.command_line` | Not exported |
 | Metrics | Dummy `veth`, bridge, tmpfs, container mount, loop device | Excluded; xfs on `/dev/loop0` still reported |
 | Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=redhat-host` |

@@ -24,6 +24,10 @@
 #                        scrapes all processes except kernel threads and exports only the matches; '.*' = all.
 #                        Unanchored (use ^...$ for exact names), no whitespace, quotes or backslash.
 #                        Neither this nor PROCESS_NAMES set = no per-process metrics
+#   PROCESS_EXCLUDE_REGEX optional blacklist, same rules: process.executable.name matching it is dropped after
+#                        the PROCESS_ALLOW_REGEX filter (e.g. '^(sshd-session|mysqld_safe)$'). Default empty = off.
+#                        Kernel threads are always excluded at scrape time; this is only for userland names.
+#                        Needs PROCESS_ALLOW_REGEX / PROCESS_NAMES (else process metrics are off)
 #   PROCESS_NAMES        legacy: "sshd nginx" (exact names, space/comma-separated); converted to
 #                        ^(sshd|nginx)$ when PROCESS_ALLOW_REGEX is unset (PROCESS_ALLOW_REGEX wins)
 #   KEEP_PROCESS_PIDS    default false; true = one series per pid instead of per name+owner (debugging)
@@ -37,7 +41,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 # Profile values fill in whatever the command line did not set. Parsed, not sourced: a profile is data.
 PROFILE="${1:-}"
-PROFILE_KEYS=" COLLECTOR_ENDPOINT REPO_URL OTEL_VERSION HOST_ATTRIBUTES SERVICE_NAME PROCESS_ALLOW_REGEX PROCESS_NAMES KEEP_PROCESS_PIDS SYSTEM_LOGS LOG_PATHS AGENT_CPU_QUOTA AGENT_MEMORY_MAX "
+PROFILE_KEYS=" COLLECTOR_ENDPOINT REPO_URL OTEL_VERSION HOST_ATTRIBUTES SERVICE_NAME PROCESS_ALLOW_REGEX PROCESS_EXCLUDE_REGEX PROCESS_NAMES KEEP_PROCESS_PIDS SYSTEM_LOGS LOG_PATHS AGENT_CPU_QUOTA AGENT_MEMORY_MAX "
 if [[ -n "$PROFILE" ]]; then
   [[ -f "$PROFILE" ]] || die "profile not found: ${PROFILE}"
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -57,6 +61,7 @@ OTEL_VERSION="${OTEL_VERSION:-0.164.0}"
 HOST_ATTRIBUTES="${HOST_ATTRIBUTES:-}"
 SERVICE_NAME="${SERVICE_NAME:-redhat-host}"
 PROCESS_ALLOW_REGEX="${PROCESS_ALLOW_REGEX:-}"
+PROCESS_EXCLUDE_REGEX="${PROCESS_EXCLUDE_REGEX:-}"
 PROCESS_NAMES="${PROCESS_NAMES:-}"
 KEEP_PROCESS_PIDS="${KEEP_PROCESS_PIDS:-false}"
 SYSTEM_LOGS="${SYSTEM_LOGS:-true}"
@@ -81,7 +86,7 @@ if [[ -z "$OTEL_TOKEN" && -f "$CONF" ]]; then
 fi
 
 # ---------- inputs (values end up in a systemd EnvironmentFile: no whitespace, quotes or control chars)
-for v in COLLECTOR_ENDPOINT OTEL_TOKEN REPO_URL OTEL_VERSION SERVICE_NAME HOST_ATTRIBUTES PROCESS_ALLOW_REGEX; do
+for v in COLLECTOR_ENDPOINT OTEL_TOKEN REPO_URL OTEL_VERSION SERVICE_NAME HOST_ATTRIBUTES PROCESS_ALLOW_REGEX PROCESS_EXCLUDE_REGEX; do
   [[ ! "${!v}" =~ [[:space:][:cntrl:]\'\"] ]] || die "${v} must not contain whitespace, quotes or control characters"
 done
 [[ "$COLLECTOR_ENDPOINT" == https://* ]] || die "COLLECTOR_ENDPOINT must be https://host:port (got: '${COLLECTOR_ENDPOINT}')"
@@ -111,7 +116,9 @@ for n in "${names[@]}"; do
   [[ "$n" =~ ^[A-Za-z0-9._+-]{1,15}$ ]] || die "PROCESS_NAMES entry '${n}' is not a process name (comm, max 15 chars)"
 done
 # The regex is embedded in an OTTL string inside the config: a backslash or quote would break it
-[[ "$PROCESS_ALLOW_REGEX" != *\\* ]] || die "PROCESS_ALLOW_REGEX must not contain a backslash (use [.] for a literal dot)"
+for v in PROCESS_ALLOW_REGEX PROCESS_EXCLUDE_REGEX; do
+  [[ "${!v}" != *\\* ]] || die "${v} must not contain a backslash (use [.] for a literal dot)"
+done
 if [[ -n "$PROCESS_ALLOW_REGEX" ]]; then
   [[ "${#names[@]}" -eq 0 ]] || echo "WARNING: PROCESS_NAMES is ignored, PROCESS_ALLOW_REGEX takes precedence"
 elif [[ "${#names[@]}" -gt 0 ]]; then
@@ -120,6 +127,10 @@ elif [[ "${#names[@]}" -gt 0 ]]; then
   for n in "${names[@]}"; do alt+="${alt:+|}${n//./[.]}"; done
   PROCESS_ALLOW_REGEX="^(${alt//+/[+]})\$"
   echo "PROCESS_NAMES is deprecated; using PROCESS_ALLOW_REGEX=${PROCESS_ALLOW_REGEX}"
+fi
+if [[ -n "$PROCESS_EXCLUDE_REGEX" && -z "$PROCESS_ALLOW_REGEX" ]]; then
+  echo "WARNING: PROCESS_EXCLUDE_REGEX is ignored: per-process metrics are off without PROCESS_ALLOW_REGEX"
+  PROCESS_EXCLUDE_REGEX=""
 fi
 paths=()
 set -f   # globs are matched by the collector at runtime, not expanded here
@@ -153,6 +164,7 @@ install -d -m 0750 -g otelcol-contrib "$WORK" "$STAGE"   # the validate step run
 fragments=(agent.yaml)
 [[ -n "$OTEL_TOKEN" ]] && fragments+=(auth.yaml)
 [[ -n "$PROCESS_ALLOW_REGEX" ]] && fragments+=(processes.yaml)
+[[ -n "$PROCESS_EXCLUDE_REGEX" ]] && fragments+=(processes-exclude.yaml)
 [[ "$SYSTEM_LOGS" == "true" ]] && fragments+=(logs-journald.yaml)
 [[ "${#paths[@]}" -gt 0 ]] && fragments+=(logs-files.yaml)
 opts=""
@@ -169,6 +181,7 @@ set -f; LOG_PATHS_JSON="$(to_json "${paths[@]}")"; set +f
   echo "SERVICE_NAME=${SERVICE_NAME}"
   echo "KEEP_PROCESS_PIDS=${KEEP_PROCESS_PIDS}"
   [[ -z "$PROCESS_ALLOW_REGEX" ]] || echo "PROCESS_ALLOW_REGEX=${PROCESS_ALLOW_REGEX}"
+  [[ -z "$PROCESS_EXCLUDE_REGEX" ]] || echo "PROCESS_EXCLUDE_REGEX=${PROCESS_EXCLUDE_REGEX}"
   echo "LOG_PATHS='${LOG_PATHS_JSON}'"
   [[ -z "$HOST_ATTRIBUTES" ]] || echo "OTEL_RESOURCE_ATTRIBUTES=${HOST_ATTRIBUTES}"
   [[ -z "$OTEL_TOKEN" ]] || echo "OTEL_TOKEN=${OTEL_TOKEN}"
@@ -178,7 +191,7 @@ chmod 0640 "${STAGE}/otelcol-contrib.conf"
 
 # Variables passed as prefix assignments, so the token is not in argv
 COLLECTOR_ENDPOINT="$COLLECTOR_ENDPOINT" SERVICE_NAME="$SERVICE_NAME" KEEP_PROCESS_PIDS="$KEEP_PROCESS_PIDS" \
-  PROCESS_ALLOW_REGEX="$PROCESS_ALLOW_REGEX" LOG_PATHS="$LOG_PATHS_JSON" OTEL_TOKEN="$OTEL_TOKEN" \
+  PROCESS_ALLOW_REGEX="$PROCESS_ALLOW_REGEX" PROCESS_EXCLUDE_REGEX="$PROCESS_EXCLUDE_REGEX" LOG_PATHS="$LOG_PATHS_JSON" OTEL_TOKEN="$OTEL_TOKEN" \
   OTEL_RESOURCE_ATTRIBUTES="$HOST_ATTRIBUTES" MEMORY_LIMIT_MIB="$limiter_mib" \
   runuser -u otelcol-contrib -- /usr/bin/otelcol-contrib validate ${opts//${ETC}/${STAGE}} \
   || die "generated config failed otelcol-contrib validate; the running agent was not changed"

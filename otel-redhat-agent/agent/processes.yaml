@@ -1,7 +1,10 @@
 # Per-process CPU and memory: scrape broadly, export only what PROCESS_ALLOW_REGEX matches.
 # The scraper reads every process except kernel noise (exclude below); filter/process_allow then drops, before
 # any identity/sum/transform work, every process.* metric whose process.executable.name does not match the
-# regex. PROCESS_ALLOW_REGEX='.*' exports everything (reversible: widen the regex, no scrape config change).
+# regex (whitelist: what to keep). Kernel threads are always dropped at scrape time (exclude below), whatever
+# the regexes say. An optional blacklist for userland names, PROCESS_EXCLUDE_REGEX, is the overlay
+# processes-exclude.yaml (filter/process_exclude, after the allowlist; keep its pipeline list in sync with this one).
+# PROCESS_ALLOW_REGEX='.*' exports everything (reversible: widen the regex, no scrape config change).
 # redhat-install.sh writes PROCESS_ALLOW_REGEX (preferred) or builds it from the legacy PROCESS_NAMES.
 # The agent has no capabilities, so other users' /proc/<pid>/{exe,io} are unreadable: mute those
 # errors and leave process.disk.io off (it would need CAP_SYS_PTRACE = read any process's memory).
