@@ -11,6 +11,12 @@ receivers:
     start_at: end
     poll_interval: 1s        # default 200ms costs CPU for no benefit here
     storage: file_storage    # offsets survive agent/host restarts
+    # Back-pressure (collector down or overloaded, memory_limiter refusing): stop reading and retry instead
+    # of dropping; the file itself is the buffer, until logrotate removes it
+    retry_on_failure:
+      enabled: true
+      max_interval: 30s
+      max_elapsed_time: 0    # never give up on a retryable error
     include_file_path: true
     include_file_name: true
 

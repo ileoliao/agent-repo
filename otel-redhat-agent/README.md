@@ -90,7 +90,8 @@ The service loads them with `OTELCOL_OPTIONS="--config=… --config=…"` (maps 
 - **Application log files** must be readable by user `otelcol-contrib` (group or ACL, set by the application owner); the installer warns about matching files it cannot read. Paths under `/home`, `/root`, `/run/user` are rejected (hidden by the sandbox). Globs are matched at runtime; rotated files (`*.gz`, `*.[0-9]`) are excluded.
 - Both receivers persist their read position (journald cursor, file offsets) in `/var/lib/otelcol-contrib/file_storage`, so lines written while the agent is stopped are collected afterwards.
 - **Volatile journal**: without `/var/log/journal` the journal lives in `/run/log/journal` and is lost at reboot, including lines not shipped yet. Make it persistent in the host baseline; the installer does not change journald settings.
-- Collector outage: the exporter retries for up to 5 minutes per batch (in-memory queue); a 90 s outage was replayed without gaps.
+- **Collector outage or back-pressure**: the exporter queues in memory and retries; when the queue or the `memory_limiter` refuses data, both log receivers stop reading and retry (`retry_on_failure`, no time limit) instead of dropping, so the journal and the log files themselves are the buffer. That buffer lasts until logrotate removes a file (rotated `*.[0-9]`/`*.gz` names are not read) or, with a volatile journal, until reboot. Tested: collector down for 150 s while 182,900 file lines and 2,000 journald lines were written: all of them arrived in Loki, nothing refused or dropped by the agent, memory ≤ 154 MiB anonymous, CPU ≤ 23% of a core while catching up.
+- The **central collector** must cope with that catch-up burst: bound its batches (`send_batch_max_size`), otherwise a flushed backlog can exceed Loki's 4 MiB gRPC message limit and be dropped there (seen in the lab with an unbounded batch).
 
 ## Per-process metrics
 
