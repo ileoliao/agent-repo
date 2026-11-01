@@ -24,13 +24,15 @@
 #   KEEP_PROCESS_PIDS    default false; true = one series per pid instead of per name+owner (debugging)
 #   SYSTEM_LOGS          default true; journald, priority info and above
 #   LOG_PATHS            "/var/log/myapp/*.log" application log files; unset = none
+#   AGENT_CPU_QUOTA      default 50%; systemd CPUQuota (100% = one core)
+#   AGENT_MEMORY_MAX     default 300M; systemd MemoryMax, the other memory limits are derived from it
 set -euo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # Profile values fill in whatever the command line did not set. Parsed, not sourced: a profile is data.
 PROFILE="${1:-}"
-PROFILE_KEYS=" COLLECTOR_ENDPOINT REPO_URL OTEL_VERSION HOST_ATTRIBUTES SERVICE_NAME PROCESS_NAMES KEEP_PROCESS_PIDS SYSTEM_LOGS LOG_PATHS "
+PROFILE_KEYS=" COLLECTOR_ENDPOINT REPO_URL OTEL_VERSION HOST_ATTRIBUTES SERVICE_NAME PROCESS_NAMES KEEP_PROCESS_PIDS SYSTEM_LOGS LOG_PATHS AGENT_CPU_QUOTA AGENT_MEMORY_MAX "
 if [[ -n "$PROFILE" ]]; then
   [[ -f "$PROFILE" ]] || die "profile not found: ${PROFILE}"
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -53,6 +55,8 @@ PROCESS_NAMES="${PROCESS_NAMES:-}"
 KEEP_PROCESS_PIDS="${KEEP_PROCESS_PIDS:-false}"
 SYSTEM_LOGS="${SYSTEM_LOGS:-true}"
 LOG_PATHS="${LOG_PATHS:-}"
+AGENT_CPU_QUOTA="${AGENT_CPU_QUOTA:-50%}"
+AGENT_MEMORY_MAX="${AGENT_MEMORY_MAX:-300M}"
 
 SRC="$(cd "$(dirname "$0")" && pwd)/agent"
 ETC=/etc/otelcol-contrib
@@ -80,6 +84,15 @@ case "$REPO_URL" in ""|https://*|file:///*) ;; *) die "REPO_URL must be https://
 for v in KEEP_PROCESS_PIDS SYSTEM_LOGS; do
   case "${!v}" in true|false) ;; *) die "${v} must be true or false" ;; esac
 done
+
+[[ "$AGENT_CPU_QUOTA" =~ ^[1-9][0-9]{0,3}%$ ]] || die "AGENT_CPU_QUOTA must be a percentage such as 50% (100% = one core)"
+[[ "$AGENT_MEMORY_MAX" =~ ^([1-9][0-9]*)([MG])$ ]] || die "AGENT_MEMORY_MAX must be like 300M or 1G"
+mem_mib="${BASH_REMATCH[1]}"
+[[ "${BASH_REMATCH[2]}" == M ]] || mem_mib=$(( mem_mib * 1024 ))
+(( mem_mib >= 128 )) || die "AGENT_MEMORY_MAX must be at least 128M"
+limiter_mib=$(( mem_mib * 55 / 100 ))
+gomaxprocs=$(( (${AGENT_CPU_QUOTA%\%} + 99) / 100 ))   # cores the quota allows, rounded up, at least 2
+(( gomaxprocs >= 2 )) || gomaxprocs=2
 
 kv='[A-Za-z][A-Za-z0-9._-]*=[A-Za-z0-9._/:-]+'
 [[ -z "$HOST_ATTRIBUTES" || "$HOST_ATTRIBUTES" =~ ^${kv}(,${kv})*$ ]] || die "HOST_ATTRIBUTES must be key=value,key=value"
@@ -150,7 +163,7 @@ chmod 0640 "${STAGE}/otelcol-contrib.conf"
 # Variables passed as prefix assignments, so the token is not in argv
 COLLECTOR_ENDPOINT="$COLLECTOR_ENDPOINT" SERVICE_NAME="$SERVICE_NAME" KEEP_PROCESS_PIDS="$KEEP_PROCESS_PIDS" \
   PROCESS_NAMES="$PROCESS_NAMES_JSON" LOG_PATHS="$LOG_PATHS_JSON" OTEL_TOKEN="$OTEL_TOKEN" \
-  OTEL_RESOURCE_ATTRIBUTES="$HOST_ATTRIBUTES" \
+  OTEL_RESOURCE_ATTRIBUTES="$HOST_ATTRIBUTES" MEMORY_LIMIT_MIB="$limiter_mib" \
   runuser -u otelcol-contrib -- /usr/bin/otelcol-contrib validate ${opts//${ETC}/${STAGE}} \
   || die "generated config failed otelcol-contrib validate; the running agent was not changed"
 
@@ -186,6 +199,15 @@ PrivateTmp=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 SystemCallArchitectures=native
+# Resource ceiling (AGENT_CPU_QUOTA, AGENT_MEMORY_MAX): the agent must never compete with the workload.
+# Go sizes its threads and GC workers by core count, so cap them. memory_limiter (MEMORY_LIMIT_MIB) <
+# GOMEMLIMIT < MemoryHigh < MemoryMax (OOM kill + restart instead of host pressure); an override.conf that
+# changes MemoryMax should scale these too. Typical use: < 1% of a core, ~75 MiB.
+CPUQuota=${AGENT_CPU_QUOTA}
+Nice=10
+MemoryHigh=$(( mem_mib * 85 / 100 ))M
+MemoryMax=${mem_mib}M
+Environment=GOMAXPROCS=${gomaxprocs} GOMEMLIMIT=$(( mem_mib * 60 / 100 ))MiB MEMORY_LIMIT_MIB=${limiter_mib}
 UNIT
 
 # Application log files the agent cannot read are skipped silently by file_log: say so now

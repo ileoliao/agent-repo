@@ -54,6 +54,8 @@ sudo SYSTEM_LOGS=false bash otel-redhat-agent/redhat-install.sh otel-redhat-agen
 | `KEEP_PROCESS_PIDS` | `false` | `true` = one series per pid instead of per name+owner (debugging only) |
 | `SYSTEM_LOGS` | `true` | System logs from journald, priority `info` and above |
 | `LOG_PATHS` | none | Application log files (absolute paths / globs); none = no file logs |
+| `AGENT_CPU_QUOTA` | `50%` | CPU ceiling (`100%` = one core); see [Resource ceiling](#resource-ceiling) |
+| `AGENT_MEMORY_MAX` | `300M` | Memory ceiling (`M`/`G`, at least `128M`); the other memory limits are derived from it |
 
 What the script does:
 
@@ -88,7 +90,8 @@ The service loads them with `OTELCOL_OPTIONS="--config=… --config=…"` (maps 
 - **Application log files** must be readable by user `otelcol-contrib` (group or ACL, set by the application owner); the installer warns about matching files it cannot read. Paths under `/home`, `/root`, `/run/user` are rejected (hidden by the sandbox). Globs are matched at runtime; rotated files (`*.gz`, `*.[0-9]`) are excluded.
 - Both receivers persist their read position (journald cursor, file offsets) in `/var/lib/otelcol-contrib/file_storage`, so lines written while the agent is stopped are collected afterwards.
 - **Volatile journal**: without `/var/log/journal` the journal lives in `/run/log/journal` and is lost at reboot, including lines not shipped yet. Make it persistent in the host baseline; the installer does not change journald settings.
-- Collector outage: the exporter retries for up to 5 minutes per batch (in-memory queue); a 90 s outage was replayed without gaps.
+- **Collector outage or back-pressure**: the exporter queues in memory and retries; when the queue or the `memory_limiter` refuses data, both log receivers stop reading and retry (`retry_on_failure`, no time limit) instead of dropping, so the journal and the log files themselves are the buffer. That buffer lasts until logrotate removes a file (rotated `*.[0-9]`/`*.gz` names are not read) or, with a volatile journal, until reboot. Tested: collector down for 150 s while 182,900 file lines and 2,000 journald lines were written: all of them arrived in Loki, nothing refused or dropped by the agent, memory ≤ 154 MiB anonymous, CPU ≤ 23% of a core while catching up.
+- The **central collector** must cope with that catch-up burst: bound its batches (`send_batch_max_size`), otherwise a flushed backlog can exceed Loki's 4 MiB gRPC message limit and be dropped there (seen in the lab with an unbounded batch).
 
 ## Per-process metrics
 
@@ -109,7 +112,7 @@ Real filesystems on loop or LVM devices are still reported. The central collecto
 
 ## Privileges and sandbox
 
-The service runs as `otelcol-contrib` with **no capabilities**. The installer writes one drop-in, `/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf`: empty `CapabilityBoundingSet`, `SupplementaryGroups=systemd-journal` (only with `SYSTEM_LOGS=true`), `NoNewPrivileges`, `ProtectSystem=strict` with `ReadWritePaths=/var/lib/otelcol-contrib/file_storage`, `ProtectHome`, `PrivateTmp`, `RestrictNamespaces`, `LockPersonality`, `SystemCallArchitectures=native`.
+The service runs as `otelcol-contrib` with **no capabilities**. The installer writes one drop-in, `/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf`: empty `CapabilityBoundingSet`, `SupplementaryGroups=systemd-journal` (only with `SYSTEM_LOGS=true`), `NoNewPrivileges`, `ProtectSystem=strict` with `ReadWritePaths=/var/lib/otelcol-contrib/file_storage`, `ProtectHome`, `PrivateTmp`, `RestrictNamespaces`, `LockPersonality`, `SystemCallArchitectures=native`, and the [resource ceiling](#resource-ceiling).
 
 Without capabilities, plain file permissions already keep the agent user away from secrets: verified on a RHEL 9-family VM, it cannot read `/etc/shadow`, SSH host keys, sudoers, `/root` or `/proc/<pid>/{environ,mem}` of other processes, even outside the sandbox. The sandbox therefore only adds what file permissions do not cover: no privilege escalation through setuid binaries (`NoNewPrivileges`), no user namespaces (a common kernel-exploit entry point), no writes outside the storage directory, and hidden home directories (some hosts have world-readable ones). Running agent: `CapEff=0`, `NoNewPrivs=1`; `systemd-analyze security` 4.9 OK (7.2 MEDIUM without the drop-in). Why no capabilities:
 
@@ -121,6 +124,24 @@ Without capabilities, plain file permissions already keep the agent user away fr
 The RPM ships no SELinux policy, so the service runs as `unconfined_service_t`; everything above worked with 0 AVC denials.
 
 The systemd service does not inherit the login shell's proxy variables. If your hosts set a proxy for all services (`DefaultEnvironment`), put the central collector in `NO_PROXY`.
+
+## Resource ceiling
+
+The agent must never compete with the workload. Two profile variables set the ceiling; everything else is derived:
+
+| Setting | Value (defaults) | Effect |
+|---|---|---|
+| `CPUQuota` | `AGENT_CPU_QUOTA` (50%) | hard CPU limit |
+| `Nice` | 10 | yields to the workload under contention |
+| `MemoryMax` | `AGENT_MEMORY_MAX` (300M) | hard limit: OOM kill + restart by systemd, never host pressure |
+| `MemoryHigh` | 85% of it (255M) | the kernel reclaims the agent's memory first |
+| `GOMEMLIMIT` | 60% of it (180MiB) | Go GC target |
+| `GOMAXPROCS` | quota in cores, rounded up, at least 2 | otherwise Go sizes threads and GC workers by the host's core count |
+| `memory_limiter` | 55% of it (165 MiB, `MEMORY_LIMIT_MIB`), spike 20% of that | refuses new data before the limits above are reached (its `limit_percentage` would use host memory, not the cgroup limit) |
+
+Measured on a 2-core RHEL 9-family VM, full profile: 0.5–1% of a core, ~75 MiB anonymous memory (`ps` shows ~250 MiB RSS, of which ~180 MiB are pages of the 400 MB binary). With a flood of 10,000 log lines/s: 6–10% of a core. With the central collector down during the flood, memory levelled off at ~150 MiB (the `memory_limiter` refused data, which was dropped) and the queue drained within ~10 s after recovery; no restarts. With `MemoryMax` forced to 90M the agent was OOM-killed and restarted every ~5 s while the host stayed idle.
+
+Raise the ceiling in the profile for log-heavy hosts (e.g. `AGENT_MEMORY_MAX=600M`). For a one-off change on a single host, `systemctl edit otelcol-contrib` writes an `override.conf` that wins over the installer's drop-in and survives re-runs; when it changes `MemoryMax`, set `MemoryHigh` and `Environment=GOMEMLIMIT=… MEMORY_LIMIT_MIB=…` to the same ratios.
 
 ## Host identity and attributes (Mimir)
 
@@ -179,6 +200,16 @@ RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164
 | Mimir | Single-instance Mimir 2.16 (multi-tenant, tenant header set by the collector) | `target_info` dropped by relabeling and **no** attribute promotion, as in production; metrics arrive under the tenant only with `host_name`, `deployment_environment_name`, `team`, `business_line`, `role`, `region` as labels from the agent (identical with promotion configured too, no conflict); one series per process name + owner (`sleep` sum = RSS sum) |
 | Grafana | Every query and variable of both dashboards through Grafana's Mimir and Loki data sources, with `target_info` dropped | All return data; `role=db` / `business_line=payments` list the host, `role=web` lists none; the link to the other dashboard carries time range and filters |
 | Resilience | Collector down 90 s; VM reboot | Replayed without gaps; agent back with offsets kept |
+| End to end | Clean host, install from `main` with a dev profile (`dev-app-hk.env`), then switched to a prod profile (`prod-db-hk.env`) without passing the token | Both: service active, 0 restarts; labels follow the profile (`deployment_environment_name`, `role`, `region`); process metrics, journald and file logs in Mimir/Loki; both dashboards show data; token kept on the switch |
+| Upgrade | `OTEL_VERSION` 0.164.0 → 0.163.2 → 0.164.0 via re-run | dnf downgrades / upgrades, config unchanged, 0 restarts; a version that does not exist (404) exits 1 with the agent unchanged |
+| Resources | Normal load, 2 vCPU (2018 laptop CPU), 30 s interval | Host metrics 0.12% of a core, + processes 0.17%, + journald 0.42%, + file logs 0.66%; ~55–75 MiB anonymous memory |
+| Resources | `AGENT_CPU_QUOTA` / `AGENT_MEMORY_MAX`: `0%`, `50`, `300K`, `100M`; 300M/50%, 600M/150%, 1G/300% | Invalid values refused; `MemoryHigh`, `GOMEMLIMIT`, `GOMAXPROCS` and the agent's `limit_mib` match the derived values; an `override.conf` survives a re-run |
+| Resources | Log flood 10,000 lines/s | 6–10% of a core (≤ 21% in a 5 s window), host ≥ 86% idle, 0 restarts |
+| Resources | Flood with the collector overloaded (Loki 503) and then stopped, before `retry_on_failure` | Memory levelled off at ~150 MiB (cgroup ≤ 214M < `MemoryHigh`): `memory_limiter` refused and data was dropped; queue drained ~10 s after recovery |
+| Resources | `MemoryMax` forced to 90M under flood | OOM kill + restart every ~5 s, host unaffected; normal again once restored |
+| Resilience | Collector down 150 s while 182,900 file lines and 2,000 journald lines were written (`retry_on_failure`) | All arrived in Loki; 0 refused / failed in the agent; ≤ 154 MiB, ≤ 23% of a core while catching up |
+| Resilience | Known gap (not tested, accepted): host reboot while the collector is down | With the default volatile journal, journald lines not shipped yet are lost; the complete copy stays on disk in rsyslog's `/var/log/messages`, `secure` (~4 weeks) |
+| Central collector | Backlog flushed after an outage through a collector with an unbounded batch | Batches up to ~7 MB exceeded Loki's 4 MiB gRPC limit and were dropped there; fixed with `send_batch_max_size: 2048` (see [Logs](#logs)) |
 
 ## Files
 

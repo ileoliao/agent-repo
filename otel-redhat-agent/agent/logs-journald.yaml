@@ -10,6 +10,12 @@ receivers:
     priority: info
     start_at: end
     storage: file_storage    # cursor survives agent/host restarts
+    # Back-pressure: stop reading and retry instead of dropping; the journal is the buffer (its size limit
+    # and, with the default volatile journal, until reboot)
+    retry_on_failure:
+      enabled: true
+      max_interval: 30s
+      max_elapsed_time: 0
 
 processors:
   # journald records are a map of all journal fields: keep MESSAGE as the body, map PRIORITY to
