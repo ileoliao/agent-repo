@@ -697,7 +697,7 @@
     },
     {
       "type": "row",
-      "title": "Processes (PROCESS_NAMES)",
+      "title": "Processes (PROCESS_ALLOW_REGEX)",
       "id": 13,
       "collapsed": false,
       "gridPos": {

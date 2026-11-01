@@ -6,7 +6,7 @@ Verified with **otelcol-contrib 0.164.0** (linux amd64) on a RHEL 9-family VM wi
 
 ```
 host: otelcol-contrib (user otelcol-contrib, no capabilities, systemd sandbox)
-  host_metrics (+ per-process for PROCESS_NAMES)  journald (SYSTEM_LOGS)  file_log (LOG_PATHS)
+  host_metrics (+ per-process, filtered by PROCESS_ALLOW_REGEX)  journald (SYSTEM_LOGS)  file_log (LOG_PATHS)
         │  cardinality guards, process sums, host identity / attributes
         ▼
   otlp_http ──HTTPS + Basic token──► central collector (tenant from the basic-auth account) ──► Mimir / Loki
@@ -20,7 +20,7 @@ Settings live in **profiles**: plain `KEY=VALUE` files kept in this repo (`profi
 COLLECTOR_ENDPOINT=https://otel-gw.hk.corp.example:4318
 REPO_URL=https://repo.corp.example/otel/el9/
 HOST_ATTRIBUTES=deployment.environment.name=prod,team=infra,business_line=payments,role=db,region=hk
-PROCESS_NAMES=sshd mysqld
+PROCESS_ALLOW_REGEX=^(sshd|chronyd|mysqld)$
 LOG_PATHS=/var/log/mysql/*.log
 ```
 
@@ -50,7 +50,8 @@ sudo SYSTEM_LOGS=false bash otel-redhat-agent/redhat-install.sh otel-redhat-agen
 | `OTEL_VERSION` | `0.164.0` | Package version |
 | `HOST_ATTRIBUTES` | none | `key=value,…` resource attributes for this host (see [Host identity](#host-identity-and-attributes-mimir)) |
 | `SERVICE_NAME` | `redhat-host` | `service.name` → `job` in Mimir, `service_name` in Loki |
-| `PROCESS_NAMES` | none | Exact process names (space/comma-separated) for per-process CPU/memory; none = no per-process metrics |
+| `PROCESS_ALLOW_REGEX` | none | **Preferred.** Go (RE2) regex on the executable name; only matching processes are exported (unanchored: `^(sshd\|chronyd\|mysqld)$` for exact names, `.*` = every process, fully open). No whitespace, quotes or backslash (use `[.]` for a dot). Neither this nor `PROCESS_NAMES` set = no per-process metrics |
+| `PROCESS_NAMES` | none | Legacy, deprecated: exact names (space/comma-separated), converted to `^(name1\|name2)$` when `PROCESS_ALLOW_REGEX` is unset; ignored (with a warning) when both are set |
 | `KEEP_PROCESS_PIDS` | `false` | `true` = one series per pid instead of per name+owner (debugging only) |
 | `SYSTEM_LOGS` | `true` | System logs from journald, priority `info` and above |
 | `LOG_PATHS` | none | Application log files (absolute paths / globs); none = no file logs |
@@ -78,11 +79,11 @@ What the script does:
 |---|---|---|
 | `agent/agent.yaml` | always | host metrics with cardinality guards, host identity, `otlp_http` exporter |
 | `agent/auth.yaml` | `OTEL_TOKEN` set | `Authorization: Basic ${env:OTEL_TOKEN}` |
-| `agent/processes.yaml` | `PROCESS_NAMES` set | per-process CPU/memory, same-name processes summed |
+| `agent/processes.yaml` | `PROCESS_ALLOW_REGEX` (or `PROCESS_NAMES`) set | per-process CPU/memory: scrape all but kernel threads, regex allowlist, same-name processes summed |
 | `agent/logs-journald.yaml` | `SYSTEM_LOGS=true` | journald receiver + severity mapping |
 | `agent/logs-files.yaml` | `LOG_PATHS` set | `file_log` receiver |
 
-The service loads them with `OTELCOL_OPTIONS="--config=… --config=…"` (maps are merged, lists replaced). Per-host values live in `/etc/otelcol-contrib/otelcol-contrib.conf` and are referenced as `${env:…}`; lists are written as JSON arrays (`PROCESS_NAMES='["sshd","nginx"]'`), which the collector parses as YAML lists. The fragments contain no host-specific values, so they can be reviewed and diffed as plain files.
+The service loads them with `OTELCOL_OPTIONS="--config=… --config=…"` (maps are merged, lists replaced). Per-host values live in `/etc/otelcol-contrib/otelcol-contrib.conf` and are referenced as `${env:…}`; lists are written as JSON arrays (`LOG_PATHS='["/var/log/a/*.log"]'`), which the collector parses as YAML lists. The fragments contain no host-specific values, so they can be reviewed and diffed as plain files.
 
 ## Logs
 
@@ -95,7 +96,12 @@ The service loads them with `OTELCOL_OPTIONS="--config=… --config=…"` (maps 
 
 ## Per-process metrics
 
-`PROCESS_NAMES` selects processes by exact name (Linux `comm`, max 15 characters). Exported: `process.cpu.time`, `process.cpu.utilization`, `process.memory.usage`, `process.memory.virtual`. `process.disk.io` is off: reading other users' `/proc/<pid>/io` needs `CAP_SYS_PTRACE`, which would let the agent read any process's memory.
+The agent **scrapes broadly and filters at export time**: the `process` scraper reads every process except kernel threads (`exclude`, regexp: `kthreadd`, `kworker/*`, `ksoftirqd/*`, `migration/*`, `rcu_*`, `cpuhp/*`, `watchdog/*`, `irq/*`, `kswapd*`, `kcompactd*`, `jbd2/*`, `scsi_*`, …), then `filter/process_allow` (first processor after `memory_limiter`) drops every `process.*` metric whose `process.executable.name` does not match `PROCESS_ALLOW_REGEX`. The filter runs before the identity / sum / label transforms, so dropped processes cost no further work. Widening the list is a profile change and a re-run, no scrape change: `.*` exports everything (fully open; expect hundreds of series per host and a higher load on the agent, since all of `/proc` is scanned each interval). System-wide `system.*` metrics are never touched by the filter.
+
+- `PROCESS_ALLOW_REGEX` is the preferred setting, e.g. `^(sshd|chronyd|mysqld)$`. It is **unanchored** (`sshd` also matches `sshd-keygen`); anchor it for exact names. It is validated by `otelcol-contrib validate` in the installer (an invalid regex exits 1 before the running agent is touched).
+- `PROCESS_NAMES` (legacy, exact names) is still accepted: the installer converts it to `^(a|b)$` (`.` and `+` become `[.]`, `[+]`) and prints the result. If both are set, `PROCESS_ALLOW_REGEX` wins.
+
+Exported: `process.cpu.time`, `process.cpu.utilization`, `process.memory.usage`, `process.memory.virtual`. `process.disk.io` is off: reading other users' `/proc/<pid>/io` needs `CAP_SYS_PTRACE`, which would let the agent read any process's memory.
 
 `process.pid` changes on every restart and would blow up cardinality, but dropping it makes several processes with the same name and owner (nginx / php-fpm workers) overwrite each other. So the agent copies name and owner onto the data points, regroups by them and **sums** them: one series per executable name + owner (verified: three `sleep` processes → one series with their total RSS). Name and owner end up as data point labels (`process_executable_name`, `process_owner`), not resource attributes: as resource attributes Mimir would keep them only in `target_info` (or drop them with it), and every process of a host would land in the same series. Summed CPU time drops when one process exits, which `rate()` treats as a counter reset. `process.command_line` / `command` can carry secrets (`mysql -pSECRET`) and are never exported, `KEEP_PROCESS_PIDS=true` included.
 
@@ -194,6 +200,7 @@ RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164
 | Logs | 0600 application log | Installer warns, file not read |
 | Metrics | Three `sleep` processes, same owner | One series = sum of their RSS |
 | Metrics | `KEEP_PROCESS_PIDS=true` | One series per pid |
+| Metrics | `PROCESS_ALLOW_REGEX=^(sleep\|bash)$` on a host running ~30 processes; then `.*`; invalid regex; `PROCESS_NAMES` conversion (`php-fpm8.2`, `g++`) | Only `sleep` / `bash` series exported (`system.*` untouched, no pid / command line); `.*` exports all non-kernel processes; invalid regex fails `otelcol-contrib validate` (0.164.0); converted regexes load |
 | Metrics | `process.disk.io`, `process.command_line` | Not exported |
 | Metrics | Dummy `veth`, bridge, tmpfs, container mount, loop device | Excluded; xfs on `/dev/loop0` still reported |
 | Identity | `HOST_ATTRIBUTES`, `host.id`, `host.arch`, `os.description` | On metrics and logs; `instance=<host.name>`, `job=redhat-host` |

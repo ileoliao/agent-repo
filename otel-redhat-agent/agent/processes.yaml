@@ -1,4 +1,8 @@
-# Per-process CPU and memory for the processes named in PROCESS_NAMES (JSON list, exact names).
+# Per-process CPU and memory: scrape broadly, export only what PROCESS_ALLOW_REGEX matches.
+# The scraper reads every process except kernel noise (exclude below); filter/process_allow then drops, before
+# any identity/sum/transform work, every process.* metric whose process.executable.name does not match the
+# regex. PROCESS_ALLOW_REGEX='.*' exports everything (reversible: widen the regex, no scrape config change).
+# redhat-install.sh writes PROCESS_ALLOW_REGEX (preferred) or builds it from the legacy PROCESS_NAMES.
 # The agent has no capabilities, so other users' /proc/<pid>/{exe,io} are unreadable: mute those
 # errors and leave process.disk.io off (it would need CAP_SYS_PTRACE = read any process's memory).
 receivers:
@@ -10,9 +14,29 @@ receivers:
         mute_process_io_error: true
         mute_process_user_error: true
         mute_process_cgroup_error: true
-        include:
-          match_type: strict
-          names: ${env:PROCESS_NAMES}
+        # Kernel threads: many short-lived names, never business processes. Anchored: filterset regexps are unanchored.
+        exclude:
+          match_type: regexp
+          names:
+            - ^kthreadd$
+            - ^kworker/.*
+            - ^ksoftirqd/.*
+            - ^migration/.*
+            - ^rcu_.*
+            - ^cpuhp/.*
+            - ^watchdog/.*
+            - ^irq/.*
+            - ^idle_inject/.*
+            - ^kcompactd.*
+            - ^kswapd.*
+            - ^khugepaged$
+            - ^kdevtmpfs$
+            - ^kauditd$
+            - ^jbd2/.*
+            - ^scsi_.*
+            - ^blkcg_punt_bio$
+            - ^ata_sff$
+            - ^md$
         metrics:
           process.cpu.time: {enabled: true}
           process.cpu.utilization: {enabled: true}
@@ -21,6 +45,14 @@ receivers:
           process.disk.io: {enabled: false}
 
 processors:
+  # Export-time allowlist, first in the chain so unused points are never transformed or summed. Metrics
+  # without process.executable.name (system.*) are untouched; process.* metrics whose name does not match
+  # are dropped. The regex is unanchored (Go RE2): use ^(sshd|mysqld)$ for exact names, .* for all.
+  filter/process_allow:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'IsMatch(name, "^process\\.") and not IsMatch(resource.attributes["process.executable.name"], "${env:PROCESS_ALLOW_REGEX}")'
   # Without pid, same-name processes of one owner (nginx/php-fpm workers...) would overwrite each other:
   # copy name/owner onto the points, regroup by them and sum. KEEP_PROCESS_PIDS=true skips all of it
   # (one series per pid, for debugging). command_line/command can carry secrets and never leave the host.
@@ -79,4 +111,4 @@ processors:
 service:
   pipelines:
     metrics:
-      processors: [memory_limiter, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, transform/process_labels, resource_detection, resource/identity, transform/host_labels, batch]
+      processors: [memory_limiter, filter/process_allow, transform/process_identity, groupbyattrs/processes, metrics_transform/sum_processes, transform/process_labels, resource_detection, resource/identity, transform/host_labels, batch]
