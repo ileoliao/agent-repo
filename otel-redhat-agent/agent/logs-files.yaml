@@ -9,6 +9,7 @@ receivers:
     include: ${env:LOG_PATHS}
     exclude: ["**/*.gz", "**/*.[0-9]"]   # rotated files
     start_at: end
+    poll_interval: 1s        # default 200ms costs CPU for no benefit here
     storage: file_storage    # offsets survive agent/host restarts
     include_file_path: true
     include_file_name: true

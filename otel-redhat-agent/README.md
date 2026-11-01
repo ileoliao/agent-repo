@@ -54,6 +54,8 @@ sudo SYSTEM_LOGS=false bash otel-redhat-agent/redhat-install.sh otel-redhat-agen
 | `KEEP_PROCESS_PIDS` | `false` | `true` = one series per pid instead of per name+owner (debugging only) |
 | `SYSTEM_LOGS` | `true` | System logs from journald, priority `info` and above |
 | `LOG_PATHS` | none | Application log files (absolute paths / globs); none = no file logs |
+| `AGENT_CPU_QUOTA` | `50%` | CPU ceiling (`100%` = one core); see [Resource ceiling](#resource-ceiling) |
+| `AGENT_MEMORY_MAX` | `300M` | Memory ceiling (`M`/`G`, at least `128M`); the other memory limits are derived from it |
 
 What the script does:
 
@@ -109,7 +111,7 @@ Real filesystems on loop or LVM devices are still reported. The central collecto
 
 ## Privileges and sandbox
 
-The service runs as `otelcol-contrib` with **no capabilities**. The installer writes one drop-in, `/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf`: empty `CapabilityBoundingSet`, `SupplementaryGroups=systemd-journal` (only with `SYSTEM_LOGS=true`), `NoNewPrivileges`, `ProtectSystem=strict` with `ReadWritePaths=/var/lib/otelcol-contrib/file_storage`, `ProtectHome`, `PrivateTmp`, `RestrictNamespaces`, `LockPersonality`, `SystemCallArchitectures=native`.
+The service runs as `otelcol-contrib` with **no capabilities**. The installer writes one drop-in, `/etc/systemd/system/otelcol-contrib.service.d/10-otelcol-agent.conf`: empty `CapabilityBoundingSet`, `SupplementaryGroups=systemd-journal` (only with `SYSTEM_LOGS=true`), `NoNewPrivileges`, `ProtectSystem=strict` with `ReadWritePaths=/var/lib/otelcol-contrib/file_storage`, `ProtectHome`, `PrivateTmp`, `RestrictNamespaces`, `LockPersonality`, `SystemCallArchitectures=native`, and the [resource ceiling](#resource-ceiling).
 
 Without capabilities, plain file permissions already keep the agent user away from secrets: verified on a RHEL 9-family VM, it cannot read `/etc/shadow`, SSH host keys, sudoers, `/root` or `/proc/<pid>/{environ,mem}` of other processes, even outside the sandbox. The sandbox therefore only adds what file permissions do not cover: no privilege escalation through setuid binaries (`NoNewPrivileges`), no user namespaces (a common kernel-exploit entry point), no writes outside the storage directory, and hidden home directories (some hosts have world-readable ones). Running agent: `CapEff=0`, `NoNewPrivs=1`; `systemd-analyze security` 4.9 OK (7.2 MEDIUM without the drop-in). Why no capabilities:
 
@@ -121,6 +123,24 @@ Without capabilities, plain file permissions already keep the agent user away fr
 The RPM ships no SELinux policy, so the service runs as `unconfined_service_t`; everything above worked with 0 AVC denials.
 
 The systemd service does not inherit the login shell's proxy variables. If your hosts set a proxy for all services (`DefaultEnvironment`), put the central collector in `NO_PROXY`.
+
+## Resource ceiling
+
+The agent must never compete with the workload. Two profile variables set the ceiling; everything else is derived:
+
+| Setting | Value (defaults) | Effect |
+|---|---|---|
+| `CPUQuota` | `AGENT_CPU_QUOTA` (50%) | hard CPU limit |
+| `Nice` | 10 | yields to the workload under contention |
+| `MemoryMax` | `AGENT_MEMORY_MAX` (300M) | hard limit: OOM kill + restart by systemd, never host pressure |
+| `MemoryHigh` | 85% of it (255M) | the kernel reclaims the agent's memory first |
+| `GOMEMLIMIT` | 60% of it (180MiB) | Go GC target |
+| `GOMAXPROCS` | quota in cores, rounded up, at least 2 | otherwise Go sizes threads and GC workers by the host's core count |
+| `memory_limiter` | 55% of it (165 MiB, `MEMORY_LIMIT_MIB`), spike 20% of that | refuses new data before the limits above are reached (its `limit_percentage` would use host memory, not the cgroup limit) |
+
+Measured on a 2-core RHEL 9-family VM, full profile: 0.5–1% of a core, ~75 MiB anonymous memory (`ps` shows ~250 MiB RSS, of which ~180 MiB are pages of the 400 MB binary). With a flood of 10,000 log lines/s: 6–10% of a core. With the central collector down during the flood, memory levelled off at ~150 MiB (the `memory_limiter` refused data, which was dropped) and the queue drained within ~10 s after recovery; no restarts. With `MemoryMax` forced to 90M the agent was OOM-killed and restarted every ~5 s while the host stayed idle.
+
+Raise the ceiling in the profile for log-heavy hosts (e.g. `AGENT_MEMORY_MAX=600M`). For a one-off change on a single host, `systemctl edit otelcol-contrib` writes an `override.conf` that wins over the installer's drop-in and survives re-runs; when it changes `MemoryMax`, set `MemoryHigh` and `Environment=GOMEMLIMIT=… MEMORY_LIMIT_MIB=…` to the same ratios.
 
 ## Host identity and attributes (Mimir)
 

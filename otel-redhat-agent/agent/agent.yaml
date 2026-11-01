@@ -34,8 +34,9 @@ receivers:
 processors:
   memory_limiter:
     check_interval: 1s
-    limit_mib: 256
-    spike_limit_mib: 64
+    # 55% of AGENT_MEMORY_MAX, set in the unit drop-in (limit_percentage would use host memory, not the
+    # cgroup limit); spike defaults to 20% of it. Stays below GOMEMLIMIT / MemoryHigh / MemoryMax.
+    limit_mib: ${env:MEMORY_LIMIT_MIB}
   # env first: HOST_ATTRIBUTES (OTEL_RESOURCE_ATTRIBUTES) win over detected values
   resource_detection:
     detectors: [env, system]
