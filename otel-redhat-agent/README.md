@@ -12,6 +12,17 @@ host: otelcol-contrib (user otelcol-contrib, no capabilities, systemd sandbox)
   otlp_http ──HTTPS + Basic token──► central collector (tenant from the basic-auth account) ──► Mimir / Loki
 ```
 
+## Prerequisites (前置条件)
+
+安装前确认以下各项(详细说明见后面的 [Install](#install) 与 [Privileges and sandbox](#privileges-and-sandbox)):
+
+- [ ] **OS**:RHEL 或兼容发行版(已验证 RHEL 9 系,SELinux `Enforcing`);主机上有 `dnf`、`curl`、`systemctl`(systemd)。
+- [ ] **安装账号**:root,或可 `sudo` 的账号(`sudo -E` 需要 sudoers 里有 `SETENV`)。**token 不写进 profile,也不放在 sudo 命令行上**,只通过环境变量传入(`read -rs OTEL_TOKEN && export OTEL_TOKEN`)。
+- [ ] **运行账号**:`otelcol-contrib`,由 RPM 创建,**无任何 capability**。读 journald 需要属于 `systemd-journal` 组(`SYSTEM_LOGS=true` 时安装脚本通过 systemd drop-in 加上);`LOG_PATHS` 指向的日志文件必须对该用户可读(组或 ACL,由应用方设置,`/home`、`/root`、`/run/user` 下的路径不可用)。
+- [ ] **Collector**:`COLLECTOR_ENDPOINT` 是 `https://host:port`,证书由主机**系统信任库**中的 CA 验证(公司 CA 需已在信任库);`OTEL_TOKEN` 为 `base64("user:password")`(首次安装必填,重跑可沿用已装的)。
+- [ ] **Profile**:纯 `KEY=VALUE` 文件(`profiles/example.env` 为模板),不含 token。**包来源**二选一:`REPO_URL`(内部 yum 仓库,`https://` 或 `file://`),或不设置时从 GitHub release 下载(主机需能 https 访问 GitHub)。
+- [ ] **可选 — 持久 journal**:建议主机启用 `/var/log/journal`,否则 journal 在 `/run/log/journal`,重启后未上报的日志会丢。安装脚本**不会**修改 journald 配置,需在主机基线里设置。
+
 ## Install
 
 Settings live in **profiles**: plain `KEY=VALUE` files kept in this repo (`profiles/`), typically one per environment, machine role and region, e.g. `profiles/prod-db-hk.env`. Name them as you like (a prefix such as `payments-prod-db-hk.env` is fine); `profiles/example.env` is the template. A profile holds everything except the token:
