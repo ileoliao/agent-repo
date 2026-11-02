@@ -186,6 +186,8 @@ Two dashboards that link to each other like tabs (a dashboard link on the `redha
 | `grafana/redhat-host-metrics.json` | Red Hat host · Metrics | host info, overview, CPU, memory, load, filesystems, disk and network I/O, per-process CPU/memory |
 | `grafana/redhat-host-logs.json` | Red Hat host · Logs | host info, log volume by level, log stream (filters: level, systemd unit, regex search) |
 
+**Panel-by-panel guide** (what each panel means, what to watch for, the PromQL/LogQL behind it, how the filters work, with lab screenshots): [`docs/dashboards.md`](docs/dashboards.md).
+
 Import both (Dashboards → New → Import). Grafana asks once for the **Mimir** (Prometheus type) and **Loki** data sources and writes their UIDs into the panels; there is no data source selector on the dashboards. For file provisioning, replace `${DS_MIMIR}` / `${DS_LOKI}` with your data source UIDs first.
 
 - Hosts are narrowed down with cascading, multi-select filters: Environment (`deployment.environment.name`) → Team → Business line → Role → Region → Host. They read the labels on `system_cpu_logical_count` (one series per host), which the agent puts on every series; no `target_info`, no Mimir promotion.
@@ -237,3 +239,4 @@ RHEL 9-family VM (Lima, kernel 5.14, SELinux `Enforcing`), otelcol-contrib 0.164
 | `redhat-install.sh` | installer |
 | `agent/*.yaml` | agent config fragments |
 | `grafana/redhat-host-metrics.json`, `grafana/redhat-host-logs.json` | Grafana dashboards (Mimir + Loki) |
+| `docs/dashboards.md`, `docs/images/` | dashboard reference and lab screenshots |
