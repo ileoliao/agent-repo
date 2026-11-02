@@ -7,7 +7,7 @@ Panel-by-panel reference for the two dashboards in [`../grafana/`](../grafana/).
 | Red Hat host · Metrics | [`redhat-host-metrics.json`](../grafana/redhat-host-metrics.json) | `redhat-host` | Mimir (Prometheus type) | `redhat-host` |
 | Red Hat host · Logs | [`redhat-host-logs.json`](../grafana/redhat-host-logs.json) | `redhat-host-logs` | Mimir (host info table) + Loki (log panels) | `redhat-host` |
 
-> **Screenshots**: source is the lab Grafana (`localhost:3000`, Mimir org `redhat`, host data from `otel-cs9`), lab render 2026-11-02. They show lab data, not production; values and series differ per host.
+> **Screenshots**: captured 2026-11-02 from the lab Grafana (`http://localhost:3000`) against Mimir and Loki with `X-Scope-OrgID: redhat`, host `lima-otel-cs9` (the `otel-cs9` lab VM). The full-page metrics shot is a populated dashboard over roughly the last 3 hours; the single-panel shots are `viewPanel` captures over the last 6 hours. They show lab data (including a synthetic `payments-api` workload and its JSON logs), not production; values and series differ per host.
 
 Both dashboards refresh every 30 s and default to the last hour.
 
@@ -51,9 +51,9 @@ The three log filters are LogQL regexes (Go RE2, unanchored). They only apply to
 
 ## Metrics dashboard (`redhat-host`)
 
-![Metrics dashboard, full page (lab render 2026-11-02)](images/metrics-full.png)
+![Metrics dashboard, full page (lab, 2026-11-02)](images/metrics-full.png)
 
-*Whole dashboard, lab Grafana, host `otel-cs9`, render 2026-11-02.*
+*Whole dashboard, lab Grafana, host `lima-otel-cs9`, last ~3 h, captured 2026-11-02. The capture ends at the Disk I/O / Network I/O row; the Processes row is shown in its two panel screenshots below.*
 
 Layout: Host info table, an **Overview** row of four stat panels, a **System** row of six time series, and a **Processes** row of two time series. The time series show a legend table (last value and max) on the right and a shared tooltip across series.
 
@@ -261,9 +261,9 @@ The row title in the JSON now reads **Processes (PROCESS_ALLOW_REGEX)**. These t
 
 ## Logs dashboard (`redhat-host-logs`)
 
-![Logs dashboard, full page (lab render 2026-11-02)](images/logs-full.png)
+![Logs dashboard, full page (lab, 2026-11-02)](images/logs-full.png)
 
-*Whole dashboard, lab Grafana, host `otel-cs9`, render 2026-11-02.*
+*Whole dashboard, lab Grafana, host `lima-otel-cs9`, last 6 h, captured 2026-11-02.*
 
 Layout: Host info, a volume-by-level time series, and the log stream. The host variables work as described above; Level, systemd unit and Search narrow both log panels.
 
@@ -316,5 +316,5 @@ Identical to the metrics dashboard's Host info (Mimir query, not Loki): host nam
 
 ## Provenance and maintenance
 
-- Screenshots in [`images/`](images/) come from the lab Grafana (`localhost:3000`, Mimir org `redhat`, host `otel-cs9`), render 2026-11-02. Re-take them when panels change.
+- Screenshots in [`images/`](images/) come from the lab Grafana (`localhost:3000`, Mimir org `redhat`, host `lima-otel-cs9`), captured 2026-11-02. Re-take them when panels change.
 - The dashboards are provisioned from the JSON files in `../grafana/`; edit the JSON (or export it from Grafana) and update this page in the same change.
