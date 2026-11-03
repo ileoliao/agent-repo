@@ -82,25 +82,43 @@ scripts/fuse-dx.sh dx                            # or: make fuse-dx   (validate 
 - Real GCS FUSE CSI driver on GKE.
 - CI workflow that publishes to the bucket.
 
-## CLI post-publish verification (operators)
+## Content-publish service (operators)
 
-Community authors still only need `harbor extension publish` with a real Harbor PAT.
-For **local kind sim**, the platform content API is provided by a shim that writes into the FUSE bucket:
+In-cluster FastAPI service that accepts the Harbor CLI publish body and syncs files into `s3://harbor-content/extensions/<name>/` (SeaweedFS via `minio-fuse` + Secret `minio-fuse-creds`).
+
+- Manifests: `content-publish.yaml`, Ingress path in `ingress-content-publish.yaml` (`/api/content` → `content-publish:80`)
+- Image: `harbor-content-publish:sim` (`Dockerfile.content-publish`); built and `kind load`ed by `run-fuse-sim.sh up`
+- Auth (sim): `Authorization: Bearer <token>` required; token length ≥ 8 (convention: `pat_…`)
+- Probes: `GET /healthz` (Service); also `GET /api/content/healthz` for Ingress smoke
+- Host shim `content-publish-shim.mjs` is **DEPRECATED** (fallback only)
+
+### How to verify
 
 ```bash
-# terminal A
-node deploy/sim/fuse-object-storage/content-publish-shim.mjs
-
-# terminal B — full chain: new → validate → publish → FUSE/static/catalog → republish hot-reload
+# After FUSE sim is up (content-publish Ready):
 bash deploy/sim/fuse-object-storage/verify-cli-post-publish.sh
+# Full log: tee /tmp/pp-formal-verify.log
 ```
 
-Env used by the CLI against the shim:
+CLI targeting the sim content channel (port-forward to the Service):
 
 ```bash
+kubectl --context kind-harbor-sim -n harbor port-forward svc/content-publish 18771:80
 export HARBOR_PAT=pat_sim_cli
 export HARBOR_CONTENT_ENDPOINT=http://127.0.0.1:18771/api/content/extensions
+# or via Ingress once /api/content is applied:
+# export HARBOR_URL=https://harbor.sim.internal:8443
+# (use curl --resolve / hosts entry for TLS Host)
 node cli/harbor.mjs extension publish <name>
 ```
 
-This proves the same upload shape production will accept (`POST` JSON + Bearer), end-to-end through Seaweed → rclone FUSE → `harbor-extensions-fuse` gateway.
+### Acceptance checklist (must pass)
+
+- [ ] `content-publish` Deployment Ready; `GET /healthz` → `ok`
+- [ ] Ingress: unauthenticated `POST /api/content/extensions` → **401**; `GET /api/content/healthz` → **200**
+- [ ] `harbor extension new` → `validate` → real `publish` (not dry-run) → **Published OK**
+- [ ] FUSE mount shows `extensions/<name>/extension.yaml`
+- [ ] Gateway `/healthz` 200; static `/extensions/ext/<name>/index.html` 200 with published marker
+- [ ] Catalog API lists `<name>`
+- [ ] Republish updates static body (hot-reload within ~30s)
+- [ ] Community criteria in [docs/post-publish-acceptance.md](../../../docs/post-publish-acceptance.md)

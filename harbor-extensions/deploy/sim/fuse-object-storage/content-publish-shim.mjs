@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 /**
+ * DEPRECATED — prefer the in-cluster content-publish Deployment
+ * (deploy/sim/fuse-object-storage/content-publish.yaml + run-fuse-sim.sh up).
+ * Kept as a host-side fallback when the cluster image is unavailable.
+ *
  * Sim-only content channel for Harbor CLI publish.
  * Accepts the same POST body as cli/commands/publish.mjs and uploads
  * into the kind FUSE bucket (s3://harbor-content) via a short-lived rclone pod.

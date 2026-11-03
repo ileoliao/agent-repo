@@ -81,6 +81,18 @@ export HARBOR_PAT=<your personal access token>
 
 Don't know the URL or how to get a PAT? Ask your Harbor admin. Without them, `publish` dry-runs.
 
+## After a real publish
+
+When `HARBOR_PAT` and `HARBOR_URL` (or `HARBOR_CONTENT_ENDPOINT`) are set and you omit `--dry-run`, the CLI uploads your extension files to Harbor’s content channel.
+
+After a successful publish:
+
+- The extension appears in the **Harbor portal catalog** (same list the portal UI loads).
+- Its static entry is served at the portal’s extension URL, typically under `/extensions/ext/<name>/` (for example `index.html`).
+- Editing files locally and publishing again updates what the portal serves (hot update; no separate rebuild step for static UI).
+
+Dry-run never uploads; use it to confirm which files would be sent.
+
 ## Your backend
 
 Host the API yourself, then register it as a connector.
