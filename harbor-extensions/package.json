@@ -1,0 +1,17 @@
+{
+  "name": "harbor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Harbor CLI — extension new / dev / publish (community DX). Assumes install + login/PAT already done.",
+  "bin": {
+    "harbor": "./cli/harbor.mjs"
+  },
+  "scripts": {
+    "harbor": "node ./cli/harbor.mjs",
+    "test:dx": "node ./cli/harbor.mjs extension --help"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
