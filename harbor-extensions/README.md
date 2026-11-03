@@ -151,14 +151,14 @@ the outage service in `backend/mocks/app.py`:
 
 ## Contribute an extension
 
-1. `cp -r templates/extension-template extensions/<name>`, then edit `extension.yaml`.
-2. In VS Code, ask Copilot to implement `app.js` (it reads `.github/copilot-instructions.md`).
-3. `cd backend && python -m harbor_platform.validate`:
-   Exit code 0 = auto-mergeable, 2 = needs platform-team review, 1 = errors.
-   - Errors: invalid config; references to nonexistent capabilities; extension code that collects passwords, makes its own network requests (fetch/XHR/WebSocket),
-     uses browser storage or cookies, writes inline scripts or inline event handlers, or loads external resources (rules in `backend/harbor_platform/lint.py`).
-   - Needs review: requesting write capabilities, requesting non-internal capabilities, widening visibility, changing connectors or grants, using HTML injection APIs such as innerHTML.
-4. Open a PR. Once merged, the host directory syncs and the change takes effect without restarting the platform.
+Start here: **[docs/extension-developer.md](docs/extension-developer.md)**. In short:
+
+```bash
+make new EXT=hello-world   # scaffold from the template
+make try EXT=hello-world   # validate + publish to the local sim + verify HTTP 200
+```
+
+`make validate` exit codes: 0 = auto-mergeable, 2 = needs platform-team review, 1 = errors (rules in `backend/harbor_platform/lint.py`). Then open a PR; once merged, the change takes effect without restarting the platform.
 
 ## CLI (PAT / agent path)
 

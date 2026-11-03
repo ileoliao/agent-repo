@@ -1,0 +1,7 @@
+/* Prefer hx- classes and --hx- variables from /sdk/harbor.css. */
+.issue-list {
+  gap: 0.75rem;
+}
+.issue-card .issue-summary {
+  margin: 0.5rem 0 0;
+}

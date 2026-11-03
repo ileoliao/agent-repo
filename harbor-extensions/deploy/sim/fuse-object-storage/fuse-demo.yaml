@@ -1,0 +1,71 @@
+# Privileged demo Pod: rclone FUSE-mounts S3 bucket harbor-content at /content.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: content-fuse-demo
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: content-fuse-demo
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+spec:
+  restartPolicy: Always
+  containers:
+    - name: rclone-mount
+      image: harbor-fuse-rclone:sim
+      imagePullPolicy: IfNotPresent
+      command: [/bin/sh, -ec]
+      args:
+        - |
+          set -eux
+          mkdir -p /content /tmp/rclone
+          export RCLONE_CONFIG_S3_TYPE=s3
+          export RCLONE_CONFIG_S3_PROVIDER=Minio
+          export RCLONE_CONFIG_S3_ENV_AUTH=false
+          export RCLONE_CONFIG_S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}"
+          export RCLONE_CONFIG_S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}"
+          export RCLONE_CONFIG_S3_ENDPOINT=http://minio-fuse.harbor.svc.cluster.local:9000
+          export RCLONE_CONFIG_S3_FORCE_PATH_STYLE=true
+          export RCLONE_CONFIG_S3_ACL=private
+          # S3 remotes do not support --poll-interval; rely on short dir-cache-time.
+          exec rclone mount s3:harbor-content /content \
+            --allow-other \
+            --allow-non-empty \
+            --dir-cache-time=2s \
+            --attr-timeout=2s \
+            --vfs-cache-mode=off \
+            --config=/tmp/rclone/rclone.conf \
+            --log-level=INFO
+      envFrom:
+        - secretRef: {name: minio-fuse-creds}
+      securityContext:
+        privileged: true
+        capabilities: {add: [SYS_ADMIN]}
+      volumeMounts:
+        - name: content
+          mountPath: /content
+          mountPropagation: Bidirectional
+        - name: fuse
+          mountPath: /dev/fuse
+        - name: tmp
+          mountPath: /tmp
+      resources:
+        requests: {cpu: 20m, memory: 64Mi}
+        limits: {memory: 256Mi}
+    - name: reader
+      image: harbor-fuse-busybox:sim
+      imagePullPolicy: IfNotPresent
+      command: [sh, -c, "while true; do sleep 3600; done"]
+      volumeMounts:
+        - name: content
+          mountPath: /content
+          mountPropagation: HostToContainer
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {memory: 64Mi}
+  volumes:
+    - name: content
+      emptyDir: {}
+    - name: tmp
+      emptyDir: {}
+    - name: fuse
+      hostPath: {path: /dev/fuse, type: CharDevice}

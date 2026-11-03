@@ -1,0 +1,9 @@
+name: jira-glance
+title: Jira Glance
+description: Browse open PAY project issues from Jira without leaving Harbor.
+owner: community-demo
+contact: community-demo@example.com
+tier: experimental
+visibility: [APP-DEV-ALL]
+capabilities:
+  - jira.issue.read

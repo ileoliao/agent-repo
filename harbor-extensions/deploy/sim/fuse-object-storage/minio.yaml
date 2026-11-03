@@ -1,0 +1,124 @@
+# S3-compatible object store for the FUSE content prototype.
+# Uses SeaweedFS (images loadable in this environment). MinIO quay/docker pulls were blocked.
+# Service name stays minio-fuse so endpoint URLs match the rest of the prototype docs/scripts.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-fuse-creds
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: minio-fuse
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+type: Opaque
+stringData:
+  # Used by rclone as access_key_id / secret_access_key
+  MINIO_ROOT_USER: minioadmin
+  MINIO_ROOT_PASSWORD: minioadmin
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minio-fuse-s3-config
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: minio-fuse
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+data:
+  s3.json: |
+    {
+      "identities": [
+        {
+          "name": "admin",
+          "credentials": [
+            {"accessKey": "minioadmin", "secretKey": "minioadmin"}
+          ],
+          "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+        }
+      ]
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-fuse-data
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: minio-fuse
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio-fuse
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: minio-fuse
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio-fuse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio-fuse
+        app.kubernetes.io/part-of: harbor-fuse-prototype
+    spec:
+      containers:
+        - name: seaweed
+          image: harbor-fuse-seaweedfs:sim
+          imagePullPolicy: IfNotPresent
+          # Single-process master+volume+filer+s3 on :9000
+          args:
+            - server
+            - -dir=/data
+            - -ip=0.0.0.0
+            - -ip.bind=0.0.0.0
+            - -master.port=9333
+            - -volume.port=8080
+            - -filer
+            - -s3
+            - -s3.port=9000
+            - -s3.config=/etc/seaweedfs/s3.json
+          ports:
+            - {name: s3, containerPort: 9000}
+            - {name: master, containerPort: 9333}
+            - {name: volume, containerPort: 8080}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: s3cfg, mountPath: /etc/seaweedfs, readOnly: true}
+          readinessProbe:
+            tcpSocket: {port: s3}
+            periodSeconds: 5
+            initialDelaySeconds: 3
+          livenessProbe:
+            tcpSocket: {port: s3}
+            periodSeconds: 15
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: minio-fuse-data}
+        - name: s3cfg
+          configMap: {name: minio-fuse-s3-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-fuse
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: minio-fuse
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+spec:
+  selector:
+    app.kubernetes.io/name: minio-fuse
+  ports:
+    - {name: s3, port: 9000, targetPort: s3}

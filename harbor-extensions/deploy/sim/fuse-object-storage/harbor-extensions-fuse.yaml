@@ -1,0 +1,126 @@
+# Optional: one harbor-extensions replica reading content via rclone FUSE (no git-sync).
+# Leaves the default harbor-extensions Deployment (git-sync) untouched.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-extensions-fuse
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: harbor-extensions-fuse
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: harbor-extensions-fuse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: harbor-extensions-fuse
+        app.kubernetes.io/part-of: harbor-fuse-prototype
+    spec:
+      serviceAccountName: harbor-extensions
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: app
+          image: harbor-extensions:sim
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8000}]
+          env:
+            - name: HARBOR_ROOT
+              value: /content
+          envFrom:
+            - secretRef: {name: harbor-extensions-secrets}
+          volumeMounts:
+            - name: content
+              mountPath: /content
+              readOnly: true
+              mountPropagation: HostToContainer
+            - name: config
+              mountPath: /etc/harbor-extensions
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            initialDelaySeconds: 8
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 15
+            failureThreshold: 4
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+            limits: {memory: 512Mi}
+        - name: rclone-mount
+          image: harbor-fuse-rclone:sim
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              set -eux
+              mkdir -p /content /tmp/rclone
+              export RCLONE_CONFIG_S3_TYPE=s3
+              export RCLONE_CONFIG_S3_PROVIDER=Minio
+              export RCLONE_CONFIG_S3_ENV_AUTH=false
+              export RCLONE_CONFIG_S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}"
+              export RCLONE_CONFIG_S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}"
+              export RCLONE_CONFIG_S3_ENDPOINT=http://minio-fuse.harbor.svc.cluster.local:9000
+              export RCLONE_CONFIG_S3_FORCE_PATH_STYLE=true
+              export RCLONE_CONFIG_S3_ACL=private
+              exec rclone mount s3:harbor-content /content \
+                --allow-other \
+                --allow-non-empty \
+                --dir-cache-time=2s \
+                --attr-timeout=2s \
+                --vfs-cache-mode=off \
+                --config=/tmp/rclone/rclone.conf \
+                --log-level=INFO
+          envFrom:
+            - secretRef: {name: minio-fuse-creds}
+          securityContext:
+            privileged: true
+            capabilities: {add: [SYS_ADMIN]}
+          volumeMounts:
+            - name: content
+              mountPath: /content
+              mountPropagation: Bidirectional
+            - name: fuse
+              mountPath: /dev/fuse
+            - name: rclone-tmp
+              mountPath: /tmp
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 256Mi}
+      volumes:
+        - name: content
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: rclone-tmp
+          emptyDir: {}
+        - name: config
+          configMap: {name: harbor-extensions-config}
+        - name: fuse
+          hostPath: {path: /dev/fuse, type: CharDevice}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harbor-extensions-fuse
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: harbor-extensions-fuse
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+spec:
+  selector:
+    app.kubernetes.io/name: harbor-extensions-fuse
+  ports:
+    - {name: http, port: 80, targetPort: http}
