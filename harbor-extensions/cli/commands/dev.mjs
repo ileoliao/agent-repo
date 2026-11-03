@@ -58,8 +58,13 @@ const PREVIEW_SHIM = `/* Harbor dev-server preview shim (not published). */
 export async function run(args) {
   const nameArg = args.find((a) => !a.startsWith("-"));
   if (!nameArg) die("usage: harbor extension dev <name>", 2);
-  const portFlag = args.find((a) => a.startsWith("--port="));
-  const port = Number(portFlag?.split("=")[1] || process.env.PORT || 5173);
+  let port = Number(process.env.PORT || 5173);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--port=")) port = Number(a.slice("--port=".length));
+    else if (a === "--port" || a === "-p") port = Number(args[++i]);
+  }
+  if (!Number.isFinite(port) || port <= 0) die("invalid --port", 2);
   const { name } = resolveExt(nameArg);
 
   const indexUrl = `http://127.0.0.1:${port}/extensions/${name}/index.html`;

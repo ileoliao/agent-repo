@@ -81,3 +81,12 @@ export function contentEndpoint() {
       : null)
   );
 }
+
+/** How to re-invoke this CLI in printed hints (checkout vs global `harbor`). */
+export function cliLabel() {
+  const argv1 = process.argv[1] || "";
+  if (argv1.includes(`${path.sep}cli${path.sep}`) || argv1.endsWith("harbor.mjs")) {
+    return "node cli/harbor.mjs";
+  }
+  return "harbor";
+}

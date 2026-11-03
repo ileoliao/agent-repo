@@ -1,13 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-  REPO_ROOT,
-  assertExtName,
-  titleCaseKebab,
-  copyDir,
-  die,
-  log,
-} from "../lib.mjs";
+import { REPO_ROOT, assertExtName, titleCaseKebab, extDir, copyDir, log, die, cliLabel } from "../lib.mjs";
 
 export async function run(args) {
   const name = assertExtName(args[0]);
@@ -55,12 +48,13 @@ export async function run(args) {
     );
   }
 
+  const H = cliLabel();
   log(`Created extensions/${name}
   Edit UI:   extensions/${name}/ (any frontend stack that builds to static files)
-  Local:     harbor extension dev ${name}   (preview mock: shows "Preview User" + stub connector)
-  Check:     harbor extension validate ${name}
-  Publish:   harbor extension publish ${name} --dry-run
+  Local:     ${H} extension dev ${name}
+  Check:     ${H} extension validate ${name}
+  Publish:   ${H} extension publish ${name} --dry-run
   Backend:   self-host your API, then register a connector (see docs/extension-developer.md)
-`);
+  Tip:       if \`harbor\` is not on PATH yet, use: node cli/harbor.mjs …`);
   return 0;
 }

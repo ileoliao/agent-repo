@@ -23,14 +23,24 @@ node cli/harbor.mjs extension --help
 
 ## Shortest path
 
+From this repo checkout (works before `harbor` is on your PATH):
+
+```bash
+node cli/harbor.mjs extension new hello-world
+node cli/harbor.mjs extension dev hello-world
+# open the printed URL — first load shows "Preview User" (expected mock, not an error)
+# edit extensions/hello-world/*  → refresh the browser
+
+node cli/harbor.mjs extension publish hello-world --dry-run
+# with PAT + HARBOR_URL (after harbor login), omit --dry-run to upload
+```
+
+After you install/link the CLI globally, the same commands are `harbor extension …`.
+
 ```bash
 harbor extension new hello-world
 harbor extension dev hello-world
-# first dev run shows "Preview User" via the preview mock (expected, not an error)
-# edit extensions/hello-world/*  → refresh the browser
-
 harbor extension publish hello-world
-# without PAT/URL this dry-runs and prints what would upload
 ```
 
 Optional checks:

@@ -7,7 +7,7 @@ help:
 	@echo "make dev EXT=<name>       -> harbor extension dev"
 	@echo "make publish EXT=<name>   -> harbor extension publish (dry-run without PAT)"
 	@echo "make validate             -> harbor extension validate"
-	@echo "Operator-only sim loop: scripts/fuse-dx.sh (not for community DX)"
+	@echo "(Platform sim tooling is under deploy/sim/ — not part of community DX)"
 need-ext:
 	@[ -n "$(EXT)" ] || { echo "Missing EXT. Example: make $(MAKECMDGOALS) EXT=hello-world"; exit 2; }
 new: need-ext
