@@ -31,6 +31,30 @@ function safeJoin(root, urlPath) {
   return full;
 }
 
+const PREVIEW_SHIM = `/* Harbor dev-server preview shim (not published). */
+(function () {
+  if (window.parent !== window) return;
+  var empty = { items: [], note: "preview: no connector data" };
+  function ok(v) { return Promise.resolve(v); }
+  function connector(name) {
+    function req() {
+      if (name === "example") return ok({ status: "ok", message: "Preview stub — replace with your connector", connector: name });
+      return ok(Object.assign({ connector: name }, empty));
+    }
+    return { request: req, get: req, post: req, put: req, patch: req, delete: req };
+  }
+  window.harbor = Object.freeze({
+    version: "preview",
+    HarborError: Error,
+    me: function () { return ok({ display_name: "Preview User", name: "Preview User", username: "preview", email: "preview@example.invalid", groups: [] }); },
+    can: function () { return ok(true); },
+    connector: connector,
+    context: function () { return ok({ workspace: null, embedded: false }); },
+  });
+  console.info("[harbor preview] mock harbor identity active");
+})();
+`;
+
 export async function run(args) {
   const nameArg = args.find((a) => !a.startsWith("-"));
   if (!nameArg) die("usage: harbor extension dev <name>", 2);
@@ -41,6 +65,16 @@ export async function run(args) {
   const indexUrl = `http://127.0.0.1:${port}/extensions/${name}/index.html`;
 
   const server = http.createServer((req, res) => {
+    if ((req.url || "").split("?")[0] === "/sdk/harbor-preview.js") {
+      res.writeHead(200, { "Content-Type": MIME[".js"], "Cache-Control": "no-cache" });
+      res.end(PREVIEW_SHIM);
+      return;
+    }
+    if ((req.url || "").split("?")[0] === "/") {
+      res.writeHead(200, { "Content-Type": MIME[".html"], "Cache-Control": "no-cache" });
+      res.end(`<!doctype html><meta charset="utf-8"><title>Harbor preview</title><body><h1>Harbor preview mode</h1><p>Open your extension: <a href="/extensions/${name}/index.html">/extensions/${name}/index.html</a></p><p>Preview mode: harbor identity and connectors are mocked.</p></body>`);
+      return;
+    }
     let file = safeJoin(REPO_ROOT, req.url);
     if (!file) {
       res.writeHead(403);
@@ -66,6 +100,15 @@ export async function run(args) {
       }
     }
     const ext = path.extname(file).toLowerCase();
+    if (ext === ".html") {
+      let html = fs.readFileSync(file, "utf8");
+      const tag = '<script src="/sdk/harbor-preview.js"></script>';
+      const re = /(<script[^>]*src=["'][^"']*sdk\/harbor\.js["'][^>]*><\/script>)/i;
+      html = re.test(html) ? html.replace(re, "$1\n    " + tag) : html.replace(/<\/body>/i, tag + "</body>");
+      res.writeHead(200, { "Content-Type": MIME[".html"], "Cache-Control": "no-cache" });
+      res.end(html);
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": MIME[ext] || "application/octet-stream",
       "Cache-Control": "no-cache",
@@ -79,13 +122,14 @@ export async function run(args) {
   });
 
   log(`Local preview for '${name}' (no cluster, no sim)
+  Preview mode: mock harbor identity active
   Open:  ${indexUrl}
   Stop:  Ctrl+C
 
 Notes:
   - Edit files under extensions/${name}/ and refresh the browser.
   - Any framework is fine; point the build output at this folder (or keep plain HTML/JS).
-  - harbor.* calls need the Harbor portal; standalone preview still serves your UI (API calls show a host error until embedded).
+  - harbor.me()/can()/connector() return mock data here (dev server only; published files are untouched).
   - Your business API is self-hosted + registered as a connector — not part of this preview.
 `);
 

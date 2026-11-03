@@ -14,7 +14,7 @@ Or from this folder (after scaffolding, the name is filled in):
 npm run dev
 ```
 
-Open the printed URL. No cluster or local sim required.
+Open the printed URL. No cluster required. Preview mode injects a mock `harbor` (`me()` → "Preview User", `can()` → true, connectors return empty data) — dev server only; published files are unchanged.
 
 ## Framework
 

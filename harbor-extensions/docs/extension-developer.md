@@ -26,6 +26,7 @@ node cli/harbor.mjs extension --help
 ```bash
 harbor extension new hello-world
 harbor extension dev hello-world
+# first dev run shows "Preview User" via the preview mock (expected, not an error)
 # edit extensions/hello-world/*  → refresh the browser
 
 harbor extension publish hello-world
@@ -35,8 +36,11 @@ harbor extension publish hello-world
 Optional checks:
 
 ```bash
-harbor extension validate
+harbor extension validate hello-world   # one extension, Node-only structural check
+harbor extension validate               # all extensions (+ Python lint if present)
 ```
+
+`harbor extension dev` runs in **preview mode**: the dev server injects a mock `harbor` (`me()` → "Preview User", `can()` → true, connectors return empty demo JSON). Published files are untouched; inside the real portal the real SDK is used.
 
 ### npm scripts (same commands)
 
@@ -54,12 +58,31 @@ make dev EXT=hello-world
 make publish EXT=hello-world
 ```
 
+## Get a PAT / HARBOR_URL
+
+Only needed for `publish` (preview and validate work offline).
+
+```bash
+harbor login
+# or
+export HARBOR_URL=<your Harbor portal URL>
+export HARBOR_PAT=<your personal access token>
+```
+
+Don't know the URL or how to get a PAT? Ask your Harbor admin. Without them, `publish` dry-runs.
+
 ## Your backend
 
-1. Host the API on your team’s service platform (or anywhere reachable).
-2. Ask the platform team to **register a connector** (or open a PR under `connectors/` — platform-owned). See `connectors/outage.yaml`.
-3. In the extension, declare capabilities in `extension.yaml` and call `harbor.connector("name")`.
-4. Do **not** use browser `fetch` / XHR — the sandbox blocks it; the portal + gateway are the only network path.
+Host the API yourself, then register it as a connector.
+
+**Connector checklist**
+
+1. Copy `connectors/outage.yaml` to `connectors/<your-name>.yaml` as a model.
+2. Fill the required fields: `name`, `upstream` (your service base URL), `auth` (e.g. `type: identity-only`), `capabilities` (each with `allow` routes, `groups`, `data_class`, `write` if mutating).
+3. Open a PR under `connectors/`, or ask the platform team to register it.
+4. List the same capability names in your `extension.yaml`; they must match.
+5. Call it from the UI with `harbor.connector("<your-name>")`.
+6. Never use `fetch` / XHR — the sandbox blocks it.
 
 ## Rules (`harbor extension validate`)
 
@@ -67,7 +90,7 @@ Checked by CI / validate: no password fields, no own network calls, no browser s
 
 ## What you should not need
 
-Community developers do **not** run kind, FUSE, object-storage sims, rclone, or kubectl for day-to-day extension work. Those are platform/operator concerns under `deploy/sim/` (if present).
+You don't need a cluster or any platform tooling (kind, FUSE, kubectl) for extension work.
 
 ## More
 

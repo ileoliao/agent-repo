@@ -41,7 +41,7 @@ When credentials are set:
   export HARBOR_URL=https://…  # platform base
   harbor extension publish ${name}
 
-No cluster, object storage, or FUSE details are required from you.
+No platform credentials needed for dry-run.
 `);
     return 0;
   }

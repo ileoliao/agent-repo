@@ -57,8 +57,9 @@ export async function run(args) {
 
   log(`Created extensions/${name}
   Edit UI:   extensions/${name}/ (any frontend stack that builds to static files)
-  Local:     harbor extension dev ${name}
-  Publish:   harbor extension publish ${name}
+  Local:     harbor extension dev ${name}   (preview mock: shows "Preview User" + stub connector)
+  Check:     harbor extension validate ${name}
+  Publish:   harbor extension publish ${name} --dry-run
   Backend:   self-host your API, then register a connector (see docs/extension-developer.md)
 `);
   return 0;

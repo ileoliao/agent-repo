@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { REPO_ROOT, log, die } from "../lib.mjs";
 
 export async function run(args) {
+  const VERBOSE = args.includes("--verbose") || args.includes("-v");
   const only = args.find((a) => !a.startsWith("-"));
   const extRoot = path.join(REPO_ROOT, "extensions");
   const names = only
@@ -34,34 +35,36 @@ export async function run(args) {
       log(`FAIL ${name}: missing index.html (entry UI)`);
       errors++;
     } else {
-      log(`OK   ${name}: structure`);
+      if (VERBOSE) log(`OK   ${name}: structure`);
     }
   }
 
-  // Prefer platform Python validator when available (full lint rules).
+  // Full-repo Python lint is optional: only for unscoped runs or --python.
   const py = process.env.PYTHON || "python3";
   const validatePy = path.join(REPO_ROOT, "backend", "harbor_platform", "validate.py");
-  if (fs.existsSync(validatePy)) {
+  if (!errors && (args.includes("--python") || (!only && fs.existsSync(validatePy)))) {
     const r = spawnSync(py, ["-m", "harbor_platform.validate"], {
       cwd: path.join(REPO_ROOT, "backend"),
       encoding: "utf8",
       env: process.env,
     });
-    if (r.stdout) process.stdout.write(r.stdout);
-    if (r.stderr) process.stderr.write(r.stderr);
-    // exit 2 = needs review — still success for local DX
-    if (r.status === 1) {
-      log("Python validate reported errors.");
-      return 1;
-    }
     if (r.error) {
-      log(`(optional python validate skipped: ${r.error.message})`);
+      log(`(optional python lint skipped: ${r.error.message})`);
     } else {
-      log(`python validate exit ${r.status}`);
+      if (VERBOSE || r.status === 1) {
+        if (r.stdout) process.stdout.write(r.stdout);
+        if (r.stderr) process.stderr.write(r.stderr);
+      }
+      if (r.status === 1) {
+        log("Python validate reported errors (re-run with --verbose).");
+        return 1;
+      }
+      if (r.status === 2) log("note: platform lint flagged items for review (--verbose for detail)");
     }
   }
 
   if (errors) die(`${errors} extension(s) failed structural checks`);
-  log("validate PASS");
+  log(only ? `validate PASS (${only})` : `validate PASS (${names.length} extensions)`);
+  if (only && !args.includes("--python")) log("  (structural check only; full-repo lint: add --python)");
   return 0;
 }
