@@ -207,5 +207,6 @@ python -m harbor_platform.cli call jira POST /rest/api/2/issue/PAY-101/comment -
 ## Documents
 
 - [Requirements and architecture](docs/requirements-and-architecture.md)
+- [Roadmap inventory: Present / Partial / Missing gaps for Harbor integration and community use](docs/roadmap-inventory.md)
 - [Architecture diagrams (engineering)](docs/architecture/)
 - [Leadership deck: positioning, architecture, outlook](docs/deck/) (slide HTML sources)
