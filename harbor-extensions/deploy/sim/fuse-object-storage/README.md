@@ -122,3 +122,10 @@ node cli/harbor.mjs extension publish <name>
 - [ ] Catalog API lists `<name>`
 - [ ] Republish updates static body (hot-reload within ~30s)
 - [ ] Community criteria in [docs/post-publish-acceptance.md](../../../docs/post-publish-acceptance.md)
+
+## Operator acceptance entry points
+
+- `run-fuse-sim.sh up` — includes the in-cluster `content-publish` service and Ingress path `/api/content`
+- `verify-cli-post-publish.sh` — CLI → content channel → gateway checks (default `CLEAN=1`)
+- Developer-facing criteria: [docs/post-publish-acceptance.md](../../../docs/post-publish-acceptance.md)
+- Sim caveat: `content-publish` accepts any Bearer token of length >= 8 (no real PAT introspection). A production content channel MUST introspect the PAT against the PAT service and authorize the publisher for the extension name.

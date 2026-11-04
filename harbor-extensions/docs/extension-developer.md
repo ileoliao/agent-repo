@@ -1,121 +1,103 @@
 # Build a Harbor extension
 
-Three ideas only:
+You write a small web UI. Harbor hosts it behind the portal login. If you need a backend, you host it and Harbor connects to it.
 
-1. **UI** — static files you edit locally and publish to Harbor’s content channel.
-2. **Local preview** — like any frontend project; no cluster.
-3. **API** — you host it; Harbor registers it as a **connector**. This repo does not run your backend.
-
-Frontend framework is **not** restricted. The template is plain HTML/JS; React / Vue / Svelte / static are all fine if you ship static output here.
+| Part | Where it lives |
+|---|---|
+| **UI** (any frontend that builds to static files) | `extensions/<name>/` → published with one command |
+| **Backend / API** (optional) | **You** host it; it is registered as a *connector* |
 
 ## Prerequisites
 
-- Node.js 18+
-- Harbor CLI installed and logged in (`harbor` on your PATH; PAT via `harbor login` or `HARBOR_PAT`)
-- Work inside this repo’s `harbor-extensions/` folder (the one with `package.json` / `cli/`)
+- Node.js 18 or newer. Works on macOS, Linux and Windows.
+- This repository checked out. Run commands from the `harbor-extensions/` folder (the one with `cli/`).
+- For publishing only: your Harbor portal URL and a personal access token (PAT). Ask your Harbor admin if you do not have them.
 
-If you are developing the CLI from this checkout:
+Use `node cli/harbor.mjs …` everywhere below. If you ran `npm link` once, you can type `harbor …` instead.
+
+## 1. Create
 
 ```bash
-node cli/harbor.mjs extension --help
-# or: npm link   then use `harbor` directly
+node cli/harbor.mjs extension new hello-world \
+  --owner "Your Team" --contact you@yourcompany.com --description "What it does"
 ```
 
-## Shortest path
+Skip the flags and edit `extensions/hello-world/extension.yaml` by hand instead. Either way, `owner`, `contact` and `description` must be real values. The template placeholders are rejected.
 
-From this repo checkout (works before `harbor` is on your PATH):
+## 2. Run locally
 
 ```bash
-node cli/harbor.mjs extension new hello-world
 node cli/harbor.mjs extension dev hello-world
-# open the printed URL — first load shows "Preview User" (expected mock, not an error)
-# edit extensions/hello-world/*  → refresh the browser
-
-node cli/harbor.mjs extension publish hello-world --dry-run
-# with PAT + HARBOR_URL (after harbor login), omit --dry-run to upload
 ```
 
-After you install/link the CLI globally, the same commands are `harbor extension …`.
+Open the printed URL. You will see "Preview User". That is the built-in mock login, not an error. Edit files under `extensions/hello-world/` and refresh. No account, cluster or network is needed.
+
+Inside the real portal the real login and connectors are used. Preview mode only exists in this dev server and is never published.
+
+## 3. Check
 
 ```bash
-harbor extension new hello-world
-harbor extension dev hello-world
-harbor extension publish hello-world
+node cli/harbor.mjs extension validate hello-world
 ```
 
-Optional checks:
+Exit code 0 means OK, 1 means problems. Each problem is printed as `✗ file:line: what to change`. It checks:
+
+- `extension.yaml`: name matches the folder; real owner, contact, description; visibility set; entry file exists.
+- The sandbox rules: no `fetch`/XHR/WebSocket, no browser storage or cookies, no password inputs, no inline scripts or `onclick=`, no external URLs, relative asset paths only.
+
+Anything shown as `• note:` is not an error. It tells you what a platform reviewer will look at (for example `innerHTML`).
+
+## 4. Publish
 
 ```bash
-harbor extension validate hello-world   # one extension, Node-only structural check
-harbor extension validate               # all extensions (+ Python lint if present)
+export HARBOR_URL=https://<your-portal>      # PowerShell: $env:HARBOR_URL="https://…"
+export HARBOR_PAT=<your token>
+node cli/harbor.mjs extension publish hello-world
 ```
 
-`harbor extension dev` runs in **preview mode**: the dev server injects a mock `harbor` (`me()` → "Preview User", `can()` → true, connectors return empty demo JSON). Published files are untouched; inside the real portal the real SDK is used.
+Publish **runs validate first** and stops if anything fails. Then it uploads your static files and prints where to find the extension.
 
-### npm scripts (same commands)
+- `--dry-run` runs validation and lists the files, and uploads nothing. It needs no PAT.
+- If `HARBOR_URL` or `HARBOR_PAT` is missing, publish says exactly which one and exits 1. It never pretends to succeed.
+- `.env`, other dot-files, `*.pem`/`*.key` files and `node_modules` are never uploaded. The package limit is 25 MB.
+- Publishing again replaces the previous version. Only the latest is served.
 
-```bash
-npm run harbor -- extension new hello-world
-npm run harbor -- extension dev hello-world
-npm run harbor -- extension publish hello-world
-```
+Then **sign in to the portal**, open the Extensions catalog and find your extension. It is only visible to the groups listed in `visibility`.
 
-### Makefile (thin wrapper, optional)
+## Use another frontend (React, Vue, Svelte…)
 
-```bash
-make new EXT=hello-world
-make dev EXT=hello-world
-make publish EXT=hello-world
-```
+Build to static files inside `extensions/<name>/`, keeping `extension.yaml` and an `index.html` entry. Two rules:
 
-## Get a PAT / HARBOR_URL
+- Use relative asset paths (Vite: `base: './'`).
+- Keep `<script src="../../sdk/harbor.js">` in `index.html`. It provides `window.harbor`.
 
-Only needed for `publish` (preview and validate work offline).
-
-```bash
-harbor login
-# or
-export HARBOR_URL=<your Harbor portal URL>
-export HARBOR_PAT=<your personal access token>
-```
-
-Don't know the URL or how to get a PAT? Ask your Harbor admin. Without them, `publish` dry-runs.
-
-## After a real publish
-
-When `HARBOR_PAT` and `HARBOR_URL` (or `HARBOR_CONTENT_ENDPOINT`) are set and you omit `--dry-run`, the CLI uploads your extension files to Harbor’s content channel.
-
-After a successful publish:
-
-- The extension appears in the **Harbor portal catalog** (same list the portal UI loads).
-- Its static entry is served at the portal’s extension URL, typically under `/extensions/ext/<name>/` (for example `index.html`).
-- Editing files locally and publishing again updates what the portal serves (hot update; no separate rebuild step for static UI).
-
-Dry-run never uploads; use it to confirm which files would be sent.
+Validate scans the built files too. If a library bundle trips a sandbox rule (for example the word `localStorage`), pick a different library or ask the platform team.
 
 ## Your backend
 
-Host the API yourself, then register it as a connector.
+Host the API yourself, then register it as a connector so the UI can call it with `harbor.connector("<name>")`.
 
-**Connector checklist**
+1. Copy `connectors/outage.yaml` to `connectors/<your-name>.yaml` and edit it: `name`, `upstream` (your service base URL), `auth` (for example `type: identity-only`), and `capabilities` (each with `allow` routes, `groups`, `data_class`, and `write: true` if it mutates).
+2. Open a PR for that file, or ask the platform team to register it. The platform team approves connectors and write access.
+3. Add the same capability ids to `capabilities:` in your `extension.yaml`, for example `capabilities: [mything.read]`.
+4. In the UI call `await harbor.connector("mything").get("/api/items")`. Never use `fetch`; the sandbox blocks it.
 
-1. Copy `connectors/outage.yaml` to `connectors/<your-name>.yaml` as a model.
-2. Fill the required fields: `name`, `upstream` (your service base URL), `auth` (e.g. `type: identity-only`), `capabilities` (each with `allow` routes, `groups`, `data_class`, `write` if mutating).
-3. Open a PR under `connectors/`, or ask the platform team to register it.
-4. List the same capability names in your `extension.yaml`; they must match.
-5. Call it from the UI with `harbor.connector("<your-name>")`.
-6. Never use `fetch` / XHR — the sandbox blocks it.
+The scaffold's `app.js` already calls a demo connector named `example` and shows "not configured yet" until you register one. Replace it with yours.
 
-## Rules (`harbor extension validate`)
+## Troubleshooting
 
-Checked by CI / validate: no password fields, no own network calls, no browser storage/cookies for secrets, no inline scripts/handlers, no external resource loads, relative paths for SDK assets. Write capabilities and some patterns need platform review (exit code 2).
-
-## What you should not need
-
-You don't need a cluster or any platform tooling (kind, FUSE, kubectl) for extension work.
+| You see | Do this |
+|---|---|
+| `'owner' is empty or still the template placeholder` | Edit `extension.yaml` |
+| `Do not use fetch()` | Use `harbor.connector(...)` |
+| `Use relative paths` | `./app.js`, not `/app.js` |
+| `missing settings: HARBOR_PAT` | Set the variables from step 4 |
+| `HTTP 401` | Token expired or mistyped |
+| `TLS certificate not trusted` | Set `NODE_EXTRA_CA_CERTS=<your-ca.pem>` |
+| Published but not in the catalog | Your account is not in the extension's `visibility` groups |
+| `port 5173 is busy` | `… extension dev <name> --port 5180` |
 
 ## More
 
 - Platform overview: [../README.md](../README.md)
-- Copilot / coding rules: `.github/copilot-instructions.md`
-- Connector example (team-hosted API): `connectors/outage.yaml`
+- Coding rules for AI assistants: `.github/copilot-instructions.md`

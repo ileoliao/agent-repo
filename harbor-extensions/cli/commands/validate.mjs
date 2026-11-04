@@ -1,70 +1,60 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { REPO_ROOT, log, die } from "../lib.mjs";
+import { REPO_ROOT, resolveExt, log, die } from "../lib.mjs";
+import { validateExtension } from "../validate-core.mjs";
+
+/** Shared by `validate` and `publish`. Returns { errors, notes } and prints a readable report. */
+export function checkExtension(name, dir, { quiet = false } = {}) {
+  const { errors, notes } = validateExtension(dir, { repoRoot: REPO_ROOT });
+  if (!quiet) {
+    for (const e of errors) log(`  ✗ ${e}`);
+    for (const n of notes) log(`  • note: ${n}`);
+  }
+  return { errors, notes };
+}
 
 export async function run(args) {
-  const VERBOSE = args.includes("--verbose") || args.includes("-v");
+  const verbose = args.includes("--verbose") || args.includes("-v");
   const only = args.find((a) => !a.startsWith("-"));
   const extRoot = path.join(REPO_ROOT, "extensions");
   const names = only
-    ? [only]
-    : fs.readdirSync(extRoot).filter((n) => fs.existsSync(path.join(extRoot, n, "extension.yaml")));
+    ? [resolveExt(only).name]
+    : fs.existsSync(extRoot)
+      ? fs.readdirSync(extRoot).filter((n) => fs.existsSync(path.join(extRoot, n, "extension.yaml")))
+      : [];
+  if (!names.length) die("no extensions found under extensions/. Create one with: harbor extension new <name>");
 
-  let errors = 0;
+  let failed = 0;
   for (const name of names) {
-    const dir = path.join(extRoot, name);
-    const yaml = path.join(dir, "extension.yaml");
-    if (!fs.existsSync(yaml)) {
-      log(`FAIL ${name}: missing extension.yaml`);
-      errors++;
-      continue;
-    }
-    const text = fs.readFileSync(yaml, "utf8");
-    if (!/^name:\s*\S+/m.test(text)) {
-      log(`FAIL ${name}: extension.yaml missing name:`);
-      errors++;
+    const { errors, notes } = checkExtension(name, path.join(extRoot, name), { quiet: false });
+    if (errors.length) {
+      failed++;
+      log(`FAIL ${name}: ${errors.length} problem(s) — fix the lines marked ✗ above`);
     } else {
-      const m = text.match(/^name:\s*(\S+)/m);
-      if (m && m[1] !== name) {
-        log(`FAIL ${name}: name '${m[1]}' must match directory`);
-        errors++;
-      }
-    }
-    if (!fs.existsSync(path.join(dir, "index.html"))) {
-      log(`FAIL ${name}: missing index.html (entry UI)`);
-      errors++;
-    } else {
-      if (VERBOSE) log(`OK   ${name}: structure`);
+      log(`PASS ${name}${notes.length ? ` (${notes.length} note(s) for reviewers)` : ""}`);
     }
   }
 
-  // Full-repo Python lint is optional: only for unscoped runs or --python.
-  const py = process.env.PYTHON || "python3";
-  const validatePy = path.join(REPO_ROOT, "backend", "harbor_platform", "validate.py");
-  if (!errors && (args.includes("--python") || (!only && fs.existsSync(validatePy)))) {
-    const r = spawnSync(py, ["-m", "harbor_platform.validate"], {
+  // Optional: the platform's own Python lint (same rules CI runs). Only with --python.
+  if (args.includes("--python") && !failed) {
+    const r = spawnSync(process.env.PYTHON || "python3", ["-m", "harbor_platform.validate"], {
       cwd: path.join(REPO_ROOT, "backend"),
       encoding: "utf8",
-      env: process.env,
     });
-    if (r.error) {
-      log(`(optional python lint skipped: ${r.error.message})`);
-    } else {
-      if (VERBOSE || r.status === 1) {
-        if (r.stdout) process.stdout.write(r.stdout);
-        if (r.stderr) process.stderr.write(r.stderr);
-      }
-      if (r.status === 1) {
-        log("Python validate reported errors (re-run with --verbose).");
-        return 1;
-      }
-      if (r.status === 2) log("note: platform lint flagged items for review (--verbose for detail)");
+    if (r.error) log(`(python lint skipped: ${r.error.message})`);
+    else {
+      if (verbose || r.status === 1) process.stdout.write(r.stdout || "");
+      if (r.stderr && (verbose || r.status === 1)) process.stderr.write(r.stderr);
+      if (r.status === 1) return 1;
+      if (r.status === 2) log("python lint: valid, but needs platform-team review before merge");
     }
   }
 
-  if (errors) die(`${errors} extension(s) failed structural checks`);
-  log(only ? `validate PASS (${only})` : `validate PASS (${names.length} extensions)`);
-  if (only && !args.includes("--python")) log("  (structural check only; full-repo lint: add --python)");
+  if (failed) {
+    log(`\n${failed} of ${names.length} extension(s) failed.`);
+    return 1;
+  }
+  log(`\nvalidate OK (${names.length} extension${names.length > 1 ? "s" : ""}).`);
   return 0;
 }

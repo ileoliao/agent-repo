@@ -82,6 +82,11 @@ export function contentEndpoint() {
   );
 }
 
+/** Portal origin (no trailing slash) from HARBOR_URL; null when only an explicit content endpoint is configured. */
+export function portalBase() {
+  return process.env.HARBOR_URL ? process.env.HARBOR_URL.replace(/\/$/, "") : null;
+}
+
 /** How to re-invoke this CLI in printed hints (checkout vs global `harbor`). */
 export function cliLabel() {
   const argv1 = process.argv[1] || "";

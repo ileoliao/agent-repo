@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { REPO_ROOT, resolveExt, log, die } from "../lib.mjs";
+import { validateExtension } from "../validate-core.mjs";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -27,7 +28,7 @@ function safeJoin(root, urlPath) {
   const decoded = decodeURIComponent((urlPath || "/").split("?")[0]);
   const rel = decoded.replace(/^\/+/, "");
   const full = path.normalize(path.join(root, rel));
-  if (!full.startsWith(root)) return null;
+  if (full !== root && !full.startsWith(root + path.sep)) return null;
   return full;
 }
 
@@ -67,6 +68,8 @@ export async function run(args) {
   if (!Number.isFinite(port) || port <= 0) die("invalid --port", 2);
   const { name } = resolveExt(nameArg);
 
+  // Non-blocking: show what publish would complain about, early.
+  const pre = validateExtension(path.join(REPO_ROOT, "extensions", name), { repoRoot: REPO_ROOT });
   const indexUrl = `http://127.0.0.1:${port}/extensions/${name}/index.html`;
 
   const server = http.createServer((req, res) => {
@@ -80,7 +83,14 @@ export async function run(args) {
       res.end(`<!doctype html><meta charset="utf-8"><title>Harbor preview</title><body><h1>Harbor preview mode</h1><p>Open your extension: <a href="/extensions/${name}/index.html">/extensions/${name}/index.html</a></p><p>Preview mode: harbor identity and connectors are mocked.</p></body>`);
       return;
     }
-    let file = safeJoin(REPO_ROOT, req.url);
+    let urlPath;
+    try { urlPath = path.posix.normalize(decodeURIComponent((req.url || "").split("?")[0])); } catch { res.writeHead(400); res.end("bad request"); return; }
+    if (!urlPath.startsWith(`/extensions/${name}/`) && !urlPath.startsWith("/sdk/")) {
+      res.writeHead(404);
+      res.end("not found (preview serves only /extensions/" + name + "/ and /sdk/)");
+      return;
+    }
+    let file = safeJoin(REPO_ROOT, urlPath);
     if (!file) {
       res.writeHead(403);
       res.end("forbidden");
@@ -122,11 +132,14 @@ export async function run(args) {
   });
 
   await new Promise((resolve, reject) => {
-    server.once("error", reject);
+    server.once("error", (e) => {
+      if (e.code === "EADDRINUSE") die(`port ${port} is busy. Try: harbor extension dev ${name} --port ${port + 1}`);
+      reject(e);
+    });
     server.listen(port, "127.0.0.1", resolve);
   });
 
-  log(`Local preview for '${name}' (no cluster, no sim)
+  log(`Local preview for '${name}' (no cluster, no account)
   Preview mode: mock harbor identity active
   Open:  ${indexUrl}
   Stop:  Ctrl+C
@@ -137,6 +150,11 @@ Notes:
   - harbor.me()/can()/connector() return mock data here (dev server only; published files are untouched).
   - Your business API is self-hosted + registered as a connector — not part of this preview.
 `);
+  if (pre.errors.length) {
+    log(`Heads-up: publish would currently stop on ${pre.errors.length} item(s) (preview still works):`);
+    for (const e of pre.errors) log(`  ✗ ${e}`);
+    log("");
+  }
 
   // keep alive
   await new Promise(() => {});

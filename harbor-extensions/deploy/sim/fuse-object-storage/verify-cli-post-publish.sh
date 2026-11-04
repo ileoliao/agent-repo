@@ -78,7 +78,7 @@ ing_hz="$(curl -sk --resolve "${HOST}:8443:127.0.0.1" -o /tmp/pp-ing-hz.txt -w '
 rm -rf "extensions/${EXT}"
 
 log "1) scaffold"
-node cli/harbor.mjs extension new "$EXT" >/tmp/pp-new.out
+node cli/harbor.mjs extension new "$EXT" --owner post-publish-verify --contact verify@corp.test --description "Post-publish acceptance probe" >/tmp/pp-new.out
 grep -q "extensions/${EXT}" /tmp/pp-new.out || bad "new did not mention path"
 if [[ -f "extensions/${EXT}/index.html" ]]; then
   python3 - <<PY
@@ -101,7 +101,7 @@ export HARBOR_PAT=pat_sim_cli
 export HARBOR_CONTENT_ENDPOINT="$ENDPOINT"
 # Prefer explicit content endpoint; HARBOR_URL also works once Ingress is used.
 node cli/harbor.mjs extension publish "$EXT" | tee /tmp/pp-pub.out
-grep -qi 'Published OK' /tmp/pp-pub.out && ok "CLI publish OK" || bad "CLI publish missing Published OK"
+grep -qi "Published '" /tmp/pp-pub.out && ok "CLI publish OK" || bad "CLI publish missing Published OK"
 
 log "4) FUSE mount sees files"
 sleep 2
@@ -141,7 +141,7 @@ t=p.read_text().replace("${MARKER}", "${MARKER2}")
 p.write_text(t)
 PY
 node cli/harbor.mjs extension publish "$EXT" | tee /tmp/pp-pub2.out
-grep -qi 'Published OK' /tmp/pp-pub2.out && ok "republish OK" || bad "republish failed"
+grep -qi "Published '" /tmp/pp-pub2.out && ok "republish OK" || bad "republish failed"
 pod="pp-curl2-$$"
 "${K[@]}" run "$pod" --restart=Never --image=curlimages/curl:8.5.0 --command -- sleep 90 >/dev/null
 "${K[@]}" wait --for=condition=Ready "pod/$pod" --timeout=60s >/dev/null

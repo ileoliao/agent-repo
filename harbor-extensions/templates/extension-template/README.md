@@ -1,37 +1,21 @@
 # My Extension
 
-Harbor UI extension (static content).
+A Harbor UI extension (static files shown inside the portal after login).
 
-## Local preview
-
-```bash
-harbor extension dev my-extension
-```
-
-Or from this folder (after scaffolding, the name is filled in):
+From the `harbor-extensions/` folder (two levels up):
 
 ```bash
-npm run dev
+node cli/harbor.mjs extension dev my-extension        # local preview, mock login
+node cli/harbor.mjs extension validate my-extension   # must pass before publish
+node cli/harbor.mjs extension publish my-extension    # needs HARBOR_URL and HARBOR_PAT
 ```
 
-Open the printed URL. No cluster required. Preview mode injects a mock `harbor` (`me()` → "Preview User", `can()` → true, connectors return empty data) — dev server only; published files are unchanged.
+Before publishing, set real `owner`, `contact` and `description` in `extension.yaml`. Placeholders are rejected.
 
 ## Framework
 
-Plain HTML/JS is enough. You may use **React, Vue, Svelte, or any other stack** —
-build to static files in this directory (keep `extension.yaml` and an `index.html` entry).
-The scaffold does not lock you to a framework.
+Plain HTML/JS by default. React, Vue, Svelte etc. are fine: build to static files in this folder (keep `extension.yaml` and `index.html`, and use relative asset paths).
 
-## Publish UI
+## Backend
 
-```bash
-harbor extension publish my-extension
-```
-
-Requires Harbor login / `HARBOR_PAT`. Without credentials the CLI dry-runs and lists files.
-
-## Backend / API
-
-**Do not put business APIs in this folder.** Host your service yourself, then register it
-as a Harbor **connector** (see `connectors/outage.yaml` and `docs/extension-developer.md`).
-Call it from the UI with `harbor.connector("your-connector")` — never raw `fetch`.
+Don't put business APIs in this folder. Host your service yourself and register it as a Harbor connector (see `connectors/outage.yaml` and `docs/extension-developer.md`). Call it from the UI with `harbor.connector("name")`, never `fetch`.

@@ -151,17 +151,18 @@ the outage service in `backend/mocks/app.py`:
 
 ## Contribute an extension
 
-Start here: **[docs/extension-developer.md](docs/extension-developer.md)**. In short (Harbor CLI, cross-platform Node):
+Start here: **[docs/extension-developer.md](docs/extension-developer.md)** (Node 18+, any OS):
 
 ```bash
-harbor extension new hello-world      # scaffold
-harbor extension dev hello-world      # local preview — no cluster / sim
-harbor extension publish hello-world  # publish UI (dry-run without PAT)
+node cli/harbor.mjs extension new hello-world --owner "Your Team" --contact you@corp.com --description "What it does"
+node cli/harbor.mjs extension dev hello-world        # local preview, no account needed
+node cli/harbor.mjs extension validate hello-world   # placeholders + sandbox rules
+HARBOR_URL=https://<portal> HARBOR_PAT=<token> node cli/harbor.mjs extension publish hello-world   # validates first
 ```
 
-Framework: any (template is plain HTML/JS). **Backend:** self-host your API and register a **connector**; this content channel is UI/static only.
+Any frontend framework that builds to static files works. **Backend:** self-host your API and register it as a **connector**; publish only ships the UI files.
 
-`harbor extension validate` / `python -m harbor_platform.validate` exit codes: 0 = auto-mergeable, 2 = needs platform-team review, 1 = errors (rules in `backend/harbor_platform/lint.py`). Then open a PR; once merged, the change takes effect without restarting the platform.
+`validate` exits 1 on problems. The platform CI (`python -m harbor_platform.validate`) additionally returns 2 when a change needs platform-team review (rules in `backend/harbor_platform/lint.py`).
 
 ## CLI (PAT / agent path)
 

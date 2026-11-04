@@ -6,8 +6,7 @@
  *   harbor extension publish <name> [--dry-run]
  *   harbor extension validate
  *
- * Assumes: Harbor CLI installed, user already logged in / PAT ready
- * (HARBOR_PAT or harbor login). Storage/cluster details are never shown.
+ * Auth for publish: HARBOR_URL + HARBOR_PAT environment variables.
  */
 import { pathToFileURL } from "node:url";
 import path from "node:path";
@@ -20,19 +19,17 @@ function rootHelp() {
   console.log(`Harbor CLI
 
 Usage:
-  harbor extension new <name>                 Scaffold a new extension
-  harbor extension dev <name>                 Local preview (no cluster)
-  harbor extension publish <name> [--dry-run] Publish UI to Harbor content channel
-  harbor extension validate                   Validate extensions in this repo
+  harbor extension new <name> [--owner X --contact Y --description Z]
+                                              Scaffold extensions/<name>/
+  harbor extension dev <name> [--port N]      Local preview (mock login, no account needed)
+  harbor extension validate [<name>]          Check manifest + sandbox rules (exit 1 on problems)
+  harbor extension publish <name> [--dry-run] Validate, then upload the static files
 
-Global:
-  harbor help
-  harbor extension --help
+Publish needs:
+  HARBOR_URL   your Harbor portal URL
+  HARBOR_PAT   your personal access token
 
-Env (publish):
-  HARBOR_PAT                 Auth (preferred; also from prior harbor login)
-  HARBOR_URL                 Platform base URL
-  HARBOR_CONTENT_ENDPOINT    Optional explicit content upload endpoint
+Docs: docs/extension-developer.md
 `);
 }
 
