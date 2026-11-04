@@ -1,0 +1,7 @@
+--- bad/short PAT
+
+Not published: HTTP 401. Your PAT was rejected — check HARBOR_PAT (expired or mistyped?).
+  server said: {"detail":"invalid Bearer token"}
+--- arbitrary 8+ char PAT (sim accepts: P0 for real platform)
+Dry run: nothing uploaded. Remove --dry-run to publish.
+{"ok":true,"name":"x-nope","files":1,"prefix":"extensions/x-nope"} HTTP 200

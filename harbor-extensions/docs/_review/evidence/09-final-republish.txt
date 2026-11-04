@@ -1,0 +1,4 @@
+Published 'hello-pi'.
+  Catalog:  https://harbor.sim.internal:8443/extensions/   (sign in, find "hello-pi")
+  Status:   visible in the catalog for your account
+  Re-run publish after any change; the latest upload replaces the previous one.

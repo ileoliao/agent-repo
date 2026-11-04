@@ -1,0 +1,25 @@
+# Harbor ingress with /api/content → content-publish (keeps / and /extensions).
+# Applied by run-fuse-sim.sh up after content-publish is Ready.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: harbor
+  namespace: harbor
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: harbor.sim.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: harbor-stub, port: {number: 80}}
+          - path: /extensions
+            pathType: Prefix
+            backend:
+              service: {name: harbor-extensions, port: {number: 80}}
+          - path: /api/content
+            pathType: Prefix
+            backend:
+              service: {name: content-publish, port: {number: 80}}

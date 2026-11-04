@@ -1,0 +1,30 @@
+  Re-run publish after any change; the latest upload replaces the previous one.
+[post-publish] PASS: CLI publish OK
+[post-publish] 4) FUSE mount sees files
+[post-publish] PASS: FUSE mount has extensions/postpub-cli-demo/extension.yaml (t=1s)
+[post-publish] 5) static + catalog via in-cluster gateway
+[post-publish] PASS: /healthz 200
+[post-publish] PASS: static index.html 200
+[post-publish] PASS: marker in static body
+[post-publish] PASS: catalog lists postpub-cli-demo
+[post-publish] 6) republish hot-reload
+1/3 Validating 'postpub-cli-demo' …
+    ok
+2/3 Package: 6 file(s), 4.1 KB
+      - README.md
+      - app.js
+      - extension.yaml
+      - index.html
+      - package.json
+      - style.css
+3/3 Uploading to http://127.0.0.1:18771/api/content/extensions …
+    uploaded.
+
+Published 'postpub-cli-demo'.
+  Catalog:  http://127.0.0.1:18771/extensions/   (sign in, find "postpub-cli-demo")
+  Status:   uploaded; not yet visible to your account in the catalog (visibility groups? give it a minute, then refresh)
+  Re-run publish after any change; the latest upload replaces the previous one.
+[post-publish] PASS: republish OK
+[post-publish] PASS: hot-reload marker visible (1s)
+[post-publish] cleanup local + bucket extensions/postpub-cli-demo
+[post-publish] RESULT: PASS — CLI publish → content-publish → bucket → FUSE → static/catalog/hot-reload

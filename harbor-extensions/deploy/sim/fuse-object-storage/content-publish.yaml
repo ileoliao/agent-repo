@@ -1,0 +1,69 @@
+# In-cluster Harbor content channel (CLI publish → object store).
+# Image: harbor-content-publish:sim (see Dockerfile.content-publish).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: content-publish
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: content-publish
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: content-publish
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: content-publish
+        app.kubernetes.io/part-of: harbor-fuse-prototype
+    spec:
+      containers:
+        - name: content-publish
+          image: harbor-content-publish:sim
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8080}
+          envFrom:
+            - secretRef: {name: minio-fuse-creds}
+          env:
+            - name: CONTENT_BUCKET
+              value: harbor-content
+            - name: S3_ENDPOINT
+              value: http://minio-fuse.harbor.svc.cluster.local:9000
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 15
+            failureThreshold: 4
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10003
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: content-publish
+  namespace: harbor
+  labels:
+    app.kubernetes.io/name: content-publish
+    app.kubernetes.io/part-of: harbor-fuse-prototype
+spec:
+  selector:
+    app.kubernetes.io/name: content-publish
+  ports:
+    - {name: http, port: 80, targetPort: http}

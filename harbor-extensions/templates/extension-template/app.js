@@ -18,7 +18,17 @@ async function main() {
   const app = document.getElementById("app");
   try {
     const me = await harbor.me();
-    app.replaceChildren(h("div", { class: "hx-card hx-card-body" }, `Hello, ${me.display_name}`));
+    const card = h("div", { class: "hx-card hx-card-body" }, h("p", null, `Hello, ${me.display_name}`));
+    const demo = h("p", { class: "hx-muted" }, "Connector demo: loading...");
+    card.append(demo);
+    app.replaceChildren(card);
+    try {
+      // Demo call: register a connector named "example" to make this real.
+      const r = await harbor.connector("example").get("/health");
+      demo.textContent = `Connector demo: ${r.status || "ok"} - ${r.message || JSON.stringify(r)}`;
+    } catch (e) {
+      demo.textContent = `Connector demo: not configured yet (${e.reason || e.message})`;
+    }
   } catch (e) {
     app.replaceChildren(h("div", { class: "hx-banner hx-banner-bad" }, e.reason || e.message));
   }

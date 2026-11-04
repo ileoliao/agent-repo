@@ -1,0 +1,12 @@
+new rc=0
+validate(placeholders) rc=1 (expect 1)
+
+validate OK (1 extension).
+rc=0
+      - style.css
+
+Dry run: nothing uploaded. Remove --dry-run to publish.
+1
+Error: 'Bad_Name' is not lowercase-kebab (start with a letter; digits and single dashes ok)
+bad-name rc=2
+esm ok

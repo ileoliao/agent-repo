@@ -151,14 +151,18 @@ the outage service in `backend/mocks/app.py`:
 
 ## Contribute an extension
 
-1. `cp -r templates/extension-template extensions/<name>`, then edit `extension.yaml`.
-2. In VS Code, ask Copilot to implement `app.js` (it reads `.github/copilot-instructions.md`).
-3. `cd backend && python -m harbor_platform.validate`:
-   Exit code 0 = auto-mergeable, 2 = needs platform-team review, 1 = errors.
-   - Errors: invalid config; references to nonexistent capabilities; extension code that collects passwords, makes its own network requests (fetch/XHR/WebSocket),
-     uses browser storage or cookies, writes inline scripts or inline event handlers, or loads external resources (rules in `backend/harbor_platform/lint.py`).
-   - Needs review: requesting write capabilities, requesting non-internal capabilities, widening visibility, changing connectors or grants, using HTML injection APIs such as innerHTML.
-4. Open a PR. Once merged, the host directory syncs and the change takes effect without restarting the platform.
+Start here: **[docs/extension-developer.md](docs/extension-developer.md)** (Node 18+, any OS):
+
+```bash
+node cli/harbor.mjs extension new hello-world --owner "Your Team" --contact you@corp.com --description "What it does"
+node cli/harbor.mjs extension dev hello-world        # local preview, no account needed
+node cli/harbor.mjs extension validate hello-world   # placeholders + sandbox rules
+HARBOR_URL=https://<portal> HARBOR_PAT=<token> node cli/harbor.mjs extension publish hello-world   # validates first
+```
+
+Any frontend framework that builds to static files works. **Backend:** self-host your API and register it as a **connector**; publish only ships the UI files.
+
+`validate` exits 1 on problems. The platform CI (`python -m harbor_platform.validate`) additionally returns 2 when a change needs platform-team review (rules in `backend/harbor_platform/lint.py`).
 
 ## CLI (PAT / agent path)
 

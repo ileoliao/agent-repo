@@ -1,0 +1,38 @@
+$ new hello-pi
+Created extensions/hello-pi
+
+Next
+  1. Preview:   node cli/harbor.mjs extension dev hello-pi      (mock login, no cluster, no account needed)
+  2. Edit:      extensions/hello-pi/  — any framework that builds to static files
+  3. Fill in:   extensions/hello-pi/extension.yaml → owner, contact, description  (validate/publish refuse the template values)
+  4. Check:     node cli/harbor.mjs extension validate hello-pi
+  5. Publish:   export HARBOR_URL=<portal URL> HARBOR_PAT=<token>; node cli/harbor.mjs extension publish hello-pi
+Backend: host your own API and register it as a connector — see docs/extension-developer.md
+rc=0
+
+$ validate hello-pi (fresh scaffold)
+  ✗ extensions/hello-pi/extension.yaml: 'owner' is empty or still the template placeholder ("team-xxx") — set a real value
+  ✗ extensions/hello-pi/extension.yaml: 'contact' is empty or still the template placeholder ("you@example.com") — set a real value
+  ✗ extensions/hello-pi/extension.yaml: 'description' is empty or still the template placeholder ("One sentence on what problem it solves") — set a real value
+FAIL hello-pi: 3 problem(s) — fix the lines marked ✗ above
+
+1 of 1 extension(s) failed.
+rc=1
+
+$ publish --dry-run (fresh scaffold)
+1/3 Validating 'hello-pi' …
+  ✗ extensions/hello-pi/extension.yaml: 'owner' is empty or still the template placeholder ("team-xxx") — set a real value
+  ✗ extensions/hello-pi/extension.yaml: 'contact' is empty or still the template placeholder ("you@example.com") — set a real value
+  ✗ extensions/hello-pi/extension.yaml: 'description' is empty or still the template placeholder ("One sentence on what problem it solves") — set a real value
+
+Not published: 3 problem(s) above. Fix them, then run publish again.
+rc=1
+
+$ publish with PAT (fresh scaffold, placeholders)
+1/3 Validating 'hello-pi' …
+  ✗ extensions/hello-pi/extension.yaml: 'owner' is empty or still the template placeholder ("team-xxx") — set a real value
+  ✗ extensions/hello-pi/extension.yaml: 'contact' is empty or still the template placeholder ("you@example.com") — set a real value
+  ✗ extensions/hello-pi/extension.yaml: 'description' is empty or still the template placeholder ("One sentence on what problem it solves") — set a real value
+
+Not published: 3 problem(s) above. Fix them, then run publish again.
+rc=1

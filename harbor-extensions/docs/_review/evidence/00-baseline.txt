@@ -1,0 +1,1 @@
+BASELINE (before changes): placeholder scaffold 'base-probe' published OK to sim: 'Published OK → https://harbor.sim.internal:8443/api/content/extensions' rc=0; 'harbor login' documented but not implemented; dev server serves whole repo root
