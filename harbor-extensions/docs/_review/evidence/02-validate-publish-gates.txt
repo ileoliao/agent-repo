@@ -1,0 +1,47 @@
+rc_new=0
+name: hello-pi
+title: "Hello Pi"
+description: "Shows my team's deploy status: demo"
+owner: "Pi Tester"
+contact: "pi@corp.test"
+$ validate
+PASS hello-pi
+
+validate OK (1 extension).
+rc=0
+--- inject violations
+  ✗ extensions/hello-pi/app.js:38: Do not use fetch(): extensions have no network access; call your backend with harbor.connector(...)
+  ✗ extensions/hello-pi/app.js:38: No browser storage in the sandbox: keep state in your own service and use connectors
+  ✗ extensions/hello-pi/index.html:20: No external resources: only files in this folder and ../../sdk/ may be referenced
+  ✗ extensions/hello-pi/index.html:8: Use relative paths (./app.js, ../../sdk/harbor.js). Absolute paths break under the portal's /extensions prefix (Vite: set base: './')
+  • note: extensions/hello-pi/app.js:38: Uses an HTML injection API (innerHTML…): platform reviewers will check untrusted data is not rendered as HTML
+FAIL hello-pi: 4 problem(s) — fix the lines marked ✗ above
+
+1 of 1 extension(s) failed.
+rc=1
+--- publish with PAT must stop at validate
+  • note: extensions/hello-pi/app.js:38: Uses an HTML injection API (innerHTML…): platform reviewers will check untrusted data is not rendered as HTML
+
+Not published: 4 problem(s) above. Fix them, then run publish again.
+rc=0
+--- python lint agrees (CI parity)
+Connectors: harbor-release, jira, outage, snow
+Extensions: hello-pi, jira-glance, outage-console, postpub-cli-demo, release-calendar, test-readonly-extension
+Result: can be auto-merged
+py_rc=0
+--- no creds
+1/3 Validating 'hello-pi' …
+    ok
+2/3 Package: 6 file(s), 4.1 KB
+      - README.md
+      - app.js
+      - extension.yaml
+      - index.html
+      - package.json
+      - style.css
+
+Not published: missing settings. Set:
+  HARBOR_URL  (your Harbor portal origin, e.g. https://harbor.example.com)
+  HARBOR_PAT  (a personal access token from your Harbor account)
+Then re-run. (Use --dry-run to only check the package.)
+rc=1

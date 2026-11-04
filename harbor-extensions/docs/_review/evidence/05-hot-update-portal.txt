@@ -1,0 +1,14 @@
+
+Published 'hello-pi'.
+  Catalog:  https://harbor.sim.internal:8443/extensions/   (sign in, find "hello-pi")
+  Status:   visible in the catalog for your account
+  Re-run publish after any change; the latest upload replaces the previous one.
+--- static entry via ingress, session cookie
+          <h1>Hello Pi v2 HOTMARK</h1>
+HTTP 200
+--- no credential -> static entry
+HTTP 200
+--- portal UI (logged-in session cookie)
+catalog lists extension: false
+iframe text: "Hello Pi v2 HOTMARK\n\nHello, Alice Wang\n\nConnector demo: not configured yet (Connector example is not registered)"
+marker present: true

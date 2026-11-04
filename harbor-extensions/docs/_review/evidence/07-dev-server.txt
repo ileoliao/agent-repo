@@ -1,0 +1,25 @@
+$ dev hello-pi
+Local preview for 'hello-pi' (no cluster, no account)
+  Preview mode: mock harbor identity active
+  Open:  http://127.0.0.1:5198/extensions/hello-pi/index.html
+  Stop:  Ctrl+C
+
+Notes:
+  - Edit files under extensions/hello-pi/ and refresh the browser.
+  - Any framework is fine; point the build output at this folder (or keep plain HTML/JS).
+  - harbor.me()/can()/connector() return mock data here (dev server only; published files are untouched).
+  - Your business API is self-hosted + registered as a connector — not part of this preview.
+
+/extensions/hello-pi/index.html -> 200
+/sdk/harbor-preview.js -> 200
+/extensions/hello-pi/extension.yaml -> 200
+/cli/harbor.mjs -> 404
+/etc/passwd -> 404
+/backend/harbor_platform/app.py -> 404
+/extensions/outage-console/app.js -> 404
+/extensions/hello-pi/../../package.json -> 200
+/extensions/hello-pi/index.html -> 200
+/extensions/hello-pi/../../package.json -> 404
+/extensions/hello-pi/%2e%2e/%2e%2e/package.json -> 404
+/sdk/harbor.js -> 200
+/sdk/../package.json -> 404
