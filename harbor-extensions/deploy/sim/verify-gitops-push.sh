@@ -28,7 +28,7 @@ trap cleanup EXIT
 git init --bare -q "$TMP/remote.git"
 (
   cd "$TMP"
-  node "$ROOT/cli/harbor.mjs" extension new "$NAME" --standalone \
+  node "$ROOT/cli/harbor.mjs" extension new "$NAME" \
     --owner verification --contact verify@corp.test --description "GitOps push acceptance" >/dev/null
 )
 git -C "$TMP/$NAME" init -q -b dev

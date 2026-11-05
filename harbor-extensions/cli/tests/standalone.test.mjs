@@ -17,7 +17,7 @@ function fixture(t) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "harbor-node-test-"));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const repo = path.join(temp, "team-demo");
-  fs.cpSync(path.join(ROOT, "templates", "standalone-extension"), repo, { recursive: true });
+  fs.cpSync(path.join(ROOT, "templates", "extension"), repo, { recursive: true });
   for (const file of ["extension.yaml", "web/index.html"]) {
     const p = path.join(repo, file);
     fs.writeFileSync(p, fs.readFileSync(p, "utf8").replaceAll("my-extension", "team-demo").replaceAll("My Extension", "Team Demo").replaceAll("team-xxx", "team-demo").replaceAll("you@example.com", "team@corp.test").replaceAll("One sentence on what problem it solves", "A real team extension"));
@@ -91,11 +91,11 @@ test("bundles publish web only, reject key files, and stay outside the repo", (t
   assert.throws(() => bundleStandalone(repo, "dev", path.join(repo, "bundle")), /outside the extension repo/);
 });
 
-test("standalone scaffold validates from its own repository and has no upload command", (t) => {
+test("extension scaffold validates from its own repository and has no upload command", (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "harbor-scaffold-test-"));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const cli = path.join(ROOT, "cli", "harbor.mjs");
-  const created = spawnSync(process.execPath, [cli, "extension", "new", "team-sample", "--standalone", "--owner", "team-sample", "--contact", "sample@corp.test", "--description", "Sample extension"], { cwd: temp, encoding: "utf8" });
+  const created = spawnSync(process.execPath, [cli, "extension", "new", "team-sample", "--owner", "team-sample", "--contact", "sample@corp.test", "--description", "Sample extension"], { cwd: temp, encoding: "utf8" });
   assert.equal(created.status, 0, created.stderr);
   const repo = path.join(temp, "team-sample");
   assert.ok(fs.existsSync(path.join(repo, "connectors", "team-sample-api.yaml")));
@@ -104,6 +104,14 @@ test("standalone scaffold validates from its own repository and has no upload co
   const published = spawnSync(process.execPath, [cli, "extension", "publish", ".", "--dry-run"], { cwd: repo, encoding: "utf8" });
   assert.equal(published.status, 2);
   assert.match(published.stderr, /Unknown: harbor extension publish/);
+});
+
+test("scaffold refuses to create an extension inside the platform checkout", () => {
+  const cli = path.join(ROOT, "cli", "harbor.mjs");
+  const created = spawnSync(process.execPath, [cli, "extension", "new", "inside-platform"], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(created.status, 2);
+  assert.match(created.stderr, /outside the platform checkout/);
+  assert.equal(fs.existsSync(path.join(ROOT, "inside-platform")), false);
 });
 
 test("Jenkins push bundle accepts detached checkout only for matching branch and commit", (t) => {

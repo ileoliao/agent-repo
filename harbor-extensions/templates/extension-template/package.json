@@ -1,7 +1,0 @@
-{
-  "name": "harbor-extension-my-extension",
-  "private": true,
-  "scripts": {
-    "dev": "node ../../cli/harbor.mjs extension dev my-extension"
-  }
-}

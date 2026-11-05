@@ -5,4 +5,5 @@ data/
 portal/node_modules/
 node_modules/
 portal/dist/
+portal/*.tsbuildinfo
 backend/tests/e2e/artifacts/

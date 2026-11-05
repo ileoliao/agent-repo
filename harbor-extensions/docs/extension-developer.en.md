@@ -14,7 +14,7 @@ Install the CLI once from the platform repository's `harbor-extensions/` directo
 npm ci
 npm link
 cd /path/to/team-workspace
-harbor extension new my-extension --standalone \
+harbor extension new my-extension \
   --owner "Your Team" --contact you@company.internal --description "What it does"
 cd my-extension
 ```

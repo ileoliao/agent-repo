@@ -118,15 +118,6 @@ def test_unknown_manifest_field_rejected(root):
     assert any("Unknown field storage" in e for e in validate(root)["errors"])
 
 
-def test_template_placeholders_block_ci_validation(root):
-    from harbor_platform.config import REPO_ROOT
-
-    shutil.copytree(REPO_ROOT / "templates" / "extension-template", root / "extensions" / "my-extension")
-    report = validate(root)
-    assert any("title is empty or still the template placeholder" in e for e in report["errors"])
-    assert "my-extension" not in report["extensions"]
-
-
 def test_template_heading_blocks_ci_validation(root):
     entry = root / "extensions" / "outage-console" / "index.html"
     entry.write_text(entry.read_text(encoding="utf-8") + "<h1>My Extension</h1>", encoding="utf-8")

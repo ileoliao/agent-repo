@@ -2,7 +2,7 @@
 /**
  * Harbor CLI (Node). Community extension DX lives here:
  *   harbor extension new <name>
- *   harbor extension dev <name>
+ *   harbor extension dev [path]
  *   harbor extension validate
  */
 import { pathToFileURL } from "node:url";
@@ -17,10 +17,9 @@ function rootHelp() {
 
 Usage:
   harbor extension new <name> [--owner X --contact Y --description Z]
-                                              Scaffold extensions/<name>/
-  harbor extension new <name> --standalone    Scaffold a dedicated extension repository directory
-  harbor extension dev [<name|path>] [--port N] Local preview; standalone repos use a Node connector proxy
-  harbor extension validate [<name|path>]   Check manifest, connector and environment configuration
+                                         Create an independent extension repository directory
+  harbor extension dev [path] [--port N]  Preview with a local connector backend
+  harbor extension validate [path]       Check manifest, connector and environment configuration
 
 Publishing is triggered only by GitHub pushes to dev or prod.
 
