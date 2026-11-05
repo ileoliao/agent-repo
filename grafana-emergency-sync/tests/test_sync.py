@@ -4,7 +4,8 @@ import unittest
 from unittest.mock import patch
 
 from sync.main import (Options, SyncError, clean_alert_rule, clean_datasource,
-                       page_list, plan, snapshot, sort_folders, sync_all, run)
+                       page_list, plan, snapshot, sort_folders, sync_all, run,
+                       env_bool, read_folders, inline_library_panels, check_plugins)
 
 
 class DummyClient:
@@ -28,6 +29,68 @@ class DummyClient:
 
 
 class SyncTests(unittest.TestCase):
+    def test_invalid_boolean_aborts_before_constructing_clients(self):
+        with patch.dict(os.environ, {'DRY_RUN': 'treu'}), patch('sync.main.GrafanaClient') as client:
+            self.assertEqual(run(), 1)
+            client.assert_not_called()
+        for value, expected in [(' TRUE ', True), ('false', False), ('0', False)]:
+            with patch.dict(os.environ, {'DRY_RUN': value}):
+                self.assertEqual(env_bool('DRY_RUN', True), expected)
+
+    def test_folder_walk_recovers_parent_metadata_and_rejects_duplicate_uid(self):
+        source = DummyClient({
+            ('GET', '/api/folders?limit=500&page=1'): [
+                {'id': -1, 'uid': 'sharedwithme', 'title': 'Shared with me'},
+                {'uid': 'root', 'title': 'Root'}],
+            ('GET', '/api/folders?parentUid=root&limit=500&page=1'): [{'uid': 'child', 'title': 'Child'}],
+            ('GET', '/api/folders?parentUid=child&limit=500&page=1'): [],
+        })
+        folders = read_folders(source)
+        self.assertEqual([f['parentUid'] for f in folders], ['', 'root'])
+        source.values[('GET', '/api/folders?parentUid=child&limit=500&page=1')] = [{'uid': 'root'}]
+        with self.assertRaisesRegex(SyncError, 'Duplicate'):
+            read_folders(source)
+
+    def test_folder_move_and_rename_reloads_version_and_can_move_to_root(self):
+        state = dict(folders=[{'uid': 'child', 'title': 'Renamed'}], dashboards=[], datasources=[], rules=[])
+        target = DummyClient({
+            ('GET?', '/api/folders/child'): {'title': 'Old', 'parentUid': 'parent', 'version': 1},
+            ('POST', '/api/folders/child/move'): {},
+            ('GET', '/api/folders/child'): {'title': 'Old', 'version': 2},
+            ('PUT', '/api/folders/child'): {},
+        })
+        sync_all(target, state, Options(dry_run=False))
+        self.assertIn(('POST', '/api/folders/child/move', {'parentUid': ''}), target.calls)
+        self.assertIn(('PUT', '/api/folders/child', {'title': 'Renamed', 'version': 2}), target.calls)
+
+    def test_library_panel_snapshot_uses_latest_model_and_keeps_instance_position(self):
+        source = DummyClient({('GET', '/api/library-elements/lib'): {'result': {
+            'kind': 1, 'model': {'type': 'text', 'title': 'Latest', 'id': 99,
+                                'options': {'content': 'Current library content'}}}}})
+        original = [{'type': 'row', 'panels': [{'id': 3, 'gridPos': {'x': 12},
+                     'title': 'Stale', 'libraryPanel': {'uid': 'lib'}}]}]
+        result = inline_library_panels(source, original, {})
+        panel = result[0]['panels'][0]
+        self.assertEqual((panel['title'], panel['id'], panel['gridPos']), ('Latest', 3, {'x': 12}))
+        self.assertNotIn('libraryPanel', panel)
+        self.assertIn('libraryPanel', original[0]['panels'][0])
+
+    def test_missing_plugin_fails_preflight(self):
+        target = DummyClient({('GET', '/api/plugins'): [{'id': 'text', 'enabled': True}]})
+        with self.assertRaisesRegex(SyncError, 'custom-panel'):
+            check_plugins(target, {'datasources': [], 'dashboards': [{'dashboard': {
+                'panels': [{'type': 'row', 'panels': [{'type': 'custom-panel'}]}]}}]})
+        self.assertEqual(len(target.calls), 1)
+
+    def test_alert_api_not_read_by_default(self):
+        source = DummyClient({
+            ('GET', '/api/health'): {'database': 'ok'},
+            ('GET', '/api/folders?limit=500&page=1'): [],
+            ('GET', '/api/search?type=dash-db&limit=500&page=1'): [],
+            ('GET', '/api/datasources'): [],
+        })
+        self.assertEqual(snapshot(source, Options())['rules'], [])
+
     def test_snapshot_reads_datasource_details_for_secret_preflight(self):
         source = DummyClient({
             ('GET', '/api/health'): {'database': 'ok'},

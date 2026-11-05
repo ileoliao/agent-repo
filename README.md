@@ -6,7 +6,7 @@
 - `chengdu-inkwash/`：程序化水墨风格的成都历史动画
 - [inkwash-engine](inkwash-engine/README.md)：程序化水墨引擎（吸光度叠墨，`纸色 × exp(−ΣA)`），含山水 `shanshui/paint.py` 与笔毛试笔 `brushlab/sheet.py`。
 - [heartbeat-probe](heartbeat-probe/README.md)：可观测性平台承诺的主动探测（指标/日志告警闭环、日志与 trace 完整可查询），按租户运行，多个独立实例跨 zone 部署，每次检查由发起的实例给出唯一结论，交给 GCP 判定并生成平台 SLO；Grafana 规则与 GCP 告警/SLO 由同一份配置生成。
-- [grafana-emergency-sync](grafana-emergency-sync/README.md)：在独立应急 Grafana 中同步文件夹、仪表盘、数据源和告警规则，附 GKE 部署清单与操作说明。
+- [grafana-emergency-sync](grafana-emergency-sync/README.md)：在独立应急 Grafana 中同步用户创建的仪表盘、嵌套文件夹和数据源，附 GKE 部署清单、Docker 实测与同步过期告警规则；告警规则复制默认关闭。
 - [otel-allowlist](otel-allowlist/README.md)：OTel Collector 服务白名单，只放行登记过的 `service.name`；官方 contrib 镜像 + filter 处理器，名单由脚本生成为排序后的正则，经 ConfigMap 滚动发布。
 
 - [harbor-extensions](harbor-extensions/README.md)：内部系统的统一受治理访问层原型（网关原样透传 + 按能力绑定 AD 组授权 + 沙箱扩展门户 + CLI/agent 同一通道），平台不存业务数据；含 outage 团队服务接入的参考实现，FastAPI + React，85 个测试含浏览器端到端。

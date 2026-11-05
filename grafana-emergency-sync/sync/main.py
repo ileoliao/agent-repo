@@ -42,7 +42,14 @@ def required_env(name: str) -> str:
 
 def env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
-    return default if value is None else value.lower() in ("true", "1", "yes", "on")
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in ("true", "1", "yes", "on"):
+        return True
+    if normalized in ("false", "0", "no", "off"):
+        return False
+    raise SyncError(f"Invalid boolean for {name}; use true or false")
 
 
 def token_from_env(name: str) -> str:
@@ -129,7 +136,7 @@ class GrafanaClient:
 @dataclass
 class Options:
     dry_run: bool = True
-    sync_alert_rules: bool = True
+    sync_alert_rules: bool = False
     datasource_secrets: dict[str, Any] | None = None
 
 
@@ -152,12 +159,63 @@ def page_list(source: GrafanaClient, path: str) -> list[dict]:
     raise SyncError(f"Pagination exceeded safety bound for {path}")
 
 
+def read_folders(source: GrafanaClient) -> list[dict]:
+    """Walk immediate children; folder list responses omit parent metadata."""
+    folders: list[dict] = []
+    parents = [""]
+    seen: set[str] = set()
+    for parent in parents:
+        path = "/api/folders" + ("?" + urlencode({"parentUid": parent}) if parent else "")
+        for folder in page_list(source, path):
+            uid = folder.get("uid")
+            if uid == "sharedwithme" and folder.get("id") == -1:
+                continue  # Grafana's virtual navigation folder is not configuration.
+            if not uid or uid in seen:
+                raise SyncError("Duplicate/missing folder UID while walking folder hierarchy")
+            seen.add(uid)
+            folders.append({**folder, "parentUid": parent})
+            parents.append(uid)
+    return folders
+
+
+def inline_library_panels(source: GrafanaClient, panels: list[dict], cache: dict,
+                          active: frozenset = frozenset()) -> list[dict]:
+    """Emergency copies are ordinary panels, independent of library objects."""
+    result = []
+    for original in panels:
+        panel = copy.deepcopy(original)
+        branch = active
+        if "libraryPanel" in panel:
+            uid = (panel.get("libraryPanel") or {}).get("uid")
+            if not uid or uid in active:
+                raise SyncError("Invalid/cyclic library panel reference")
+            if uid not in cache:
+                element = source.call("GET", f"/api/library-elements/{ident(uid)}").get("result", {})
+                if element.get("kind") != 1 or not isinstance(element.get("model"), dict):
+                    raise SyncError("Invalid library panel model")
+                cache[uid] = element["model"]
+            model = copy.deepcopy(cache[uid])
+            # The library owns content; the dashboard owns placement and repetition.
+            for key in ("id", "gridPos", "repeat", "repeatDirection", "maxPerRow", "scopedVars"):
+                if key in panel:
+                    model[key] = panel[key]
+                else:
+                    model.pop(key, None)
+            model.pop("libraryPanel", None)
+            panel = model
+            branch = active | {uid}
+        if "panels" in panel:
+            panel["panels"] = inline_library_panels(source, panel["panels"], cache, branch)
+        result.append(panel)
+    return result
+
+
 def snapshot(source: GrafanaClient, options: Options) -> dict[str, Any]:
     """Read all requested source resources BEFORE changing the destination."""
     health = source.call("GET", "/api/health")
     if not isinstance(health, dict) or health.get("database") != "ok":
         raise SyncError("Primary Grafana database health not OK; destination left unchanged")
-    folders = page_list(source, "/api/folders")
+    folders = read_folders(source)
     results = page_list(source, "/api/search?type=dash-db")
     datasources = source.call("GET", "/api/datasources")
     if not isinstance(datasources, list):
@@ -175,6 +233,7 @@ def snapshot(source: GrafanaClient, options: Options) -> dict[str, Any]:
         datasource_details.append(detail)
     datasources = datasource_details
     dashboards = []
+    library_cache: dict[str, dict] = {}
     for entry in results:
         uid = entry.get("uid")
         if not uid:
@@ -182,6 +241,8 @@ def snapshot(source: GrafanaClient, options: Options) -> dict[str, Any]:
         detail = source.call("GET", f"/api/dashboards/uid/{ident(uid)}")
         if not isinstance(detail, dict) or not isinstance(detail.get("dashboard"), dict):
             raise SyncError(f"Invalid dashboard payload for UID {uid}")
+        detail["dashboard"]["panels"] = inline_library_panels(
+            source, detail["dashboard"].get("panels", []), library_cache)
         dashboards.append(detail)
     rules = []
     if options.sync_alert_rules:
@@ -255,6 +316,25 @@ def clean_alert_rule(item: dict) -> dict:
     return {k: copy.deepcopy(item[k]) for k in allowed if k in item}
 
 
+def check_plugins(target: GrafanaClient, state: dict) -> None:
+    installed = target.call("GET", "/api/plugins")
+    if not isinstance(installed, list):
+        raise SyncError("Invalid target plugin list")
+    available = {p["id"] for p in installed if p.get("enabled")}
+    required = {ds["type"] for ds in state["datasources"]}
+    def panels(items):
+        for panel in items:
+            kind = panel.get("type")
+            if kind and kind != "row":
+                required.add(kind)
+            panels(panel.get("panels", []))
+    for item in state["dashboards"]:
+        panels(item["dashboard"].get("panels", []))
+    missing = required - available
+    if missing:
+        raise SyncError("Missing/disabled destination plugins: " + ", ".join(sorted(missing)))
+
+
 def sync_all(target: GrafanaClient, state: dict[str, Any], options: Options) -> dict[str, int]:
     """Upsert in dependency order; do not delete resources or write to source."""
     counts = {"folders": 0, "datasources": 0, "dashboards": 0, "alert_rules": 0}
@@ -285,8 +365,16 @@ def sync_all(target: GrafanaClient, state: dict[str, Any], options: Options) -> 
         if not options.dry_run:
             if dst is None:
                 target.call("POST", "/api/folders", {"uid": uid, **body})
-            elif dst.get("title") != src["title"] or (dst.get("parentUid") or "") != (src.get("parentUid") or ""):
-                target.call("PUT", f"/api/folders/{ident(uid)}", {**body, "version": dst.get("version", 0)})
+            else:
+                if (dst.get("parentUid") or "") != (src.get("parentUid") or ""):
+                    target.call("POST", f"/api/folders/{ident(uid)}/move",
+                                {"parentUid": src.get("parentUid") or ""})
+                    # Moving changes the folder version; reload before a rename.
+                    if dst.get("title") != src["title"]:
+                        dst = target.call("GET", f"/api/folders/{ident(uid)}")
+                if dst.get("title") != src["title"]:
+                    target.call("PUT", f"/api/folders/{ident(uid)}",
+                                {"title": src["title"], "version": dst.get("version", 0)})
         counts["folders"] += 1
 
     for src in state["datasources"]:
@@ -341,11 +429,12 @@ def sync_all(target: GrafanaClient, state: dict[str, Any], options: Options) -> 
 
 def run() -> int:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
+    started = time.monotonic()
     try:
         dry_run = env_bool("DRY_RUN", True)
         options = Options(
             dry_run=dry_run,
-            sync_alert_rules=env_bool("SYNC_ALERT_RULES", True),
+            sync_alert_rules=env_bool("SYNC_ALERT_RULES", False),
             datasource_secrets=secrets_file(os.getenv("DATA_SOURCE_SECRETS_FILE")),
         )
         source = GrafanaClient(required_env("SOURCE_GRAFANA_URL"), token_from_env("SOURCE_GRAFANA_TOKEN"))
@@ -353,14 +442,20 @@ def run() -> int:
         if source.base == target.base:
             raise SyncError("Source and target URLs must differ")
         state = plan(snapshot(source, options))
+        check_plugins(target, state)
         counts = sync_all(target, state, options)
-        LOGGER.info("result=%s", json.dumps({"status": "ok", "dry_run": dry_run, **counts}))
-        LOGGER.warning("Alert notification routing, contact points, group intervals, and secrets must be configured separately")
+        LOGGER.info("result=%s", json.dumps({"status": "ok", "dry_run": dry_run,
+                    "completed_at_unix": int(time.time()),
+                    "duration_seconds": round(time.monotonic() - started, 3), **counts}))
+        if options.sync_alert_rules:
+            LOGGER.warning("Alert notification routing, contact points, group intervals, and secrets must be configured separately")
         return 0
     except SyncError as exc:
+        LOGGER.error("result=%s", json.dumps({"status": "error", "duration_seconds": round(time.monotonic() - started, 3)}))
         LOGGER.error("Synchronization aborted: %s", exc)
         return 1
     except Exception as exc:
+        LOGGER.error("result=%s", json.dumps({"status": "error", "duration_seconds": round(time.monotonic() - started, 3)}))
         LOGGER.exception("Unexpected synchronization error (%s)", type(exc).__name__)
         return 1
 

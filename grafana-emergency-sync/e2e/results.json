@@ -1,6 +1,11 @@
 {
+  "tested_at_unix": 1793884210,
   "grafana_version": "11.4.0",
   "checks": [
+    {
+      "check": "invalid dry-run value fails before any writes",
+      "status": "passed"
+    },
     {
       "check": "missing datasource secret aborts before folder writes",
       "status": "passed"
@@ -10,7 +15,11 @@
       "status": "passed"
     },
     {
-      "check": "folders dashboards secure datasources and alert rules sync; source unchanged",
+      "check": "nested folders variables library panels and secure datasources sync; source unchanged",
+      "status": "passed"
+    },
+    {
+      "check": "alert synchronization disabled by default",
       "status": "passed"
     },
     {
@@ -19,6 +28,22 @@
     },
     {
       "check": "updates propagate and destination-only folder survives",
+      "status": "passed"
+    },
+    {
+      "check": "folder move plus rename and move back to root converge",
+      "status": "passed"
+    },
+    {
+      "check": "library edits propagate into independent emergency panels",
+      "status": "passed"
+    },
+    {
+      "check": "missing plugin aborts before destination changes",
+      "status": "passed"
+    },
+    {
+      "check": "alert rules still synchronize when explicitly enabled",
       "status": "passed"
     },
     {

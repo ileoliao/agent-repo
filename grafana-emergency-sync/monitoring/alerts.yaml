@@ -1,0 +1,25 @@
+# Load into your EXISTING Prometheus/ruler; deploy.sh does not install monitoring.
+groups:
+  - name: grafana-emergency-sync
+    rules:
+      - alert: GrafanaEmergencySyncStale
+        expr: |
+          (time() - kube_cronjob_status_last_successful_time{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"} > 900)
+          or
+          ((time() - kube_cronjob_created{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"} > 900)
+            unless on(namespace, cronjob)
+            (kube_cronjob_status_last_successful_time{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"} > 0))
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Emergency Grafana sync has no recent successful run
+          description: No successful sync for over 15 minutes, or no success since creation. Check CronJob failures, credentials and source access.
+      - alert: GrafanaEmergencySyncMetricsMissing
+        expr: absent(kube_cronjob_info{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"})
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Emergency Grafana CronJob metrics are missing
+          description: Check kube-state-metrics scraping and whether the sync CronJob exists.

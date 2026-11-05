@@ -1,0 +1,59 @@
+rule_files: [alerts.yaml]
+evaluation_interval: 1m
+tests:
+  - name: healthy sync stays quiet
+    interval: 1m
+    input_series:
+      - series: 'kube_cronjob_info{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"}'
+        values: '1+0x60'
+      - series: 'kube_cronjob_created{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"}'
+        values: '0+0x60'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GrafanaEmergencySyncStale
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GrafanaEmergencySyncMetricsMissing
+        exp_alerts: []
+  - name: stale previous success alerts
+    interval: 1m
+    input_series:
+      - series: 'kube_cronjob_info{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"}'
+        values: '1+0x60'
+      - series: 'kube_cronjob_created{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"}'
+        values: '0+0x60'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"}'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GrafanaEmergencySyncStale
+        exp_alerts:
+          - exp_labels: {namespace: monitoring-emergency, cronjob: grafana-emergency-sync, severity: warning}
+            exp_annotations:
+              summary: Emergency Grafana sync has no recent successful run
+              description: No successful sync for over 15 minutes, or no success since creation. Check CronJob failures, credentials and source access.
+  - name: never successful alerts even without last success series
+    interval: 1m
+    input_series:
+      - series: 'kube_cronjob_created{namespace="monitoring-emergency",cronjob="grafana-emergency-sync"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GrafanaEmergencySyncStale
+        exp_alerts:
+          - exp_labels: {namespace: monitoring-emergency, cronjob: grafana-emergency-sync, severity: warning}
+            exp_annotations:
+              summary: Emergency Grafana sync has no recent successful run
+              description: No successful sync for over 15 minutes, or no success since creation. Check CronJob failures, credentials and source access.
+  - name: missing CronJob telemetry alerts
+    interval: 1m
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GrafanaEmergencySyncMetricsMissing
+        exp_alerts:
+          - exp_labels: {namespace: monitoring-emergency, cronjob: grafana-emergency-sync, severity: warning}
+            exp_annotations:
+              summary: Emergency Grafana CronJob metrics are missing
+              description: Check kube-state-metrics scraping and whether the sync CronJob exists.

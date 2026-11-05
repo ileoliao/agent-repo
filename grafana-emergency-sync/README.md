@@ -2,7 +2,7 @@
 
 An independent **always-on emergency Grafana** that can display dashboards when the primary Grafana's Cloud SQL HA failover stalls. The primary Grafana and Cloud SQL HA stay unchanged. A Python CronJob **copies configuration** in one direction via HTTP APIs; the emergency Grafana stores its own metadata in SQLite on a zonal GKE Persistent Disk.
 
-**What this delivers:** source-to-emergency synchronization of folders, dashboards, data sources, and Grafana-managed alert rules; a Grafana Deployment+PVC+Service and a 5-minute CronJob. No write calls go to the primary Grafana, no destination resources are deleted, and an unhealthy primary database causes the job to abort without changing the emergency environment.
+**What this delivers:** source-to-emergency synchronization of folders (including nested folders), user-created dashboards, and data sources; a Grafana Deployment+PVC+Service and a 5-minute CronJob. Library panels are copied as ordinary panels using their current library model, so the emergency copy has no library-object dependency. No write calls go to the primary Grafana, no destination resources are deleted, and an unhealthy primary database causes the job to abort without changing the emergency environment. Grafana-managed alert-rule copying is optional and **off by default**; normal dashboard sync never reads the alert provisioning API.
 
 **What it does not deliver automatically:** notification contact points or policies, alert group evaluation intervals, user accounts and permissions, plugin installation, SSO configuration, secrets from the source, alert silences, historical alert state, automatic traffic switching or automatic failover/failback. These are not reliably obtainable via a naive API copy. Emergency alerts **remain disabled** until you deliberately activate them and have fenced the primary alert sender. Dashboards can be viewed immediately at the independent emergency endpoint, provided underlying data sources are reachable.
 
@@ -61,7 +61,7 @@ kubectl -n monitoring-emergency port-forward service/emergency-grafana 3000:3000
 
 Open `http://localhost:3000` in a browser (in another terminal), sign in with your admin credentials, create an **emergency service account** with sufficient permissions, and generate a token. Independently create a **read-only or scoped service account** in the primary Grafana covering folders, dashboards, datasources and alert rules. Admin privileges can simplify the initial POC but should be tightened before production.
 
-The primary Grafana service account must have access to all dashboards/folders to be synchronized. API search obeys Grafana permissions; inaccessible dashboards do not appear. The target service account needs write access. The scripts assume organization 1; multi-org syncing is out of scope.
+The primary Grafana service account must have access to all dashboards/folders to be synchronized, data-source details, and referenced library elements. API search obeys Grafana permissions; inaccessible dashboards do not appear and cannot be detected as missing by this sync. In Grafana OSS, a Viewer account only covers folders it can read; for full organization coverage use an appropriate account/role with visibility of all intended content. In Enterprise, scoped read permissions can provide this access. Moving a nested folder to root can remove inherited permissions: keep explicit read grants on intended folders and verify counts after ACL changes. The target service account needs folder/dashboard/datasource write access and plugin-list access (the test uses Admin). The scripts assume organization 1; multi-org syncing is out of scope.
 
 ### 3. Provide the tokens and data-source credentials
 
@@ -90,11 +90,17 @@ kubectl -n monitoring-emergency logs job/sync-first-run
 Successful log output resembles:
 
 ```text
-INFO result={"status": "ok", "dry_run": false, "folders": 3, "datasources": 4, "dashboards": 25, "alert_rules": 8}
-WARNING Alert notification routing, contact points, group intervals, and secrets must be configured separately
+INFO result={"status": "ok", "dry_run": false, "folders": 3, "datasources": 4, "dashboards": 25, "alert_rules": 0}
 ```
 
-The counts indicate processed resources, not necessarily changed resources. The job is idempotent for UIDs and uses dashboard `overwrite=true`; it does not remove emergency-only resources.
+The counts indicate processed resources, not necessarily changed resources. Actual logs also contain completion Unix time and duration; `alert_rules` is zero by default. The job is idempotent for UIDs and uses dashboard `overwrite=true`; it does not remove emergency-only resources. Before writing, it checks destination panel/data-source plugins and secret requirements. Plugin installation and version matching remain operator responsibilities. Variables and queries are retained in dashboard JSON; verify their runtime behavior with your production data sources.
+
+### Monitor sync freshness
+
+Reuse your existing Kubernetes monitoring: [monitoring/README.md](monitoring/README.md)
+includes last-success inspection and tested alert rules for stale/never-successful
+syncs. No new service is needed. A five-minute schedule is not a five-minute
+freshness guarantee if jobs fail; alert on the age of the last successful run.
 
 ### 5. Provide a **separate, independently reachable** emergency URL
 
@@ -102,7 +108,10 @@ Integrate `service/emergency-grafana:3000` with your approved internal GKE Ingre
 
 ### 6. Alerting activation runbook (manual by design)
 
-Emergency Grafana runs with `GF_UNIFIED_ALERTING_EXECUTE_ALERTS=false`; copying rules is not the same as activating notifications. Before relying on it for alerts:
+This section is optional; dashboard-only recovery needs none of these steps.
+First explicitly enable `SYNC_ALERT_RULES=true` on the CronJob and complete a
+successful sync. Emergency Grafana runs with `GF_UNIFIED_ALERTING_EXECUTE_ALERTS=false`;
+copying rules is not the same as activating notifications. Before relying on it for alerts:
 
 1. Provision/test the **contact points, notification policy tree, mute timings, rule-group intervals, and any secrets** on the emergency Grafana. Those components are not auto-synchronized by this project.
 2. During an incident, confirm the primary is **fenced or cannot send notifications**. This avoids duplicate or conflicting alerts after recovery.
@@ -127,6 +136,16 @@ python3 -m sync.main
 
 Dry-run still reads from **both** APIs and verifies access, destination UID matches, and data-source secret requirements, but does not write to Grafana. Default is dry-run unless explicitly set to false.
 
+Boolean settings accept `true/false`, `1/0`, `yes/no`, and `on/off`, ignoring
+case and surrounding whitespace. Invalid or empty values abort the run; a typo
+such as `DRY_RUN=treu` cannot enable writes.
+
+To opt into alert-rule copying, set `SYNC_ALERT_RULES=true` explicitly in the
+CronJob environment (or local environment). Its source account then also needs
+alert-rule read access. This reintroduces the alert API as a required source
+dependency for that run. Turning this option off does not delete rules already
+copied, and does not change emergency alert evaluation settings.
+
 ## Safety behavior
 
 - **Read-all-first:** source database health and the requested source configuration snapshot must be readable before the first destination write. An API timeout/403/500 stops the run.
@@ -136,6 +155,8 @@ Dry-run still reads from **both** APIs and verifies access, destination UID matc
 - **Only eventual consistency:** with a five-minute schedule, latest changes might be missing when a failure begins. A job can also partially apply updates on a write failure; the next successful run converges. There is no cross-resource transaction.
 - **Dangerous config drift:** dashboards created directly on the emergency side may be overwritten if their UID matches a primary dashboard. Dedicate the emergency instance to this workflow.
 - **Data source secrets:** the encrypted values are never returned in plaintext by Grafana. This project cannot automatically copy them from the primary. Plugin-specific auth/JSON fields may require additional manual setup.
+- **Secret rotation:** an existing destination secret is only checked for presence, not correctness. Rotate its values through the mounted Secret when production credentials change, and verify real queries.
+- **Library panels:** referenced models are expanded to independent ordinary panels on the emergency dashboard. Placement, repetition, variables and nested rows are retained; library linkage is intentionally absent there. Source library updates are picked up on the next successful sync. Source permissions must allow reading those library elements.
 - **Alerting limitations:** the standard Alerting Provisioning API is being deprecated. Source and target versions may require adjustments. Contact points, notification policies, alert group evaluation intervals, and alert runtime state are not synced, so validate on staging before relying on emergency notifications.
 - **Independent but not HA:** single-Pod SQLite emergency Grafana can itself fail with Zone C; the solution specifically protects the observability interface during Cloud SQL / Zone A/B incidents, not against all failures. Keep primary HA.
 
@@ -145,7 +166,7 @@ Dry-run still reads from **both** APIs and verifies access, destination UID matc
 python3 -m unittest discover -s tests -v
 ```
 
-Tests mock Grafana HTTP API operations. They cover stale primary detection, pagination checks, folder ordering, UID preservation, dry-run, data-source secret checks, and nondeletion behavior. They do **not** constitute live Grafana version compatibility or GKE integration tests. Run a staging smoke test and a simulated primary Cloud SQL outage before production.
+Unit tests cover primary health checks, pagination, folder traversal/moves, UID preservation, strict boolean parsing, dry-run, library expansion, plugin/secret checks, and nondeletion behavior. [Docker integration tests](e2e/README.md) additionally exercise real Grafana APIs and a primary-container outage. These do not constitute production-version or GKE/Cloud SQL HA validation; run a staging smoke test with actual user dashboards and a simulated primary Cloud SQL outage before production.
 
 ## Official API references
 

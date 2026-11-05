@@ -34,7 +34,7 @@ spec:
             - name: DRY_RUN
               value: "false"
             - name: SYNC_ALERT_RULES
-              value: "true"
+              value: "false"
             - name: SOURCE_GRAFANA_TOKEN
               valueFrom:
                 secretKeyRef:

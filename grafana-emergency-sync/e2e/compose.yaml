@@ -31,6 +31,7 @@ services:
       TARGET_GRAFANA_TOKEN: ${TARGET_GRAFANA_TOKEN:-}
       ALLOW_HTTP: "true"
       DRY_RUN: ${DRY_RUN:-false}
+      SYNC_ALERT_RULES: ${SYNC_ALERT_RULES:-false}
       DATA_SOURCE_SECRETS_FILE: ${DATA_SOURCE_SECRETS_FILE:-}
     volumes: ["./datasource-secrets.json:/fixtures/datasources.json:ro"]
 volumes:
