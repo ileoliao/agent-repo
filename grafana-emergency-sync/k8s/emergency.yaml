@@ -1,0 +1,107 @@
+# Change ${GCP_ZONE_C} and ${GRAFANA_IMAGE} through scripts/deploy.sh.
+# Keep this instance running at all times. One replica + zonal persistent disk.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: emergency-grafana-data
+  namespace: monitoring-emergency
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # standard-rwo uses PD CSI and delayed volume binding on standard GKE clusters.
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emergency-grafana
+  namespace: monitoring-emergency
+  labels:
+    app: emergency-grafana
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: emergency-grafana
+  template:
+    metadata:
+      labels:
+        app: emergency-grafana
+    spec:
+      nodeSelector:
+        topology.kubernetes.io/zone: ${GCP_ZONE_C}
+      securityContext:
+        fsGroup: 472
+      containers:
+      - name: grafana
+        image: ${GRAFANA_IMAGE}
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        - name: GF_DATABASE_TYPE
+          value: sqlite3
+        - name: GF_UNIFIED_ALERTING_EXECUTE_ALERTS
+          value: "false"
+        - name: GF_SERVER_ROOT_URL
+          value: ${EMERGENCY_GRAFANA_ROOT_URL}
+        - name: GF_SECURITY_ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: emergency-grafana-admin
+              key: username
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: emergency-grafana-admin
+              key: password
+        - name: GF_USERS_ALLOW_SIGN_UP
+          value: "false"
+        - name: GF_ANALYTICS_REPORTING_ENABLED
+          value: "false"
+        volumeMounts:
+        - name: grafana-data
+          mountPath: /var/lib/grafana
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+      volumes:
+      - name: grafana-data
+        persistentVolumeClaim:
+          claimName: emergency-grafana-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emergency-grafana
+  namespace: monitoring-emergency
+spec:
+  selector:
+    app: emergency-grafana
+  ports:
+  - name: http
+    port: 3000
+    targetPort: http
+  type: ClusterIP

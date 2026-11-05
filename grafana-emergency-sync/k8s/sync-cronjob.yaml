@@ -1,0 +1,65 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grafana-emergency-sync
+  namespace: monitoring-emergency
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            topology.kubernetes.io/zone: ${GCP_ZONE_C}
+          containers:
+          - name: grafana-sync
+            image: ${SYNC_IMAGE}
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: SOURCE_GRAFANA_URL
+              value: ${SOURCE_GRAFANA_URL}
+            - name: TARGET_GRAFANA_URL
+              value: http://emergency-grafana.monitoring-emergency.svc.cluster.local:3000
+            # In-cluster target is HTTP, protected by namespace/network controls.
+            - name: ALLOW_HTTP
+              value: "true"
+            - name: DRY_RUN
+              value: "false"
+            - name: SYNC_ALERT_RULES
+              value: "true"
+            - name: SOURCE_GRAFANA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-sync-tokens
+                  key: source_token
+            - name: TARGET_GRAFANA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-sync-tokens
+                  key: target_token
+            - name: DATA_SOURCE_SECRETS_FILE
+              value: /secrets/datasources.json
+            volumeMounts:
+            - name: datasource-secrets
+              mountPath: /secrets
+              readOnly: true
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 500m
+                memory: 256Mi
+          volumes:
+          - name: datasource-secrets
+            secret:
+              secretName: grafana-sync-datasource-secrets
+              defaultMode: 0444

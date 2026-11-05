@@ -1,0 +1,8 @@
+.git
+.env
+**/__pycache__
+*.pyc
+tests
+k8s
+scripts
+*.zip

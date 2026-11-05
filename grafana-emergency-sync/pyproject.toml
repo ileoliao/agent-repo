@@ -1,0 +1,8 @@
+[project]
+name = "grafana-emergency-sync"
+version = "1.0.0"
+description = "Safe one-way Grafana emergency configuration sync"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
