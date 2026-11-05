@@ -28,6 +28,22 @@ class DummyClient:
 
 
 class SyncTests(unittest.TestCase):
+    def test_snapshot_reads_datasource_details_for_secret_preflight(self):
+        source = DummyClient({
+            ('GET', '/api/health'): {'database': 'ok'},
+            ('GET', '/api/folders?limit=500&page=1'): [],
+            ('GET', '/api/search?type=dash-db&limit=500&page=1'): [],
+            ('GET', '/api/datasources'): [{'uid': 'secured'}],
+            ('GET', '/api/datasources/uid/secured'): {
+                'uid': 'secured', 'secureJsonFields': {'httpHeaderValue1': True}},
+            ('GET', '/api/v1/provisioning/alert-rules'): [],
+        })
+        state = plan(snapshot(source, Options()))
+        target = DummyClient()
+        with self.assertRaisesRegex(SyncError, 'requires destination secrets'):
+            sync_all(target, state, Options(dry_run=False))
+        self.assertFalse([c for c in target.calls if c[0] in ('POST', 'PUT', 'DELETE')])
+
     def test_no_primary_db_health_no_other_reads(self):
         source = DummyClient({('GET', '/api/health'): {'database': 'failed'}})
         with self.assertRaisesRegex(SyncError, 'database health'):

@@ -162,6 +162,18 @@ def snapshot(source: GrafanaClient, options: Options) -> dict[str, Any]:
     datasources = source.call("GET", "/api/datasources")
     if not isinstance(datasources, list):
         raise SyncError("Invalid data source list; destination left unchanged")
+    # The collection endpoint omits secureJsonFields on real Grafana releases.
+    # Fetch each detail before preflight so secured sources cannot look public.
+    datasource_details = []
+    for entry in datasources:
+        uid = entry.get("uid")
+        if not uid:
+            raise SyncError("Data source without UID; aborting")
+        detail = source.call("GET", f"/api/datasources/uid/{ident(uid)}")
+        if not isinstance(detail, dict) or detail.get("uid") != uid:
+            raise SyncError("Invalid data source detail; destination left unchanged")
+        datasource_details.append(detail)
+    datasources = datasource_details
     dashboards = []
     for entry in results:
         uid = entry.get("uid")

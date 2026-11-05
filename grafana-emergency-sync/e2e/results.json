@@ -1,0 +1,41 @@
+{
+  "grafana_version": "11.4.0",
+  "checks": [
+    {
+      "check": "missing datasource secret aborts before folder writes",
+      "status": "passed"
+    },
+    {
+      "check": "dry run leaves destination unchanged",
+      "status": "passed"
+    },
+    {
+      "check": "folders dashboards secure datasources and alert rules sync; source unchanged",
+      "status": "passed"
+    },
+    {
+      "check": "repeat sync preserves resources and dashboard version without resupplying secrets",
+      "status": "passed"
+    },
+    {
+      "check": "updates propagate and destination-only folder survives",
+      "status": "passed"
+    },
+    {
+      "check": "primary outage aborts sync and emergency configuration survives",
+      "status": "passed"
+    },
+    {
+      "check": "emergency Grafana queries real Prometheus while primary is stopped",
+      "status": "passed"
+    },
+    {
+      "check": "emergency SQLite volume survives container restart",
+      "status": "passed"
+    },
+    {
+      "check": "emergency alert execution disabled",
+      "status": "passed"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+services:
+  primary:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:12.2.0}
+    ports: ["127.0.0.1:13701:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: local-e2e-only
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes: [primary-data:/var/lib/grafana]
+  emergency:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:12.2.0}
+    ports: ["127.0.0.1:13702:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: local-e2e-only
+      GF_UNIFIED_ALERTING_EXECUTE_ALERTS: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes: [emergency-data:/var/lib/grafana]
+  prometheus:
+    image: prom/prometheus:v3.5.0
+  sync:
+    build:
+      context: ..
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+    profiles: [job]
+    environment:
+      SOURCE_GRAFANA_URL: http://primary:3000
+      TARGET_GRAFANA_URL: http://emergency:3000
+      SOURCE_GRAFANA_TOKEN: ${SOURCE_GRAFANA_TOKEN:-}
+      TARGET_GRAFANA_TOKEN: ${TARGET_GRAFANA_TOKEN:-}
+      ALLOW_HTTP: "true"
+      DRY_RUN: ${DRY_RUN:-false}
+      DATA_SOURCE_SECRETS_FILE: ${DATA_SOURCE_SECRETS_FILE:-}
+    volumes: ["./datasource-secrets.json:/fixtures/datasources.json:ro"]
+volumes:
+  primary-data:
+  emergency-data:

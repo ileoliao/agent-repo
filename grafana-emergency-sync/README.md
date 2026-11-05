@@ -10,6 +10,8 @@ An independent **always-on emergency Grafana** that can display dashboards when 
 
 ## Architecture
 
+Local Docker validation and repeatable integration checks: [e2e/README.md](e2e/README.md).
+
 ```text
                      Same GCP region
   Zone A                           Zone B                 Zone C
