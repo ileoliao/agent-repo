@@ -1,0 +1,2 @@
+upstreams:
+  my-extension-api: https://my-extension-api.prod.internal

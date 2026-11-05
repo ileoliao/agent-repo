@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import YAML from "yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** harbor-extensions repo root (parent of cli/) */
@@ -36,17 +37,19 @@ export function extDir(name) {
 }
 
 export function resolveExt(nameOrPath) {
-  const name = assertExtName(
+  const direct = nameOrPath === "." ? process.cwd() : path.resolve(nameOrPath);
+  const standalone = fs.existsSync(path.join(direct, "extension.yaml"));
+  const manifestName = standalone ? YAML.parse(fs.readFileSync(path.join(direct, "extension.yaml"), "utf8"))?.name : null;
+  const name = assertExtName(standalone ? manifestName :
     nameOrPath.includes("/") || nameOrPath.includes("\\")
-      ? path.basename(path.resolve(nameOrPath))
-      : nameOrPath
-  );
-  const dir = extDir(name);
+      ? path.basename(direct)
+      : nameOrPath);
+  const dir = standalone ? direct : extDir(name);
   if (!fs.existsSync(dir)) die(`extensions/${name} not found. Create it with: harbor extension new ${name}`);
   if (!fs.existsSync(path.join(dir, "extension.yaml"))) {
     die(`extensions/${name}/extension.yaml missing`);
   }
-  return { name, dir };
+  return { name, dir, standalone: standalone && !dir.startsWith(path.join(REPO_ROOT, "extensions") + path.sep) };
 }
 
 export function copyDir(src, dest) {
@@ -67,24 +70,6 @@ export function walkFiles(dir, base = dir, out = []) {
     else out.push(path.relative(base, full).split(path.sep).join("/"));
   }
   return out;
-}
-
-export function hasPat() {
-  return Boolean(process.env.HARBOR_PAT || process.env.HARBOR_TOKEN);
-}
-
-export function contentEndpoint() {
-  return (
-    process.env.HARBOR_CONTENT_ENDPOINT ||
-    (process.env.HARBOR_URL
-      ? `${process.env.HARBOR_URL.replace(/\/$/, "")}/api/content/extensions`
-      : null)
-  );
-}
-
-/** Portal origin (no trailing slash) from HARBOR_URL; null when only an explicit content endpoint is configured. */
-export function portalBase() {
-  return process.env.HARBOR_URL ? process.env.HARBOR_URL.replace(/\/$/, "") : null;
 }
 
 /** How to re-invoke this CLI in printed hints (checkout vs global `harbor`). */

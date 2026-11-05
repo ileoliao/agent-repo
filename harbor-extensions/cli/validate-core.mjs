@@ -1,10 +1,10 @@
 /**
  * Node-only extension validation (no Python, no cluster, no network).
- * Mirrors the platform's rules in backend/harbor_platform/{extensions,lint}.py so that
- * `harbor extension validate` / `publish` give the same answer a reviewer would.
+ * Mirrors the platform's rules in backend/harbor_platform/{extensions,lint}.py.
  */
 import fs from "node:fs";
 import path from "node:path";
+import YAML from "yaml";
 
 const NAME_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 const TIERS = ["experimental", "community", "official"];
@@ -13,42 +13,9 @@ const CODE_SUFFIXES = [".js", ".mjs", ".html", ".htm"];
 const HTML = [".html", ".htm"];
 const JS = [".js", ".mjs"];
 
-/** Minimal parser for the flat extension.yaml shape (scalars, [inline, lists], "- block lists", nested blocks ignored). */
 export function parseManifest(text) {
-  const out = {};
-  const lines = text.split(/\r?\n/);
-  const clean = (s) => {
-    let q = null;
-    for (let i = 0; i < s.length; i++) {
-      const c = s[i];
-      if (q) { if (c === q) q = null; } else if (c === '"' || c === "'") q = c;
-      else if (c === "#" && (i === 0 || /\s/.test(s[i - 1]))) return s.slice(0, i);
-    }
-    return s;
-  };
-  const scalar = (v) => v.trim().replace(/^(["'])(.*)\1$/, "$2");
-  for (let i = 0; i < lines.length; i++) {
-    const line = clean(lines[i]);
-    const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
-    if (!m) continue;
-    const [, key, rest] = m;
-    const v = rest.trim();
-    if (v.startsWith("[")) {
-      out[key] = v.replace(/^\[|\]$/g, "").split(",").map(scalar).filter(Boolean);
-    } else if (v === "") {
-      const items = [];
-      let j = i + 1;
-      for (; j < lines.length; j++) {
-        const l = clean(lines[j]);
-        if (!l.trim()) continue;
-        const li = l.match(/^\s+-\s+(.*)$/);
-        if (li) items.push(scalar(li[1]));
-        else if (/^\s/.test(l)) continue; // nested mapping (nav:) — not needed here
-        else break;
-      }
-      out[key] = items.length ? items : null;
-    } else out[key] = scalar(v);
-  }
+  const out = YAML.parse(text, { uniqueKeys: true });
+  if (!out || typeof out !== "object" || Array.isArray(out)) throw new Error("expected a YAML mapping");
   return out;
 }
 
@@ -92,25 +59,27 @@ function* codeFiles(dir) {
 }
 
 /** @returns {{errors:string[], notes:string[]}} */
-export function validateExtension(dir, { repoRoot } = {}) {
+export function validateExtension(dir, { repoRoot, name = path.basename(dir), contentDir = dir } = {}) {
   const errors = [];
   const notes = [];
-  const name = path.basename(dir);
   const yamlPath = path.join(dir, "extension.yaml");
   const at = `extensions/${name}/extension.yaml`;
   if (!fs.existsSync(yamlPath)) return { errors: [`${at}: file missing`], notes };
-  const m = parseManifest(fs.readFileSync(yamlPath, "utf8"));
+  let m;
+  try { m = parseManifest(fs.readFileSync(yamlPath, "utf8")); }
+  catch (error) { return { errors: [`${at}: ${error.message}`], notes }; }
 
   for (const k of Object.keys(m)) if (!ALLOWED_FIELDS.includes(k)) errors.push(`${at}: unknown field '${k}' (allowed: ${ALLOWED_FIELDS.join(", ")})`);
   if (!m.name) errors.push(`${at}: missing name`);
   else if (!NAME_RE.test(m.name)) errors.push(`${at}: name '${m.name}' must be lowercase letters, digits and single dashes`);
-  else if (m.name !== name) errors.push(`${at}: name '${m.name}' must match the folder name '${name}'`);
+  else if (m.name !== name) errors.push(`${at}: name '${m.name}' must match the extension ID '${name}'`);
 
   for (const k of ["title", "owner", "contact", "description"]) {
-    if (PLACEHOLDER[k](m[k])) errors.push(`${at}: '${k}' is empty or still the template placeholder${m[k] ? ` ("${m[k]}")` : ""} — set a real value`);
+    if (typeof m[k] !== "string" || !m[k].trim() || PLACEHOLDER[k](m[k])) errors.push(`${at}: '${k}' is empty or still the template placeholder${m[k] ? ` ("${m[k]}")` : ""} — set a real value`);
   }
   if (m.tier && !TIERS.includes(m.tier)) errors.push(`${at}: tier must be one of ${TIERS.join(", ")}`);
-  if (!Array.isArray(m.visibility) || !m.visibility.length) errors.push(`${at}: visibility must list at least one group, e.g. [APP-DEV-ALL]`);
+  if (!Array.isArray(m.visibility) || !m.visibility.length || !m.visibility.every((g) => typeof g === "string" && g)) errors.push(`${at}: visibility must list at least one group, e.g. [APP-DEV-ALL]`);
+  if (m.capabilities != null && !Array.isArray(m.capabilities)) errors.push(`${at}: capabilities must be a list`);
   const caps = Array.isArray(m.capabilities) ? m.capabilities : [];
   for (const c of caps) {
     if (!/^[a-z][a-z0-9-]*\.[A-Za-z0-9_.-]+$/.test(c)) errors.push(`${at}: capability '${c}' must look like <connector>.<capability>`);
@@ -120,19 +89,33 @@ export function validateExtension(dir, { repoRoot } = {}) {
   }
   if (caps.length) notes.push("requests capabilities: write capabilities and non-internal data classes need platform-team approval");
 
+  if (m.nav != null) {
+    const nav = m.nav;
+    const slug = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+    if (!nav || typeof nav !== "object" || Array.isArray(nav)) errors.push(`${at}: nav must be a mapping`);
+    else {
+      for (const key of Object.keys(nav)) if (!["section", "featured", "order", "workspaces"].includes(key)) errors.push(`${at}: unknown nav field '${key}'`);
+      if (nav.section != null && (typeof nav.section !== "string" || !slug.test(nav.section))) errors.push(`${at}: invalid nav.section`);
+      if (nav.featured != null && typeof nav.featured !== "boolean") errors.push(`${at}: nav.featured must be boolean`);
+      if ((nav.section || nav.featured) && m.tier !== "official") errors.push(`${at}: nav promotion requires official tier`);
+      if (nav.order != null && (!Number.isInteger(nav.order) || nav.order < 0 || nav.order > 10000)) errors.push(`${at}: nav.order must be 0..10000`);
+      if (nav.workspaces != null && (!Array.isArray(nav.workspaces) || !nav.workspaces.every((w) => typeof w === "string" && slug.test(w)))) errors.push(`${at}: nav.workspaces must be workspace keys`);
+    }
+  }
+
   const entry = m.entry || "index.html";
-  const entryPath = path.resolve(dir, entry);
-  if (!entryPath.startsWith(path.resolve(dir) + path.sep) || !fs.existsSync(entryPath)) {
+  const entryPath = path.resolve(contentDir, entry);
+  if (!entryPath.startsWith(path.resolve(contentDir) + path.sep) || !fs.existsSync(entryPath) || !fs.statSync(entryPath).isFile() || !fs.realpathSync(entryPath).startsWith(fs.realpathSync(contentDir) + path.sep)) {
     errors.push(`extensions/${name}/${entry}: entry file missing (build output must contain it)`);
   } else if (/<h1>\s*my extension\s*<\/h1>/i.test(fs.readFileSync(entryPath, "utf8"))) {
     errors.push(`extensions/${name}/${entry}: still has the template heading "My Extension" — edit the page`);
   }
 
-  for (const file of codeFiles(dir)) {
+  for (const file of codeFiles(contentDir)) {
     const ext = path.extname(file).toLowerCase();
     let text = fs.readFileSync(file, "utf8");
     text = JS.includes(ext) ? stripJsComments(text) : text.replace(/<!--[\s\S]*?-->/g, (x) => "\n".repeat((x.match(/\n/g) || []).length));
-    const rel = `extensions/${name}/${path.relative(dir, file).split(path.sep).join("/")}`;
+    const rel = `extensions/${name}/${path.relative(contentDir, file).split(path.sep).join("/")}`;
     for (const [rules, bucket] of [[ERROR_RULES, errors], [REVIEW_RULES, notes]]) {
       for (const [re, msg, suffixes] of rules) {
         if (!suffixes.includes(ext)) continue;

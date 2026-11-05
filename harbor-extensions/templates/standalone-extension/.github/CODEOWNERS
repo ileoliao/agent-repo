@@ -1,0 +1,5 @@
+# Replace this handle during repository onboarding, then require CODEOWNERS review on dev and prod.
+/connectors/ @REPLACE_WITH_PLATFORM_TEAM
+/env/dev.yaml @REPLACE_WITH_PLATFORM_TEAM
+/env/prod.yaml @REPLACE_WITH_PLATFORM_TEAM
+/extension.yaml @REPLACE_WITH_PLATFORM_TEAM

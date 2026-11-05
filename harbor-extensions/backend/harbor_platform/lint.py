@@ -17,6 +17,7 @@ from pathlib import Path
 CODE_SUFFIXES = {".js", ".mjs", ".html", ".htm"}
 
 ERROR_RULES: list[tuple[re.Pattern[str], str, set[str]]] = [
+    (re.compile(r"<h1>\s*my extension\s*</h1>", re.I), "Still has the template heading My Extension", {".html", ".htm"}),
     (re.compile(r"""type\s*=\s*["']?password""", re.I), "Do not collect passwords: extensions inherit the portal login identity and must not implement their own login", CODE_SUFFIXES),
     (re.compile(r"\bfetch\s*\("), "Do not use fetch: extensions have no network access; use harbor.connector(...)", CODE_SUFFIXES),
     (re.compile(r"\bXMLHttpRequest\b"), "Do not use XMLHttpRequest: use harbor.connector(...)", CODE_SUFFIXES),

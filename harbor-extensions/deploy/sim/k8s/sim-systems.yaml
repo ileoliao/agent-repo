@@ -1,5 +1,5 @@
 # Simulation-only stand-ins for things that exist outside this package in a real Harbor cluster:
-# the PAT service + upstream systems (mocks), the content git repo, and Harbor itself (stub behind the same ingress).
+# the PAT service + upstream systems (mocks), and Harbor itself (stub behind the same ingress).
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: mocks}
@@ -37,29 +37,6 @@ spec:
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: {name: content-git}
-spec:
-  replicas: 1
-  selector: {matchLabels: {app: content-git}}
-  template:
-    metadata: {labels: {app: content-git}}
-    spec:
-      containers:
-        - name: git
-          image: harbor-sim-content-git:sim
-          imagePullPolicy: IfNotPresent
-          ports: [{name: git, containerPort: 9418}]
-          readinessProbe: {tcpSocket: {port: git}, periodSeconds: 3}
----
-apiVersion: v1
-kind: Service
-metadata: {name: content-git}
-spec:
-  selector: {app: content-git}
-  ports: [{name: git, port: 9418, targetPort: git}]
----
-apiVersion: apps/v1
-kind: Deployment
 metadata: {name: harbor-stub}
 spec:
   replicas: 1
@@ -85,16 +62,3 @@ metadata: {name: harbor-stub}
 spec:
   selector: {app: harbor-stub}
   ports: [{name: http, port: 80, targetPort: http}]
----
-# Harbor's existing ingress, with the one extra path from deploy/README.md step 6 (no prefix rewriting).
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata: {name: harbor}
-spec:
-  ingressClassName: nginx
-  rules:
-    - host: harbor.sim.internal
-      http:
-        paths:
-          - {path: /, pathType: Prefix, backend: {service: {name: harbor-stub, port: {number: 80}}}}
-          - {path: /extensions, pathType: Prefix, backend: {service: {name: harbor-extensions, port: {number: 80}}}}

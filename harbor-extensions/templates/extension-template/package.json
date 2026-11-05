@@ -2,7 +2,6 @@
   "name": "harbor-extension-my-extension",
   "private": true,
   "scripts": {
-    "dev": "node ../../cli/harbor.mjs extension dev my-extension",
-    "publish": "node ../../cli/harbor.mjs extension publish my-extension"
+    "dev": "node ../../cli/harbor.mjs extension dev my-extension"
   }
 }

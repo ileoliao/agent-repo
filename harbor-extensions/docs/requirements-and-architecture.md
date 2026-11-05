@@ -90,7 +90,7 @@ capabilities: [harbor-release.release.read, snow.change.read, snow.change.write]
 ## Architecture Components
 
 ```
-Release   Git PR → CI validate (lint, schema, grants) → merge → hot reload
+Release   extension repo: dev PR → Dev; reviewed dev→prod PR → Prod
 Host      Portal (React) → sandboxed extension iframe ⇄ postMessage bridge
           CLI / agents (PAT) ─────────────────────────────┐
 Gateway   /gw/{connector}/{path}: PAT introspect → authorize → rate limit
@@ -102,17 +102,16 @@ Extensions are released through Git and run in a sandbox. Every request is sent 
 
 Runtime resources (the secrets service, the OTel Collector, and a shared cache when running multiple instances) are only deployment dependencies; any comparable product can replace them, and they create no business coupling.
 
-**Deployment**: a separate service on GKE. Harbor's existing ingress routes `/extensions` to it, so Harbor's own code does not change; the service, its cookie and the portal all live under that prefix. The image carries only platform code; connectors, extensions and grants are synced from git by a sidecar, so merging a PR still goes live without a rollout. Serving from Harbor's host shares a browser origin with Harbor's UI; a separate hostname removes that and needs no code change (see `deploy/README.md`).
+**Deployment**: a separate service on GKE. Harbor's existing ingress routes `/extensions` to it, so Harbor's own code does not change; the service, its cookie and the portal all live under that prefix. The image carries platform code; a read-only object-storage FUSE mount supplies connectors, extensions and grants. The intended GitOps source is each extension's `dev` or `prod` branch. The branch-to-storage controller is not yet connected; see [the developer flow](extension-developer.md) and `deploy/README.md`.
 
 ## Key Flows
 
-**Release: open a PR to go live; only permission changes need human review**
+**Target release: independent extension repo with dev and prod branches**
 
-1. The contributor copies the extension template and writes the extension in VS Code with Copilot (Copilot reads `copilot-instructions.md` in the repo).
-2. They open a PR to `extensions/{name}/`.
-3. CI validates `extension.yaml` and checks the extension code: custom login or password inputs, self-initiated network requests, inline scripts, and external resources are all blocked.
-4. Code-only changes → auto-merge; requesting write capabilities, widening visibility, or using innerHTML → platform team review.
-5. After merge, the extension syncs to the host and takes effect on the next request, with no platform restart. Going live is not a production change.
+1. The contributor develops in their extension repo. `harbor extension dev` reads local connector addresses and proxies to their locally running backend; `validate` checks the UI, connector contract and all environment addresses.
+2. A PR into `dev` is reviewed and merged. The platform Jenkins job receives the push webhook, bundles that branch with `env/dev.yaml` and deploys it to Dev.
+3. After Dev acceptance, a `dev` → `prod` PR is reviewed and merged. The Prod job bundles `prod` with `env/prod.yaml` and deploys it to Prod. Connector and permission changes require platform review.
+4. Each environment rolls its GKE Pods to a new immutable content release without rebuilding the platform image. The bundle renderer and platform-owned Jenkinsfile are implemented; webhook jobs, credentials and branch protection remain to be integrated.
 
 **Request: the gateway passes it through unchanged**
 
@@ -198,7 +197,7 @@ The prototype covers all of P0's scope, and 132 automated tests pass; the 13 rea
 | Single sign-on, session expiry, sign-out revocation, external links | Implemented (the login itself is a simulated SSO) |
 | Rate limiting, audit, hot reload, team-service onboarding | Implemented |
 | Inside Harbor's sidebar and workspace switcher | Implemented: per-user nav API, governed promotions (`nav.section` / `nav.featured`, capped), embed mode, workspace context, shared login; Harbor-side React kit typechecked, tested against a stand-in shell |
-| Deployment as a separate GKE service behind Harbor's ingress | Implemented: configurable base path, k8s probes, stdout audit, image + kustomize base with git-sync; image build not yet run in CI |
+| Deployment as a separate GKE service behind Harbor's ingress | Implemented: configurable base path, k8s probes, stdout audit, image + kustomize base with Cloud Storage FUSE CSI; image build not yet run in CI |
 | CI: auto-merge / needs review / blocked | Implemented, including code-rule checks |
 | `cli_only` | Partial: browsers cannot call it; the CLI path is not yet wired to the compliance approval gate |
 | Downstream caching, PR previews, auto-archiving | Not implemented, listed in P1 |
@@ -216,7 +215,7 @@ The prototype covers all of P0's scope, and 132 automated tests pass; the 13 rea
 | Connector credentials | Dev config file | Injected by the secrets service; delete dev credentials |
 | Multiple instances | Rate limiting and identity cache are per pod | Acceptable for the pilot (limit set per pod); shared storage such as Redis only if limits must be exact |
 | Observability | Audit written to stdout as JSON | Ship with the log agent; later report every gateway decision as an OTel span (fields already aligned) |
-| Release pipeline | Validation script runs locally; git-sync sidecar in the manifests | Wire validation into CI, auto-merge or require approval by exit code; the content repo is synced into the pods |
+| Release pipeline | Validation runs in the PR workflow; published content is mounted from object storage | Make validation a required check and require platform approval when it reports review required |
 | Network | Local machine | GKE service behind Harbor's ingress at `/extensions`; the platform team requests the egress policies to each system |
 | Upstream responses | Read fully into memory | Set a response body size limit, or switch to streaming forwarding |
 

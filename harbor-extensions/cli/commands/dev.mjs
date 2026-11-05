@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { REPO_ROOT, resolveExt, log, die } from "../lib.mjs";
 import { validateExtension } from "../validate-core.mjs";
+import { runStandaloneDev } from "../local-dev.mjs";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -57,8 +58,9 @@ const PREVIEW_SHIM = `/* Harbor dev-server preview shim (not published). */
 `;
 
 export async function run(args) {
-  const nameArg = args.find((a) => !a.startsWith("-"));
-  if (!nameArg) die("usage: harbor extension dev <name>", 2);
+  const nameArg = args.find((a, i) => !a.startsWith("-") && args[i - 1] !== "--port" && args[i - 1] !== "-p") ||
+    (fs.existsSync(path.join(process.cwd(), "extension.yaml")) ? "." : null);
+  if (!nameArg) die("usage: harbor extension dev [<name|path>]", 2);
   let port = Number(process.env.PORT || 5173);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -66,7 +68,9 @@ export async function run(args) {
     else if (a === "--port" || a === "-p") port = Number(args[++i]);
   }
   if (!Number.isFinite(port) || port <= 0) die("invalid --port", 2);
-  const { name } = resolveExt(nameArg);
+  const target = resolveExt(nameArg);
+  const { name } = target;
+  if (target.standalone) return runStandaloneDev(target, port);
 
   // Non-blocking: show what publish would complain about, early.
   const pre = validateExtension(path.join(REPO_ROOT, "extensions", name), { repoRoot: REPO_ROOT });

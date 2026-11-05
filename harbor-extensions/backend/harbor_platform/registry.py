@@ -1,6 +1,6 @@
-"""Read connectors, extensions and grants from the git working tree. Reloads automatically when files change; no restart needed.
+"""Read connectors, extensions and grants from the content directory.
 
-In production, CI syncs the repo to the host directory after a PR merges, and the change takes effect on the next request.
+The directory is mounted from object storage in production. Reload when files change.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Any, Generic, TypeVar
 
 from .config import Settings
 from .connectors import Capability, Connector, load_connectors, split_capability_id
-from .extensions import Extension, NavConfig, load_extensions, load_grants, load_nav_config
+from .extensions import Extension, NavConfig, load_extensions, load_grants, load_nav_config, reference_errors
 
 T = TypeVar("T")
 
@@ -77,7 +77,13 @@ class Registry:
 
     @property
     def errors(self) -> list[str]:
-        return self._connectors.get()[1] + self._extensions.get()[1] + self._grants.get()[1] + self._nav.get()[1]
+        connectors, connector_errors = self._connectors.get()
+        extensions, extension_errors = self._extensions.get()
+        _, grant_errors = self._grants.get()
+        nav, nav_errors = self._nav.get()
+        references = [error for ext in extensions.values() for error in reference_errors(ext, connectors)]
+        references += [f"Extension {ext.name}: nav.section {ext.nav.section} is not defined" for ext in extensions.values() if ext.nav.section and ext.nav.section not in nav.sections]
+        return connector_errors + extension_errors + grant_errors + nav_errors + references
 
     def capability(self, cap_id: str) -> Capability | None:
         connector, key = split_capability_id(cap_id)

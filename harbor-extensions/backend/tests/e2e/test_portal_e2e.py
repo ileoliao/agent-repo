@@ -120,7 +120,7 @@ def test_login_and_catalog(page):
     shot(page, "01-login")
     login(page, "alice")
     cards = page.locator("[data-extension]")
-    assert cards.count() == 2
+    assert {"outage-console", "release-calendar"} <= set(cards.evaluate_all("els => els.map(el => el.dataset.extension)"))
     shot(page, "02-catalog")
     assert page.errors == []
 

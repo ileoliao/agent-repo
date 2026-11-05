@@ -39,13 +39,13 @@ To try it under a path prefix, as behind Harbor's ingress: `HARBOR_BASE_PATH=/ex
 ## Deployment
 
 A separate service on GKE; Harbor's ingress routes `/extensions` to it and Harbor's own code does not change.
-`Dockerfile` builds the image; `deploy/k8s/base` is the kustomize base (Deployment with a git-sync sidecar, Service, ConfigMap, PDB).
-Connectors, extensions and grants are synced from git at runtime, so a merged PR goes live without a rollout. Details: [deploy/README.md](deploy/README.md).
+`Dockerfile` builds the image; `deploy/k8s/base` is the kustomize base (Deployment with a read-only Cloud Storage FUSE CSI mount, Service, ConfigMap, PDB).
+Connectors, extensions and grants are read from the content bucket at runtime. Extension changes deploy only after a GitHub push to that repository's `dev` or `prod` branch; platform policy changes deploy after a push to platform `main`. There is no author-facing upload API. For internal setup, start with the [rollout runbook](docs/internal-rollout.md); implementation details are in [deploy/README.md](deploy/README.md).
 
 | Setting | Env var | Default | Production |
 |---|---|---|---|
 | `base_path` | `HARBOR_BASE_PATH` | `""` | `/extensions` |
-| content root | `HARBOR_ROOT` | repo checkout | git-sync directory |
+| content root | `HARBOR_ROOT` | repo checkout | Cloud Storage FUSE mount at `/content` |
 | code assets | `HARBOR_APP_DIR` | repo checkout | `/app` in the image |
 | config file | `HARBOR_CONFIG` | `config/platform.yaml` | mounted ConfigMap |
 | `audit_sink` | `HARBOR_AUDIT_SINK` | `file` | `stdout` |
@@ -151,16 +151,14 @@ the outage service in `backend/mocks/app.py`:
 
 ## Contribute an extension
 
-Start here: **[docs/extension-developer.md](docs/extension-developer.md)** (Node 18+, any OS):
+Start here: **[docs/extension-developer.md](docs/extension-developer.md)**. Team extensions live in separate Git repositories with `dev` and `prod` branches. The platform checkout still contains samples for local simulation.
 
 ```bash
-node cli/harbor.mjs extension new hello-world --owner "Your Team" --contact you@corp.com --description "What it does"
-node cli/harbor.mjs extension dev hello-world        # local preview, no account needed
-node cli/harbor.mjs extension validate hello-world   # placeholders + sandbox rules
-HARBOR_URL=https://<portal> HARBOR_PAT=<token> node cli/harbor.mjs extension publish hello-world   # validates first
+node cli/harbor.mjs extension new hello-world --standalone --owner "Your Team" --contact you@corp.com --description "What it does"
+# Inside the new repo: harbor extension validate; harbor extension dev
 ```
 
-Any frontend framework that builds to static files works. **Backend:** self-host your API and register it as a **connector**; publish only ships the UI files.
+The repo owns its connector contract and local/Dev/Prod upstream addresses; platform-provided credentials and production approval stay outside it. `harbor extension dev` runs a local gateway and forwards to the team's locally running backend. The repository includes platform-owned Jenkins deployment code and Dev/Prod GKE overlays; connecting webhooks, identities and real environment parameters follows the [rollout runbook](docs/internal-rollout.md).
 
 `validate` exits 1 on problems. The platform CI (`python -m harbor_platform.validate`) additionally returns 2 when a change needs platform-team review (rules in `backend/harbor_platform/lint.py`).
 
@@ -188,8 +186,8 @@ python -m harbor_platform.cli call jira POST /rest/api/2/issue/PAY-101/comment -
 | Connector credentials | `config/secrets.dev.yaml` | Inject `HARBOR_SECRET_<NAME>` from the secrets service; delete the dev credentials file |
 | Multiple instances | Rate limiting and the introspect cache are per pod (manifests run 2 replicas and halve the limit) | Redis (Memorystore) only if limits must be exact |
 | Observability | Audit goes to stdout as JSON (`audit_sink: stdout`) | Ship it with the log agent; later report every gateway decision as an OTel span (fields already aligned) |
-| Release pipeline | `validate` runs locally; git-sync manifests ready | CI runs it on PRs: exit code 0 auto-merges, 2 requires platform-team approval; set up the content repo for git-sync |
-| Image and manifests | `Dockerfile` and `deploy/k8s/base` written, layout smoke-tested | Build the image and run `kustomize build` in CI; add per-environment overlays |
+| Release pipeline | Branch-specific bundle renderer and platform-owned Jenkinsfile exist; direct upload has been removed | Connect GitHub `dev`/`prod` push webhooks to Jenkins jobs, isolated buckets and platform review rules |
+| Image and manifests | `Dockerfile`, base and Dev/Prod overlays written, layout smoke-tested | Build and pin the image digest; fill each overlay's real environment values; run the manifest check in CI |
 | Network | Local machine | GKE on the internal network; add `/extensions` to Harbor's ingress; the platform team requests egress to each system centrally |
 | Upstream responses | Read fully into memory | Set a response body size limit, or switch to streaming |
 
@@ -210,6 +208,8 @@ python -m harbor_platform.cli call jira POST /rest/api/2/issue/PAY-101/comment -
 
 ## Documents
 
+- [Implementation scope for internal community adoption](docs/implementation-scope.md)
+- [Internal rollout runbook](docs/internal-rollout.md)
 - [Requirements and architecture](docs/requirements-and-architecture.md)
 - [Roadmap inventory: Present / Partial / Missing gaps for Harbor integration and community use](docs/roadmap-inventory.md)
 - [Architecture diagrams (engineering)](docs/architecture/)
