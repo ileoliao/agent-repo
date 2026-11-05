@@ -1,0 +1,12 @@
+name: my-extension-api
+title: Example service
+owner: team-xxx
+upstream: ${UPSTREAM}
+auth:
+  type: identity-only
+capabilities:
+  health.read:
+    description: Read service health
+    allow: [GET /health]
+    groups: [APP-DEV-ALL]
+    data_class: internal

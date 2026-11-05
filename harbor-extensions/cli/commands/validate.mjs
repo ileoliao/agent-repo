@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { REPO_ROOT, resolveExt, log, die } from "../lib.mjs";
 import { validateExtension } from "../validate-core.mjs";
+import { validateStandalone } from "../standalone.mjs";
 
 /** Shared by `validate` and `publish`. Returns { errors, notes } and prints a readable report. */
 export function checkExtension(name, dir, { quiet = false } = {}) {
@@ -16,7 +17,15 @@ export function checkExtension(name, dir, { quiet = false } = {}) {
 
 export async function run(args) {
   const verbose = args.includes("--verbose") || args.includes("-v");
-  const only = args.find((a) => !a.startsWith("-"));
+  const only = args.find((a) => !a.startsWith("-")) ||
+    (fs.existsSync(path.join(process.cwd(), "extension.yaml")) ? "." : null);
+  if (only) {
+    const target = resolveExt(only);
+    if (target.standalone) {
+      try { validateStandalone(target.dir); log("Standalone extension valid (local, dev, prod)"); return 0; }
+      catch (error) { console.error(`Invalid standalone extension: ${error.message}`); return 1; }
+    }
+  }
   const extRoot = path.join(REPO_ROOT, "extensions");
   const names = only
     ? [resolveExt(only).name]

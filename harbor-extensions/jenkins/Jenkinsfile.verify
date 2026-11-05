@@ -1,0 +1,42 @@
+// Unprivileged platform PR/branch verification job. Deployment credentials are never bound here.
+pipeline {
+  agent { label 'harbor-ci' }
+  options { skipDefaultCheckout(true); timeout(time: 30, unit: 'MINUTES') }
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+    stage('Install') {
+      steps {
+        dir('harbor-extensions') {
+          sh 'npm ci --no-audit --no-fund'
+          sh 'npm ci --prefix portal --no-audit --no-fund'
+          sh 'python -m pip install -r backend/requirements-dev.txt'
+        }
+      }
+    }
+    stage('Validate') {
+      parallel {
+        stage('Node and manifests') {
+          steps {
+            dir('harbor-extensions') {
+              sh 'npm run test:dx'
+              sh 'kubectl kustomize deploy/k8s/base >/dev/null'
+              sh 'kubectl kustomize deploy/k8s/overlays/dev >/dev/null'
+              sh 'kubectl kustomize deploy/k8s/overlays/prod >/dev/null'
+              sh 'kubectl kustomize deploy/k8s/overlays/sim >/dev/null'
+            }
+          }
+        }
+        stage('Backend and browser') {
+          steps {
+            dir('harbor-extensions') {
+              sh 'npm run build --prefix portal'
+              sh 'cd backend && python -m pytest -q'
+            }
+          }
+        }
+      }
+    }
+  }
+}

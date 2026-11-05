@@ -3,10 +3,7 @@
  * Harbor CLI (Node). Community extension DX lives here:
  *   harbor extension new <name>
  *   harbor extension dev <name>
- *   harbor extension publish <name> [--dry-run]
  *   harbor extension validate
- *
- * Auth for publish: HARBOR_URL + HARBOR_PAT environment variables.
  */
 import { pathToFileURL } from "node:url";
 import path from "node:path";
@@ -21,13 +18,11 @@ function rootHelp() {
 Usage:
   harbor extension new <name> [--owner X --contact Y --description Z]
                                               Scaffold extensions/<name>/
-  harbor extension dev <name> [--port N]      Local preview (mock login, no account needed)
-  harbor extension validate [<name>]          Check manifest + sandbox rules (exit 1 on problems)
-  harbor extension publish <name> [--dry-run] Validate, then upload the static files
+  harbor extension new <name> --standalone    Scaffold a dedicated extension repository directory
+  harbor extension dev [<name|path>] [--port N] Local preview; standalone repos use a Node connector proxy
+  harbor extension validate [<name|path>]   Check manifest, connector and environment configuration
 
-Publish needs:
-  HARBOR_URL   your Harbor portal URL
-  HARBOR_PAT   your personal access token
+Publishing is triggered only by GitHub pushes to dev or prod.
 
 Docs: docs/extension-developer.md
 `);
@@ -59,8 +54,6 @@ if (group === "extension" || group === "ext" || group === "extensions") {
     dev: "dev",
     serve: "dev",
     preview: "dev",
-    publish: "publish",
-    push: "publish",
     validate: "validate",
     lint: "validate",
   };

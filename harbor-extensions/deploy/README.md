@@ -1,101 +1,39 @@
-# Deploying on GKE behind Harbor
+# Deploying Harbor Extensions
 
-Harbor Extensions runs as its own service in the cluster. Harbor's existing ingress routes one path prefix to it;
-Harbor's own code does not change. The only shared dependency is the PAT service.
+For the environment parameter checklist, first release bootstrap, Jenkins setup and acceptance steps, use the [internal rollout runbook](../docs/internal-rollout.md).
 
-```
-https://<harbor-host>/            ──▶ Harbor (unchanged)
-https://<harbor-host>/extensions/ ──▶ Service harbor-extensions ──▶ pods: app + git-sync sidecar
-                                                                      │
-                                                                      ├─ introspect ─▶ PAT service
-                                                                      └─ /gw/... ─────▶ Jira / SNOW / Harbor Release / team services
-```
+Harbor routes `/extensions` to the `harbor-extensions` Service. The app image contains the gateway, Portal and SDK. A read-only content mount at `/content` supplies connectors, extensions, grants and navigation config. In GKE, each Deployment pins an immutable release and rolls out to change versions; the app does not write content.
 
-## What is in the image, and what is not
+## GKE base
 
-| | Where | Changes via |
-|---|---|---|
-| Gateway, portal, SDK (`/app`) | Container image (`Dockerfile`) | Image build + rollout |
-| Connectors, extensions, grants, nav (`HARBOR_ROOT`) | Content git repo, synced by the git-sync sidecar every 30 s | Merging a PR; no rollout |
-| Runtime settings (`platform.yaml`) | ConfigMap, mounted at `HARBOR_CONFIG` | `kubectl apply` + restart |
-| Signing key, connector credentials | k8s Secret `harbor-extensions-secrets` from Secret Manager | Secret rotation |
+`deploy/k8s/base` defines two app replicas, a Service, ConfigMap, ServiceAccount and PodDisruptionBudget. The Deployment uses the [Cloud Storage FUSE CSI driver](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/cloud-storage-fuse-csi-driver-ephemeral) with the required `gke-gcsfuse/volumes: "true"` Pod annotation. There is one content source and no in-Pod git client.
 
-The image also carries a copy of the content in `/content`, so it runs on its own (staging, local `docker run`) without git-sync.
-`config/secrets.dev.yaml` is never copied, and is ignored at runtime whenever `dev_login` is off.
+Before applying an environment overlay:
 
-## Steps
+1. Set the environment overlay's Cloud Storage bucket and initial release ID. That `releases/<id>/` prefix must contain `connectors/`, `extensions/`, `config/grants.yaml`, `config/nav.yaml` and `config/release.json`.
+2. Grant the `harbor-extensions` Kubernetes ServiceAccount read access to that bucket using the environment's Workload Identity setup.
+3. Pin the image digest and set the PAT service URL, portal origin, Harbor login URL and ingress proxy CIDRs. Provide `harbor-extensions-secrets` with `HARBOR_IDENTITY_KEY` and connector credentials.
+4. Give only the platform Jenkins deployment agent write access to the environment bucket and the narrow GKE Deployment patch permission. The `dev` and `prod` jobs use different identities and buckets. Extension authors receive no bucket credentials and there is no content upload API.
+5. Route `/extensions` through Harbor's ingress to `harbor-extensions:80`. The health probes stay at `/healthz` and `/readyz` on the Service.
 
-1. **Build**: `docker build -t REGION-docker.pkg.dev/PROJECT/harbor/harbor-extensions:<sha> .` from `harbor-extensions/`, push to Artifact Registry.
-2. **Content repo**: put `connectors/`, `extensions/`, `config/grants.yaml`, `config/nav.yaml` at the root of a repo (or set git-sync's subpath and point `HARBOR_ROOT` at it). CI runs `python -m harbor_platform.validate` on PRs.
-3. **Secret** `harbor-extensions-secrets`, keys:
-   - `HARBOR_IDENTITY_KEY`: the service refuses to start without it when `dev_login` is off
-   - `HARBOR_SECRET_<NAME>` for each `auth.secret` in the connectors (e.g. `HARBOR_SECRET_SNOW_TOKEN`)
-4. **Overlay** per environment: image tag, `GITSYNC_REPO` (+ credentials), `pat_service_url`, `portal_origins` = Harbor's public origin.
-5. **Apply**: `kubectl apply -k deploy/k8s/overlays/<env>`.
-6. **Route** the prefix in Harbor's existing ingress, for example:
+The `dev` and `prod` overlays are templates with deliberately unresolved values. Populate their bucket, immutable image digest, 40-character release ID, PAT URL, Harbor origin, login URL and trusted ingress proxy CIDRs. `node scripts/check-gke-manifest.mjs dev` (or `prod`) refuses placeholders and mutable image/content references. The image's baked `/content` copy remains useful for local `docker run`; the mounted bucket replaces it in GKE.
 
-```yaml
-# added to Harbor's Ingress (GCE or nginx); no prefix rewriting: the service already serves under /extensions
-- path: /extensions
-  pathType: Prefix
-  backend:
-    service: {name: harbor-extensions, port: {number: 80}}
-```
+The platform-owned `jenkins/Jenkinsfile.deploy` is loaded by a trusted Jenkins Pipeline job from this repository. Register one extension job per repository with a fixed Git URL and repository slug, and a separate platform-policy job for `main`. The GitHub webhook supplies event, repository, ref and SHA; the job rejects anything except a registered push, checks out that branch, and verifies the checkout SHA before running the deployment script. Configure webhook HMAC verification, a dedicated job trigger, restricted build permissions and CODEOWNERS branch protection. Do not load a privileged Jenkinsfile from an extension repository: an author could edit it to use deployment credentials. Jenkins agents need Node 22, Python 3.12, `gcloud`, `gke-gcloud-auth-plugin`, `kubectl` and `jq`, plus GCP workload identity or another platform-managed short-lived credential. Job-owned `HARBOR_DEV_*` and `HARBOR_PROD_*` settings provide the bucket, namespace and GKE cluster values; extension authors cannot set them. Configure separate identities and least-privilege IAM/RBAC per environment. The `jenkins/Jenkinsfile.verify` job runs platform tests without deployment credentials.
 
-`/healthz` and `/readyz` sit outside the prefix, so they are reachable by the kubelet but not through the ingress.
-Readiness waits for the first git-sync; it deliberately ignores the PAT service, which the introspect cache rides through.
+The job uses `scripts/deploy-gke-release.sh`: bundle the pushed commit, read the Deployment's currently pinned release, compose it with the platform-owned grants/navigation policy, validate a full content snapshot, upload it to a new `releases/<id>/` prefix, then atomically patch the Deployment. A platform `main` push changing grants or navigation triggers the policy job for both environments, so revocations do not wait for an extension push. A concurrent release fails the patch's old-version test and can be rerun; a failed rollout restores the previous Deployment revision when still owned by that job. The GKE app's readiness probe requires the matching release marker and zero configuration errors. Keep release prefixes immutable; retain old prefixes for rollback. Connector egress and PAT/Harbor ingress must be restricted by the organization's GKE network controls after the actual service destinations are known.
 
-## Same host or own host
+## Local kind simulation
 
-The service works either way (`base_path: /extensions`, or `base_path: ""` on its own hostname).
+`deploy/k8s/overlays/sim` replaces the GKE CSI volume with an rclone FUSE sidecar reading the local S3-compatible object store. This privileged sidecar and `/dev/fuse` host mount are **kind-only**. The sim uses the same `harbor-extensions` Deployment and Service name as the base.
 
-- **Same host as Harbor** (simplest; what the manifests assume): one origin and one certificate, and users see a single product.
-  The trade-off is a shared browser origin: script running on any Harbor page could call `/extensions/...` with the user's
-  session. Mitigated by the session cookie being scoped to `/extensions/` and distinctly named (`hx_session`), but an XSS
-  in Harbor's UI would reach the gateway.
-- **Own host** (e.g. `extensions.<harbor-domain>`): a separate origin, so neither UI can touch the other. Prefer this once
-  the platform carries write capabilities to sensitive systems.
-
-Extensions themselves are unaffected by this choice: they always run in an opaque-origin sandbox.
-
-## Multiple replicas: what is per pod
-
-| | Behaviour with N pods | Acceptable for the pilot? |
-|---|---|---|
-| Rate limiting | Per pod; effective limit is N × `rate_limit` (the ConfigMap halves it for 2 replicas) | Yes; move to Redis (Memorystore) if limits must be exact |
-| Introspect cache | Per pod; each pod calls the PAT service at most once per token per TTL | Yes |
-| Audit page in the portal | Shows only the pod that served the request | Use the log backend: audit lines are JSON on stdout under `harbor_audit` |
-| Sign-out | Revokes at the PAT service; other pods drop the token when their cache entry expires (≤ `introspect_ttl`) | Yes, as long as the PAT service honours revocation |
-
-## Verified in a local kind simulation
-
-`deploy/sim/run.sh` runs this exact deployment path on a local [kind](https://kind.sigs.k8s.io/) cluster: the production `Dockerfile`,
-`deploy/k8s/base` through the `deploy/k8s/overlays/sim` overlay (`kubectl apply -k`), the git-sync init + sidecar, ConfigMap, Secret, Service and PDB,
-and an ingress-nginx routing `https://harbor.sim.internal/extensions` the way the Harbor ingress does.
+The local setup needs Docker, kind, kubectl, curl and openssl, plus local images tagged `harbor-fuse-seaweedfs:sim` and `harbor-fuse-rclone:sim`. The script checks these tags before applying resources.
 
 ```bash
-deploy/sim/run.sh up       # build images, create the cluster, apply, wait Ready (~1 min warm, ~5 min cold)
-deploy/sim/run.sh verify   # 37 checks: probes, ingress prefix, auth, gateway, connectors, git-sync hot reload, secret hygiene
-deploy/sim/run.sh chaos    # failure drills: PAT service down, content repo down, new pod without content
+deploy/sim/run.sh up
+deploy/sim/run.sh verify
 deploy/sim/run.sh down
 ```
 
-Needs docker, kind, kubectl, curl and openssl. Stand-ins (in `deploy/sim/`, nothing here ships): the PAT service and upstream systems are
-`backend/mocks` as in-cluster Services `pat-service` and `upstream-mocks`; the content repo is an in-cluster `git daemon`; Harbor itself is an nginx stub.
+`up` builds and loads images, creates the cluster if needed, applies the mock PAT/upstream systems and the sim overlay, and seeds the object store with tracked sample content. `verify` checks that the retired upload endpoint is absent, then exercises a local Git push → checked-out branch bundle → object store → FUSE → static/hot-reload path. The test extension is removed afterward. See [the sim notes](sim/fuse-object-storage/README.md).
 
-What differs from GKE, so the result is read correctly:
-
-| | Simulation | GKE |
-|---|---|---|
-| Cluster, CNI, kube-proxy | kind, kindnet, nftables mode | GKE (Dataplane V2 / iptables) |
-| Ingress | ingress-nginx on NodePort, self-signed cert, host header `harbor.sim.internal:8443` | Harbor's GCE or nginx ingress with a real certificate |
-| Login | `dev_login: false` (as in production); the browser session cookie is minted at the mock PAT service and presented as `hx_session`, standing in for Harbor's SSO | Kerberos entry point of the real PAT service |
-| Secret | `kubectl create secret` with a random `HARBOR_IDENTITY_KEY`; connector credentials equal what the mocks expect | Secret Manager via External Secrets / CSI |
-| Content repo | `git://` in-cluster, no credentials | Real repo over HTTPS/SSH with `GITSYNC_USERNAME/PASSWORD` or a key |
-| Images | Built locally and side-loaded; no registry, no Artifact Registry auth | Artifact Registry, Workload Identity |
-| Not exercised | GCE NEG container-native LB, Workload Identity, NetworkPolicy, real upstream systems and the firewall rules to them | |
-
-Behaviour confirmed by the simulation: with 2 replicas a sign-out reaches the other replica within `introspect_ttl` (measured 61 s for a 60 s TTL);
-a PAT service outage does not affect already-introspected tokens and does not make pods unready; a new pod stays NotReady until its first git-sync succeeds;
-a content-repo outage keeps serving the last synced content (this needs `GITSYNC_MAX_FAILURES: "-1"`, set in the base ConfigMap); merging to the content repo
-is live on both replicas within one `GITSYNC_PERIOD` with no restart.
+The local object store and rclone mount prove the content layout and hot-reload path. They do not prove GKE Workload Identity, GCS metadata consistency, the CSI driver's cache behaviour, or real Harbor SSO and upstream contracts.

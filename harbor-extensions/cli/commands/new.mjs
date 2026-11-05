@@ -11,12 +11,13 @@ function opt(args, flag) {
 const yamlStr = (s) => JSON.stringify(String(s)); // quoted scalar, safe for ':' '#'
 
 export async function run(args) {
+  const standalone = args.includes("--standalone");
   const valueFlags = ["--owner", "--contact", "--description", "--title"];
   const positional = args.filter((a, i) => !a.startsWith("-") && !valueFlags.includes(args[i - 1]));
   const name = assertExtName(positional[0]);
-  const dest = path.join(REPO_ROOT, "extensions", name);
-  if (fs.existsSync(dest)) die(`extensions/${name} already exists; pick another name`);
-  const template = path.join(REPO_ROOT, "templates", "extension-template");
+  const dest = standalone ? path.resolve(name) : path.join(REPO_ROOT, "extensions", name);
+  if (fs.existsSync(dest)) die(`${dest} already exists; pick another name`);
+  const template = path.join(REPO_ROOT, "templates", standalone ? "standalone-extension" : "extension-template");
   if (!fs.existsSync(template)) die("template missing at templates/extension-template");
 
   const title = opt(args, "--title") || titleCaseKebab(name);
@@ -38,7 +39,21 @@ export async function run(args) {
   if (contact) set("contact", yamlStr(contact));
   fs.writeFileSync(yamlPath, yaml);
 
-  for (const f of ["index.html", "README.md", "package.json", "app.js"]) {
+  if (standalone) {
+    const connectorName = `${name}-api`;
+    const source = path.join(dest, "connectors", "my-extension-api.yaml");
+    const target = path.join(dest, "connectors", `${connectorName}.yaml`);
+    let connector = fs.readFileSync(source, "utf8").replaceAll("my-extension-api", connectorName);
+    if (owner) connector = connector.replace("owner: team-xxx", `owner: ${yamlStr(owner)}`);
+    fs.writeFileSync(target, connector);
+    fs.unlinkSync(source);
+    for (const rel of ["extension.yaml", "web/app.js", "env/local.yaml", "env/dev.yaml", "env/prod.yaml"]) {
+      const file = path.join(dest, rel);
+      fs.writeFileSync(file, fs.readFileSync(file, "utf8").replaceAll("my-extension-api", connectorName));
+    }
+  }
+
+  for (const f of [standalone ? "web/index.html" : "index.html", "README.md", "package.json", standalone ? "web/app.js" : "app.js"]) {
     const p = path.join(dest, f);
     if (!fs.existsSync(p)) continue;
     let t = fs.readFileSync(p, "utf8");
@@ -46,19 +61,19 @@ export async function run(args) {
     fs.writeFileSync(p, t);
   }
 
-  const H = cliLabel();
+  const H = standalone && process.argv[1]?.endsWith("/cli/harbor.mjs")
+    ? `node ${process.argv[1]}` : cliLabel();
   const todo = [];
   if (!owner) todo.push("owner");
   if (!contact) todo.push("contact");
   if (!description) todo.push("description");
-  log(`Created extensions/${name}
+  log(`Created ${standalone ? dest : `extensions/${name}`}
 
 Next
-  1. Preview:   ${H} extension dev ${name}      (mock login, no cluster, no account needed)
-  2. Edit:      extensions/${name}/  — any framework that builds to static files
-${todo.length ? `  3. Fill in:   extensions/${name}/extension.yaml → ${todo.join(", ")}  (validate/publish refuse the template values)
-` : ""}  ${todo.length ? "4" : "3"}. Check:     ${H} extension validate ${name}
-  ${todo.length ? "5" : "4"}. Publish:   export HARBOR_URL=<portal URL> HARBOR_PAT=<token>; ${H} extension publish ${name}
-Backend: host your own API and register it as a connector — see docs/extension-developer.md`);
+  1. Preview:   ${H} extension dev ${standalone ? dest : name}
+  2. Edit:      ${dest}/
+${todo.length ? `  3. Fill in:   extension.yaml → ${todo.join(", ")}
+` : ""}  ${todo.length ? "4" : "3"}. Check:     ${H} extension validate ${standalone ? dest : name}
+  ${todo.length ? "5" : "4"}. Next:      ${standalone ? "Create a dedicated GitHub repo with dev/prod branches; ask platform to connect GitOps" : "Commit and push this sample through the GitHub content pipeline"}`);
   return 0;
 }

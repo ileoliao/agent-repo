@@ -1,0 +1,49 @@
+- op: remove
+  path: /spec/template/metadata/annotations/gke-gcsfuse~1volumes
+- op: remove
+  path: /spec/template/spec/volumes/0/csi
+- op: add
+  path: /spec/template/spec/volumes/0/emptyDir
+  value: {}
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/0/mountPropagation
+  value: HostToContainer
+- op: add
+  path: /spec/template/spec/containers/-
+  value:
+    name: rclone-mount
+    image: harbor-fuse-rclone:sim
+    imagePullPolicy: IfNotPresent
+    command: [/bin/sh, -ec]
+    args:
+      - |
+        mkdir -p /content /tmp/rclone
+        export RCLONE_CONFIG_S3_TYPE=s3
+        export RCLONE_CONFIG_S3_PROVIDER=Minio
+        export RCLONE_CONFIG_S3_ENV_AUTH=false
+        export RCLONE_CONFIG_S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}"
+        export RCLONE_CONFIG_S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}"
+        export RCLONE_CONFIG_S3_ENDPOINT=http://minio-fuse.harbor.svc.cluster.local:9000
+        export RCLONE_CONFIG_S3_FORCE_PATH_STYLE=true
+        exec rclone mount s3:harbor-content /content --allow-other --allow-non-empty \
+          --dir-cache-time=2s --attr-timeout=2s --vfs-cache-mode=off \
+          --config=/tmp/rclone/rclone.conf
+    envFrom:
+      - secretRef: {name: minio-fuse-creds}
+    securityContext:
+      runAsNonRoot: false
+      privileged: true
+      capabilities: {add: [SYS_ADMIN]}
+    volumeMounts:
+      - {name: content, mountPath: /content, mountPropagation: Bidirectional}
+      - {name: fuse, mountPath: /dev/fuse}
+      - {name: rclone-tmp, mountPath: /tmp}
+    resources:
+      requests: {cpu: 20m, memory: 64Mi}
+      limits: {memory: 256Mi}
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: fuse, hostPath: {path: /dev/fuse, type: CharDevice}}
+- op: add
+  path: /spec/template/spec/volumes/-
+  value: {name: rclone-tmp, emptyDir: {}}

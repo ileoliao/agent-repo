@@ -31,7 +31,7 @@ def test_new_extension_appears_without_restart(client, root):
     d.mkdir()
     (d / "index.html").write_text("<h1>hi</h1>", encoding="utf-8")
     (d / "extension.yaml").write_text(
-        "name: hello\ntitle: Hello\nowner: team-x\nvisibility: [APP-DEV-ALL]\n", encoding="utf-8"
+        "name: hello\ntitle: Hello\ndescription: A useful example\nowner: team-x\ncontact: team-x@corp.com\nvisibility: [APP-DEV-ALL]\n", encoding="utf-8"
     )
     names = [e["name"] for e in client.get("/api/extensions").json()["items"]]
     assert "hello" in names
@@ -118,13 +118,32 @@ def test_unknown_manifest_field_rejected(root):
     assert any("Unknown field storage" in e for e in validate(root)["errors"])
 
 
-def test_template_is_a_valid_extension(root):
+def test_template_placeholders_block_ci_validation(root):
     from harbor_platform.config import REPO_ROOT
 
     shutil.copytree(REPO_ROOT / "templates" / "extension-template", root / "extensions" / "my-extension")
     report = validate(root)
-    assert report["errors"] == []
-    assert "my-extension" in report["extensions"]
+    assert any("title is empty or still the template placeholder" in e for e in report["errors"])
+    assert "my-extension" not in report["extensions"]
+
+
+def test_template_heading_blocks_ci_validation(root):
+    entry = root / "extensions" / "outage-console" / "index.html"
+    entry.write_text(entry.read_text(encoding="utf-8") + "<h1>My Extension</h1>", encoding="utf-8")
+    assert any("template heading" in e for e in validate(root)["errors"])
+
+
+@pytest.mark.parametrize("field, placeholder", [
+    ("title", "My Extension"),
+    ("owner", "team-xxx"),
+    ("contact", "you@example.com"),
+    ("description", "One sentence on what problem it solves"),
+])
+def test_each_template_placeholder_blocks_validation(root, field, placeholder):
+    m = root / "extensions" / "outage-console" / "extension.yaml"
+    lines = m.read_text(encoding="utf-8").splitlines()
+    m.write_text("\n".join(f"{field}: {placeholder}" if line.startswith(f"{field}:") else line for line in lines) + "\n", encoding="utf-8")
+    assert any(field in e and "placeholder" in e for e in validate(root)["errors"])
 
 
 def test_connector_write_method_must_be_flagged():

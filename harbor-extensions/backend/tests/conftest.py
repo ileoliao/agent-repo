@@ -35,8 +35,11 @@ class RoutingTransport(httpx.AsyncBaseTransport):
 def root(tmp_path: Path) -> Path:
     """A temporary copy of the repo contents; tests may freely modify extensions, connectors and grants."""
     dst = tmp_path / "repo"
-    for name in ("config", "connectors", "extensions", "sdk"):
+    for name in ("config", "connectors", "sdk"):
         shutil.copytree(REPO_ROOT / name, dst / name)
+    (dst / "extensions").mkdir()
+    for name in ("outage-console", "release-calendar"):
+        shutil.copytree(REPO_ROOT / "extensions" / name, dst / "extensions" / name)
     return dst
 
 

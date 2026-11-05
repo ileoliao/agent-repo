@@ -13,6 +13,7 @@ Routes (all under settings.base_path, e.g. /extensions behind Harbor's ingress; 
 from __future__ import annotations
 
 import re
+import json
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -155,9 +156,18 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             for p in (settings.connectors_dir, settings.extensions_dir, settings.portal_dist / "index.html")
             if not p.exists()
         ]
-        if missing:
-            return JSONResponse({"ok": False, "missing": missing}, status_code=503)
-        return JSONResponse({"ok": True, "config_errors": len(registry.errors)})
+        if settings.release_id:
+            marker = settings.root / "config" / "release.json"
+            try:
+                release = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                release = {}
+            if release.get("id") != settings.release_id:
+                missing.append(f"release marker {settings.release_id}")
+        errors = registry.errors if not missing else []
+        if missing or errors:
+            return JSONResponse({"ok": False, "missing": missing, "config_errors": errors}, status_code=503)
+        return JSONResponse({"ok": True, "config_errors": 0})
 
     if mount:
 

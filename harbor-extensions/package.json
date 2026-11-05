@@ -3,15 +3,18 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Harbor CLI — extension new / dev / publish (community DX). Assumes install + login/PAT already done.",
+  "description": "Harbor extension CLI for standalone local development and platform simulation",
   "bin": {
     "harbor": "./cli/harbor.mjs"
   },
   "scripts": {
     "harbor": "node ./cli/harbor.mjs",
-    "test:dx": "node ./cli/harbor.mjs extension --help"
+    "test:dx": "node --test cli/tests/*.test.mjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
   }
 }

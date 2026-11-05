@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: harbor-prod
+resources: [../../base]
+images:
+  - name: REGION-docker.pkg.dev/PROJECT/harbor/harbor-extensions
+    newName: REPLACE_WITH_IMAGE_REPOSITORY
+    digest: sha256:REPLACE_WITH_IMAGE_DIGEST
+patches:
+  - target: {kind: Deployment, name: harbor-extensions}
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/volumes/0/csi/volumeAttributes/bucketName
+        value: REPLACE_WITH_PROD_BUCKET
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: /content/releases/REPLACE_WITH_PROD_RELEASE_ID
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: HARBOR_RELEASE_ID, value: REPLACE_WITH_PROD_RELEASE_ID}
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: {name: FORWARDED_ALLOW_IPS, value: REPLACE_WITH_PROD_INGRESS_PROXY_CIDRS}
+  - target: {kind: ConfigMap, name: harbor-extensions-config}
+    patch: |-
+      - op: replace
+        path: /data/platform.yaml
+        value: |
+          base_path: /extensions
+          pat_service_url: REPLACE_WITH_PROD_PAT_URL
+          portal_origins: [REPLACE_WITH_PROD_HARBOR_ORIGIN]
+          login_url: REPLACE_WITH_PROD_LOGIN_URL
+          session_cookie: hx_session
+          introspect_ttl: 60
+          rate_limit: 30
+          rate_window: 10
+          allowed_data_classes: [internal]
+          dev_login: false
+          cookie_secure: true
+          audit_sink: stdout

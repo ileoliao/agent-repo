@@ -2,9 +2,8 @@
 #
 #   docker build -t harbor-extensions .
 #
-# Code assets live in /app (HARBOR_APP_DIR). The governed content (connectors, extensions, grants) is baked into
-# /content as a fallback, but on GKE a git-sync sidecar provides it and HARBOR_ROOT points there, so merging a PR
-# takes effect without rebuilding or rolling out the image. See deploy/README.md.
+# Code assets live in /app (HARBOR_APP_DIR). Governed content is baked into /content for local runs;
+# on GKE a read-only Cloud Storage FUSE volume mounts there. See deploy/README.md.
 
 # ---- portal build ----
 FROM node:22-slim AS portal
@@ -42,6 +41,6 @@ RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin harbor
 USER 10001
 EXPOSE 8000
 
-# --proxy-headers: trust X-Forwarded-* from the ingress / load balancer in front of the pod
+# Trust forwarded headers only from loopback by default; configure FORWARDED_ALLOW_IPS for the actual ingress proxies.
 CMD ["python", "-m", "uvicorn", "harbor_platform.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header"]
+     "--proxy-headers", "--no-server-header"]

@@ -6,11 +6,10 @@ From the `harbor-extensions/` folder (two levels up):
 
 ```bash
 node cli/harbor.mjs extension dev my-extension        # local preview, mock login
-node cli/harbor.mjs extension validate my-extension   # must pass before publish
-node cli/harbor.mjs extension publish my-extension    # needs HARBOR_URL and HARBOR_PAT
+node cli/harbor.mjs extension validate my-extension
 ```
 
-Before publishing, set real `owner`, `contact` and `description` in `extension.yaml`. Placeholders are rejected.
+Set real `owner`, `contact` and `description` in `extension.yaml`. Placeholders are rejected. Team-owned extensions use a standalone repository; push its `dev` or `prod` branch to deploy through GitOps.
 
 ## Framework
 

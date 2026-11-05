@@ -1,12 +1,15 @@
-# Post-publish acceptance
+# GitOps extension acceptance
 
-Criteria for “extension publish works end-to-end” from a developer’s point of view.
+The only content release trigger is a GitHub push to an extension repository's `dev` or `prod` branch. A local developer command may validate and preview but must never upload content to either environment.
 
-## Must pass
+## Required checks
 
-1. **Scaffold + validate** — `harbor extension new <name>` creates `extensions/<name>/`; `harbor extension validate <name>` completes without hard errors.
-2. **Validate gate** — publish refuses template placeholders and sandbox violations before uploading anything.
-3. **Real publish** — with `HARBOR_PAT` and `HARBOR_URL` set, `harbor extension publish <name>` reports `Published`.
-4. **Catalog** — the Harbor portal catalog (signed in) lists the published extension by name.
-5. **Static entry** — the extension’s static entry URL (portal path under `/extensions/ext/<name>/`, e.g. `index.html`) returns successfully and shows the published content.
-6. **Hot update** — publish again after a content change; the portal/static entry reflects the new content without a separate rebuild step.
+1. Scaffold an independent extension repo and validate its UI, connector definition and local/Dev/Prod upstream addresses.
+2. Push an update to `dev`; the checked-out Dev branch produces a Dev bundle and Dev alone changes after the GitOps job syncs it.
+3. Confirm the bundle contains the Dev connector address and no local environment file or credentials.
+4. Keep `prod` on its older commit while Dev advances. A Prod bundle must keep its Prod address and old code.
+5. Merge the reviewed Dev code to `prod`, push that branch, and confirm only then does Prod receive the new code.
+6. Confirm `/api/content/extensions` is absent and `harbor extension publish` is unavailable.
+7. Roll back `prod` to a prior reviewed commit and confirm its previous content returns. Platform policy and revoked grants remain current.
+
+The kind simulation in `deploy/sim/verify-gitops-push.sh` covers a local bare-remote push, branch checkout, bundle rendering and Dev FUSE visibility. GitHub branch protection, Jenkins webhook identity and credentials, separate Dev/Prod buckets, Prod reconciliation and real upstream contracts still require environment testing.

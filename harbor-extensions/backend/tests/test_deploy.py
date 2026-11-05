@@ -64,10 +64,40 @@ def test_probes_are_at_root(make_client, root):
     c = make_client(base_path=BASE)
     assert c.get("/healthz").json() == {"ok": True}
     assert c.get("/readyz").status_code in (200, 503)  # 503 only if the portal is not built
-    shutil.rmtree(root / "connectors")  # content not synced yet (git-sync still cloning)
+    shutil.rmtree(root / "connectors")  # content mount is empty or unavailable
     r = c.get("/readyz")
     assert r.status_code == 503 and any("connectors" in m for m in r.json()["missing"])
     assert c.get("/healthz").status_code == 200
+
+
+def test_readyz_rejects_invalid_content(make_client, root):
+    c = make_client(base_path=BASE)
+    connector = root / "connectors" / "broken.yaml"
+    connector.write_text("name: broken\n", encoding="utf-8")
+    response = c.get("/readyz")
+    assert response.status_code == 503
+    assert any("broken" in item for item in response.json()["config_errors"])
+    connector.unlink()
+    assert c.get("/readyz").status_code in (200, 503)  # portal may be unbuilt
+
+
+def test_readyz_requires_matching_release_marker(make_client, root):
+    release = "a" * 40
+    c = make_client(base_path=BASE, release_id=release)
+    assert c.get("/readyz").status_code == 503
+    (root / "config" / "release.json").write_text('{"id":"' + release + '"}\n', encoding="utf-8")
+    assert c.get("/readyz").status_code in (200, 503)  # portal may be unbuilt
+    (root / "config" / "release.json").write_text('{"id":"' + "b" * 40 + '"}\n', encoding="utf-8")
+    assert c.get("/readyz").status_code == 503
+
+
+def test_readyz_rejects_unknown_connector_reference(make_client, root):
+    c = make_client(base_path=BASE)
+    manifest = root / "extensions" / "outage-console" / "extension.yaml"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace("outage.read", "missing.read"), encoding="utf-8")
+    response = c.get("/readyz")
+    assert response.status_code == 503
+    assert any("not registered" in item for item in response.json()["config_errors"])
 
 
 def test_stdout_audit(make_client, capsys):

@@ -1,0 +1,80 @@
+// Platform-owned Pipeline script from SCM. The Jenkins job, not the extension repo, owns this file and GCP access.
+properties([disableConcurrentBuilds()])
+
+node('harbor-gke-deploy') {
+  timeout(time: 30, unit: 'MINUTES') {
+    deleteDir()
+    stage('Verify push') {
+      if (env.HARBOR_WEBHOOK_EVENT != 'push') error('GitHub push webhook required')
+      if (!env.HARBOR_REGISTERED_REPO || env.HARBOR_WEBHOOK_REPO != env.HARBOR_REGISTERED_REPO) error('Webhook repository is not registered for this job')
+      if (!(env.HARBOR_WEBHOOK_SHA ==~ /[a-f0-9]{40}/)) error('Invalid push commit')
+      if (!(env.HARBOR_JOB_MODE in ['extension', 'policy'])) error('Invalid platform job mode')
+      if (env.HARBOR_JOB_MODE == 'extension' && !(env.HARBOR_WEBHOOK_REF in ['refs/heads/dev', 'refs/heads/prod'])) error('Only dev/prod branch pushes deploy extensions')
+      if (env.HARBOR_JOB_MODE == 'policy' && env.HARBOR_WEBHOOK_REF != 'refs/heads/main') error('Platform policy must come from main')
+    }
+
+    stage('Checkout trusted platform code') {
+      checkout scm
+      if (env.HARBOR_JOB_MODE == 'policy') {
+        sh 'git merge-base --is-ancestor "$HARBOR_WEBHOOK_SHA" origin/main'
+        sh 'git checkout --detach "$HARBOR_WEBHOOK_SHA"'
+      }
+    }
+
+    if (env.HARBOR_JOB_MODE == 'extension') {
+      stage('Checkout pushed extension') {
+        if (!env.HARBOR_EXTENSION_GIT_URL) error('Platform job has no registered extension Git URL')
+        def branch = env.HARBOR_WEBHOOK_REF.substring('refs/heads/'.length())
+        dir('extension') {
+          checkout([$class: 'GitSCM',
+            branches: [[name: "refs/remotes/origin/${branch}"]],
+            userRemoteConfigs: [[url: env.HARBOR_EXTENSION_GIT_URL,
+              credentialsId: 'harbor-extension-read',
+              refspec: "+refs/heads/${branch}:refs/remotes/origin/${branch}"]]])
+          def head = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+          if (head != env.HARBOR_WEBHOOK_SHA) error('Extension branch has moved since the push; rerun from the latest push')
+        }
+      }
+    }
+
+    stage('Install platform validators') {
+      dir('harbor-extensions') {
+        sh 'npm ci --no-audit --no-fund'
+        sh 'python -m pip install -r backend/requirements.txt'
+      }
+    }
+
+    stage('Deploy immutable release') {
+      def environments = env.HARBOR_JOB_MODE == 'policy' ? ['dev', 'prod'] : [env.HARBOR_WEBHOOK_REF.substring('refs/heads/'.length())]
+      for (def target in environments) {
+        def upper = target.toUpperCase()
+        def bucket = env["HARBOR_${upper}_BUCKET"]
+        def namespace = env["HARBOR_${upper}_NAMESPACE"]
+        def project = env["HARBOR_${upper}_GKE_PROJECT"]
+        def cluster = env["HARBOR_${upper}_GKE_CLUSTER"]
+        def location = env["HARBOR_${upper}_GKE_LOCATION"]
+        if (!bucket || !namespace || !project || !cluster || !location) error("Platform ${target} GKE settings are not configured")
+        withEnv([
+          'HARBOR_CI=jenkins',
+          'HARBOR_SOURCE_EVENT=push',
+          "HARBOR_SOURCE_REF=${env.HARBOR_WEBHOOK_REF}",
+          "HARBOR_SOURCE_SHA=${env.HARBOR_WEBHOOK_SHA}",
+          "HARBOR_BUCKET=${bucket}",
+          "HARBOR_NAMESPACE=${namespace}",
+          "HARBOR_GKE_PROJECT=${project}",
+          "HARBOR_GKE_CLUSTER=${cluster}",
+          "HARBOR_GKE_LOCATION=${location}",
+          "HARBOR_ENVIRONMENT=${target}",
+          "HARBOR_POLICY_DIR=${pwd()}/harbor-extensions/deploy/policy/${target}",
+          "HARBOR_POLICY_ONLY=${env.HARBOR_JOB_MODE == 'policy'}",
+          "HARBOR_EXTENSION_CHECKOUT=${pwd()}/extension",
+        ]) {
+          sh 'gcloud container clusters get-credentials "$HARBOR_GKE_CLUSTER" --location "$HARBOR_GKE_LOCATION" --project "$HARBOR_GKE_PROJECT"'
+          dir('harbor-extensions') {
+            sh 'bash scripts/deploy-gke-release.sh'
+          }
+        }
+      }
+    }
+  }
+}

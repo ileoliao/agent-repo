@@ -1,5 +1,7 @@
 # Harbor Extensions: Roadmap Inventory (Present / Partial / Missing)
 
+> Historical survey of the earlier deployment design. For the current content path, see [deployment notes](../deploy/README.md). This survey is not an implementation guide.
+
 Survey of `harbor-extensions/` on `main` (tip at survey time: `1a00a92`). Research deliverable only: no code or behaviour changes.
 Two tracks: **(1)** integrate better with the company's internal Harbor, **(2)** let the community start building extensions.
 

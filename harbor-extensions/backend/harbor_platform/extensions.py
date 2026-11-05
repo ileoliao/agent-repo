@@ -16,6 +16,12 @@ TIERS = ("experimental", "community", "official")
 ALLOWED_FIELDS = {"name", "title", "description", "owner", "contact", "tier", "visibility", "capabilities", "entry", "nav"}
 NAV_FIELDS = {"section", "featured", "order", "workspaces"}
 SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+PLACEHOLDERS = {
+    "title": lambda v: v.lower() == "my extension",
+    "owner": lambda v: v.lower() == "team-xxx",
+    "contact": lambda v: v.lower() == "you@example.com" or v.lower().startswith("team-xxx@") or v.lower() == "team-xxx" or v.lower().endswith("@example.invalid"),
+    "description": lambda v: v.lower().startswith("one sentence on"),
+}
 
 
 @dataclass(frozen=True)
@@ -92,9 +98,10 @@ def parse_extension(data: Any, directory: Path) -> Extension:
         raise err("name must be lowercase letters, digits and hyphens")
     if name != directory.name:
         raise err(f"name must match the directory name ({directory.name})")
-    for required in ("title", "owner"):
-        if not data.get(required):
-            raise err(f"Missing {required}")
+    for required, is_placeholder in PLACEHOLDERS.items():
+        value = data.get(required)
+        if not isinstance(value, str) or not value.strip() or is_placeholder(value.strip()):
+            raise err(f"{required} is empty or still the template placeholder; set a real value")
     tier = data.get("tier", "experimental")
     if tier not in TIERS:
         raise err(f"tier must be one of {TIERS}")
