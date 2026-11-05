@@ -1,55 +1,58 @@
-# Build a Harbor extension
+# 社区扩展开发指南
 
-Each extension belongs in its own Git repository. Its `dev` branch supplies Dev; its protected `prod` branch supplies Prod. The branches may run different code for as long as the team needs. The platform repo keeps the gateway, Portal, SDK and shared policy.
+[English](extension-developer.en.md)
 
-## Repository contents
+本文面向扩展开发者。**一个扩展一个 Git 仓库**；`dev` 分支对应 Dev，受保护的 `prod` 分支对应 Prod。两条分支可以长期保留不同代码，例如 Dev 正在做大版本时，Prod 继续运行稳定版。
 
-```text
-extension.yaml         UI metadata, visibility and requested capabilities
-web/                   only static UI published (or your framework's built static output)
-connectors/*.yaml      team-owned connector contracts: allowed routes, groups, data class
-env/local.yaml         local backend addresses
-env/dev.yaml           Dev backend addresses
-env/prod.yaml          Prod backend addresses
-```
+平台提供网关、Portal、SDK、发布流水线和权限政策。你维护扩展页面、connector 契约及三个环境的后端地址。扩展代码和 connector 声明会经过平台审查；声明能力不等于获得授权。
 
-These files contain no credentials. Keep source, tests, backend code and credentials outside `web/`. The platform injects secrets separately. A capability declaration is a request, not a permission grant; connector and write-access changes require platform review.
+## 1. 创建仓库
 
-## Create and debug
-
-The current CLI is run from a Harbor platform checkout. Run `npm install` and `npm link` once from `harbor-extensions/`, or call `node /path/to/harbor-extensions/cli/harbor.mjs` directly. Local development uses Node only; no Python, Docker, cluster or Portal build is needed. A separately distributed CLI package is future work.
+从平台仓库的 `harbor-extensions/` 目录安装一次 CLI，然后切到**平台 Git checkout 之外**的工作目录创建扩展：
 
 ```bash
+npm ci
+npm link
+cd /path/to/team-workspace
 harbor extension new my-extension --standalone \
   --owner "Your Team" --contact you@company.internal --description "What it does"
 cd my-extension
-# Start your backend at the address in env/local.yaml (template: 127.0.0.1:3000)
+```
+
+当前 CLI 从平台仓库安装；也可以直接运行 `node /path/to/harbor-extensions/cli/harbor.mjs`。本机开发只需 Node，不需要 Python、Docker 或 Kubernetes。为新目录创建独立 GitHub 仓库和 `dev`、`prod` 分支，并请平台团队将仓库登记到发布 Job。**在 Jenkins webhook 和分支保护接通前，合并代码不会自动部署。**
+
+仓库主要文件：
+
+| 路径 | 你维护的内容 |
+| --- | --- |
+| `extension.yaml` | 名称、负责人、可见范围、申请使用的能力 |
+| `web/` | 要发布的静态页面和资源；框架构建产物放这里 |
+| `connectors/*.yaml` | connector 名称、允许的方法和路径、AD 组、数据级别 |
+| `env/local.yaml` | 本机联调的后端地址 |
+| `env/dev.yaml`、`env/prod.yaml` | Dev、Prod 中同一 connector 的真实后端地址 |
+
+`env/*.yaml` 只放地址，不放凭据。源码、测试和后端代码可以在仓库中，但不要放进 `web/`。平台只打包验证过的 `web/`、manifest 和目标环境 connector 配置；connector 密钥由平台注入。
+
+## 2. 本机联调
+
+先把 `env/local.yaml` 中的地址指向本机启动的 connector 后端。模板默认是 `http://127.0.0.1:3000`。然后在扩展仓库根目录运行：
+
+```bash
 harbor extension validate
 harbor extension dev
 ```
 
-Create the remote repository and its `dev` and `prod` branches once. Until the platform GitOps integration is attached, merges will not deploy automatically.
+打开 CLI 打印的预览地址。页面通过 `harbor.connector("my-extension-api").get("/health")` 调用后端；请以实际 connector 名称替换示例。CLI 会按仓库声明的路由和能力转发到 `env/local.yaml` 所指地址，不必另外配置一个“本地覆盖地址”。保持静态资源路径为相对路径，扩展页面运行在沙箱 iframe 中。
 
-Open the printed local preview URL. The UI and Node preview gateway run locally; the gateway loads this repo's connector routes and forwards to the backend in `env/local.yaml`. It uses a fixed **Local Developer** identity. It checks route and capability declarations, but does not emulate production AD groups, PAT scopes, signed identity claims or platform grants. Those need Dev verification. `harbor extension validate` checks all three environment files and refuses a local upstream that is not localhost.
+本地预览使用固定的测试身份，能验证页面、路由和到本机后端的链路。真实 PAT、AD 组、平台 grants、connector 凭据和下游签名身份要在 Dev 验证。`validate` 会检查三个环境文件，并拒绝指向非本机的 local 地址。
 
-The extension runs in a sandboxed iframe. Use `harbor.connector("my-extension-api").get("/health")` rather than `fetch`. The backend is started by the team, not by the CLI. Keep static asset paths relative; `../../sdk/harbor.js` supplies the SDK.
+## 3. 发布和晋级
 
-## Release through Git
+1. 提交 PR 到 `dev`。通过检查与审查后合并，GitHub 推送触发平台 Jenkins 将该分支发布到 Dev。
+2. 在 Harbor Dev 检查页面、connector 读写、目标 AD 组、授权拒绝和审计记录。Dev 失败时继续修改 `dev`，不影响 Prod。
+3. 准备晋级时提交 `dev` → `prod` PR。检查代码和 `env/prod.yaml` 指向的后端，经审查合并后由 Jenkins 发布 Prod。
+4. 若只需修复 Prod，可从 `prod` 建修复分支并合入 `prod`，随后把修复带回 `dev`。
 
-1. Develop and submit a PR to `dev`. Merging it makes that branch the desired Dev content.
-2. Test the deployed extension and connector against Dev services.
-3. When ready, submit a `dev` → `prod` PR. Review code and Prod connector-address/permission changes; merge to make `prod` the desired Prod content.
-4. For an urgent Prod fix, branch from `prod`, release it there, then bring the fix back to `dev`.
+请平台团队先配置两个分支的保护规则、CODEOWNERS、PR 检查和仓库登记。connector 地址、允许路由、AD 组、写能力、可见范围和导航晋级需要平台评审。扩展仓库不放有部署凭据的 Jenkinsfile，不保存服务账号密钥；开发者没有 `publish` 命令或内容上传 API。
 
-Developers do not run `publish` for standalone repositories. The platform's GitOps job checks out the target branch and renders its content with:
-
-```bash
-node /path/to/harbor-extensions/scripts/gitops-bundle.mjs \
-  /path/to/extension-repo dev /tmp/content-bundle  # or prod
-```
-
-The builder refuses a checkout whose Jenkins-verified push ref and commit do not match the target environment. The bundle contains only `web/` as `extensions/<name>/` plus its validated manifest and environment-specific `connectors/*.yaml`. A platform-owned Jenkins job composes it with the previous complete release, validates the result, writes a new immutable GCS prefix, then pins the GKE Deployment to that release. Jenkins holds deployment identity; the extension repository has no deployment pipeline file.
-
-## Existing platform samples
-
-The sample extensions under this platform checkout remain for its local simulation and tests. They are not the target layout for team-owned extensions, and there is no direct upload command or API.
+发布由平台 Job 完成，开发者通常只需要看 PR 检查、Jenkins 发布结果和 Dev/Prod 页面。发布失败时保留提交并联系平台维护者处理，不要绕过 GitHub 分支直接上传内容。

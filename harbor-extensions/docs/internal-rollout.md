@@ -1,6 +1,8 @@
 # Harbor Extension 内网落地手册
 
-本手册面向平台实施人员。开发者只维护自己的扩展仓库：本机用 Node 调试，合并到 `dev` 或 `prod` 后推送 GitHub。平台 Jenkins Job 接收 push webhook，校验仓库、分支和提交，构建不可变内容版本，再切换 GKE。扩展仓库没有 Jenkinsfile、GCS 凭据或上传接口。
+[English](internal-rollout.en.md)
+
+本手册面向平台维护者，覆盖初次部署、社区仓库接入、验收和回退。开发者的操作见[社区扩展开发指南](extension-developer.md)。开发者只维护自己的扩展仓库：本机用 Node 调试，合并到 `dev` 或 `prod` 后推送 GitHub。平台 Jenkins Job 接收 push webhook，校验仓库、分支和提交，构建不可变内容版本，再切换 GKE。扩展仓库没有 Jenkinsfile、GCS 凭据或上传接口。
 
 ## 1. 先收集这些参数
 
