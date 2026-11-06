@@ -49,17 +49,12 @@ async function bridge(project, msg) {
 }
 
 function portal(name) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Harbor local · ${name}</title><style>body{font:15px system-ui;margin:0;color:#17243a}header{padding:12px 20px;background:#eef3fa;border-bottom:1px solid #cad5e3}iframe{width:100%;height:calc(100vh - 51px);border:0}</style></head><body><header>Harbor local preview · ${name} · Local Developer</header><iframe id="extension" title="${name}" src="/ext/${name}/index.html" sandbox="allow-scripts allow-forms"></iframe><script>
-const frame=document.getElementById('extension');
-window.addEventListener('message',async event=>{
-  if(event.source!==frame.contentWindow)return;
-  const msg=event.data;
-  if(!msg||msg.harbor!==1||typeof msg.id!=='string')return;
-  let result;
-  try { const response=await fetch('/api/bridge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(msg)}); result=await response.json(); }
-  catch(error){ result={ok:false,status:502,gatewayError:'bridge_error',data:{reason:String(error)}}; }
-  frame.contentWindow.postMessage({harbor:1,id:msg.id,result},'*');
-});</script></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Harbor preview · ${name}</title><link rel="stylesheet" href="/preview/shell.css"></head><body>
+<div class="shell"><aside class="rail"><div class="brand"><span class="brand-mark">H</span><span>harbor<span class="brand-dot">.</span></span></div><div class="rail-caption">WORKSPACE</div><div class="nav-item"><span class="nav-symbol">⌂</span> Overview</div><div class="nav-item active"><span class="nav-symbol">▧</span> Extensions</div><div class="nav-item"><span class="nav-symbol">◷</span> Activity</div><div class="rail-bottom"><div class="rail-note">LOCAL DEVELOPMENT</div><div class="rail-user"><span class="user-avatar">LD</span><span>Local Developer<small>Preview session</small></span></div></div></aside>
+<div class="main"><header class="topbar"><div class="breadcrumbs">Workspace <span>/</span> Extensions <span>/</span> <strong>${name}</strong></div><div class="top-actions"><span class="preview-badge"><span class="pulse"></span> LOCAL PREVIEW</span><span class="top-avatar">LD</span></div></header>
+<div class="workspace"><div class="heading"><div><div class="overline">EXTENSION WORKSPACE</div><h1>${name}</h1><p>See your extension as it appears inside Harbor. Changes to web/ are ready on refresh.</p></div><button id="reload" type="button">↻ <span>Reload preview</span></button></div>
+<div class="layout"><section class="stage"><div class="stage-bar"><div><span class="stage-led"></span><strong>Extension canvas</strong><span class="stage-separator">/</span><span>${name}</span></div><span class="stage-hint">SANDBOXED VIEW</span></div><iframe id="extension" title="${name}" src="/ext/${name}/index.html" sandbox="allow-scripts allow-forms"></iframe></section>
+<aside class="inspector"><div class="inspector-heading"><div class="overline">DEVELOPER PANEL</div><h2>Preview context</h2><p>Live details for this local session.</p></div><div class="inspect-section"><div class="inspect-label">IDENTITY</div><div class="identity-line"><span class="user-avatar light">LD</span><span><strong>Local Developer</strong><small>LOCAL-PREVIEW</small></span></div></div><div class="inspect-section"><div class="inspect-label">CONNECTORS</div><div id="connectors" class="connectors"><span class="muted">Loading configuration…</span></div></div><div class="inspect-section"><div class="inspect-label">LAST SDK REQUEST</div><div id="request-state" class="request-state"><span class="request-dot idle"></span><span>Waiting for extension</span></div></div><div class="inspector-foot">Configured addresses come from <code>env/local.yaml</code>. Calls are forwarded through the local Harbor bridge.</div></aside></div></div></div></div><script src="/preview/shell.js"></script></body></html>`;
 }
 
 function staticFile(root, relative, res, extension = false) {
@@ -84,6 +79,11 @@ export async function runStandaloneDev({ name, dir }, port) {
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
     if (req.method === "GET" && url.pathname === "/") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" }).end(portal(name)); return;
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/preview/")) return staticFile(path.join(REPO_ROOT, "cli", "preview"), url.pathname.slice(9), res);
+    if (req.method === "GET" && url.pathname === "/api/preview-config") {
+      const project = inspectStandalone(dir);
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" }).end(JSON.stringify({ connectors: [...project.connectors].map(([id, connector]) => ({ id, upstream: connector.upstream })) })); return;
     }
     if (req.method === "GET" && url.pathname.startsWith(`/ext/${name}/`)) return staticFile(path.join(dir, "web"), url.pathname.slice(`/ext/${name}/`.length), res, true);
     if (req.method === "GET" && url.pathname.startsWith("/sdk/")) return staticFile(path.join(REPO_ROOT, "sdk"), url.pathname.slice(5), res);
