@@ -69,4 +69,13 @@ window.addEventListener("message", async (event) => {
 });
 
 document.getElementById("reload").addEventListener("click", () => { showRequest("Waiting for extension"); frame.src = frame.src; });
+const debugPanel = document.getElementById("debug-panel");
+const debugToggle = document.getElementById("debug-toggle");
+function setDebugOpen(open) {
+  debugPanel.hidden = !open;
+  debugToggle.setAttribute("aria-expanded", String(open));
+}
+debugToggle.addEventListener("click", () => setDebugOpen(debugPanel.hidden));
+document.getElementById("debug-close").addEventListener("click", () => setDebugOpen(false));
+window.addEventListener("keydown", (event) => { if (event.key === "Escape") setDebugOpen(false); });
 loadConnectors();

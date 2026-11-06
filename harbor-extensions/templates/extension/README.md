@@ -17,7 +17,7 @@ harbor extension validate
 harbor extension dev
 ```
 
-Open the printed URL. The sample extension shows illustrative workflow data; replace it with your own UI and connector calls. The preview frame shows the fixed **Local Developer** identity, configured connector addresses, a read-only test button for each declared concrete GET route, and the latest SDK response. These debugging tools belong to the preview frame, not your extension's UI. The SDK and Node preview gateway run locally; connector calls follow the declared routes and reach your backend. Real AD groups, PAT scopes, grants and signed identity claims are checked in Dev.
+Open the printed URL. The sample extension shows illustrative workflow data; replace it with your own UI and connector calls. The extension gets the whole area beside Harbor's left navigation and below its top bar. Open **Debug tools** in the top bar when needed: the overlay shows the fixed **Local Developer** identity, configured connector addresses, a read-only test button for each declared concrete GET route, and the latest SDK response. The SDK and Node preview gateway run locally; connector calls follow the declared routes and reach your backend. Real AD groups, PAT scopes, grants and signed identity claims are checked in Dev.
 
 `connectors/*.yaml` declares allowed operations and AD groups. `env/local.yaml`, `env/dev.yaml` and `env/prod.yaml` provide only the upstream addresses. Never commit credentials; environment secrets belong to the platform.
 
