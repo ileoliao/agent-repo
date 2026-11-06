@@ -175,7 +175,7 @@ test("release composition replaces only the owning extension and writes its mark
 
 test("Node preview serves web and forwards connector calls to a local backend", async (t) => {
   const { repo } = fixture(t);
-  const backend = http.createServer((_req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end('{"message":"local backend reached"}'));
+  const backend = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ message: "local backend reached", user: req.headers["x-harbor-local-user"] })));
   try {
     await new Promise((resolve, reject) => backend.once("error", reject).listen(0, "127.0.0.1", resolve));
   } catch (error) {
@@ -209,5 +209,20 @@ test("Node preview serves web and forwards connector calls to a local backend", 
     body: JSON.stringify({ op: "gw", connector: "team-demo-api", method: "GET", path: "/health" }),
   });
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).data.message, "local backend reached");
+  assert.deepEqual((await response.json()).data, { message: "local backend reached", user: "local" });
+  const selected = await fetch(`${origin}/api/bridge`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: origin, "X-Harbor-Preview-Staff-Id": "A12345" },
+    body: JSON.stringify({ op: "gw", connector: "team-demo-api", method: "GET", path: "/health" }),
+  });
+  assert.equal((await selected.json()).data.user, "A12345");
+  const me = await fetch(`${origin}/api/bridge`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: origin, "X-Harbor-Preview-Staff-Id": "A12345" },
+    body: JSON.stringify({ op: "me" }),
+  });
+  assert.deepEqual((await me.json()).data, { user: "A12345", display_name: "A12345", groups: ["LOCAL-PREVIEW"], credential: "local-preview" });
+  const invalid = await fetch(`${origin}/api/bridge`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: origin, "X-Harbor-Preview-Staff-Id": "bad id" },
+    body: JSON.stringify({ op: "me" }),
+  });
+  assert.equal(invalid.status, 400);
 });

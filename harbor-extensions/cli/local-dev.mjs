@@ -16,8 +16,8 @@ function validPath(value) {
   return !value.split("?")[0].split("/").some((part) => part === "." || part === ".." || /%2e|%2f|%5c|%00/i.test(part));
 }
 
-async function bridge(project, msg) {
-  const me = { user: "local", display_name: "Local Developer", groups: ["LOCAL-PREVIEW"], credential: "local-preview" };
+async function bridge(project, msg, staffId) {
+  const me = { user: staffId, display_name: staffId === "local" ? "Local Developer" : staffId, groups: ["LOCAL-PREVIEW"], credential: "local-preview" };
   if (msg.op === "me") return result(200, me);
   if (msg.op === "context") return result(200, { workspace: null, embedded: false });
   if (msg.op === "can") {
@@ -36,7 +36,7 @@ async function bridge(project, msg) {
   const target = matched.connector.upstream + requestPath;
   try {
     const body = msg.body == null ? undefined : typeof msg.body === "string" ? msg.body : JSON.stringify(msg.body);
-    const response = await fetch(target, { method, body, redirect: "manual", headers: { "X-Harbor-Local-User": "local", ...(body ? { "Content-Type": typeof msg.contentType === "string" ? msg.contentType : "application/json" } : {}) }, signal: AbortSignal.timeout(15000) });
+    const response = await fetch(target, { method, body, redirect: "manual", headers: { "X-Harbor-Local-User": staffId, ...(body ? { "Content-Type": typeof msg.contentType === "string" ? msg.contentType : "application/json" } : {}) }, signal: AbortSignal.timeout(15000) });
     const text = await response.text();
     const type = response.headers.get("content-type") || "text/plain";
     let data = null;
@@ -50,10 +50,10 @@ async function bridge(project, msg) {
 
 function portal(name) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Harbor preview · ${name}</title><link rel="stylesheet" href="/preview/shell.css"></head><body>
-<div class="shell"><aside class="rail"><div class="brand"><span class="brand-mark">H</span><span>harbor<span class="brand-dot">.</span></span></div><div class="rail-caption">WORKSPACE</div><div class="nav-item"><span class="nav-symbol">⌂</span> Overview</div><div class="nav-item active"><span class="nav-symbol">▧</span> Extensions</div><div class="nav-item"><span class="nav-symbol">◷</span> Activity</div><div class="rail-bottom"><div class="rail-note">LOCAL DEVELOPMENT</div><div class="rail-user"><span class="user-avatar">LD</span><span>Local Developer<small>Preview session</small></span></div></div></aside>
-<div class="main"><header class="topbar"><div class="breadcrumbs">Workspace <span>/</span> Extensions <span>/</span> <strong>${name}</strong></div><div class="top-actions"><span class="preview-badge"><span class="pulse"></span> LOCAL PREVIEW</span><button id="reload" class="top-button" type="button" title="Reload extension">↻ Reload</button><button id="debug-toggle" class="top-button debug-button" type="button" aria-controls="debug-panel" aria-expanded="false">Debug tools</button><span class="top-avatar">LD</span></div></header>
+<div class="shell"><aside class="rail"><div class="brand">HARBOR</div><div class="rail-caption">WORKSPACE</div><div class="nav-item"><span class="nav-symbol">⌂</span> Overview</div><div class="nav-item active"><span class="nav-symbol">▧</span> Extensions</div><div class="nav-item"><span class="nav-symbol">◷</span> Activity</div><div class="rail-bottom"><div class="rail-note">LOCAL DEVELOPMENT</div></div></aside>
+<div class="main"><header class="topbar"><div class="breadcrumbs">Workspace <span>/</span> Extensions <span>/</span> <strong>${name}</strong></div><div class="top-actions"><span class="preview-badge"><span class="pulse"></span> LOCAL PREVIEW</span><button id="reload" class="top-button" type="button" title="Reload extension">↻ Reload</button><button id="debug-toggle" class="top-button debug-button" type="button" aria-controls="debug-panel" aria-expanded="false">Debug tools</button><div class="identity-control"><button id="identity-toggle" class="identity-toggle" type="button" aria-controls="identity-form" aria-expanded="false"><span id="identity-avatar" class="top-avatar">LD</span><span id="identity-label">Local Developer</span><span class="identity-chevron">⌄</span></button><form id="identity-form" class="identity-form" hidden><label for="staff-id">Preview as Staff ID</label><input id="staff-id" name="staff-id" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Enter Staff ID" pattern="[A-Za-z0-9._-]{1,64}" required><p>Simulated local identity for SDK and connector calls.</p><div class="identity-actions"><button id="identity-reset" type="button">Reset</button><button type="submit">Apply</button></div></form></div></div></header>
 <iframe id="extension" class="extension-frame" title="${name}" src="/ext/${name}/index.html" sandbox="allow-scripts allow-forms"></iframe></div>
-<aside id="debug-panel" class="inspector" aria-label="Debug tools" hidden><div class="inspector-heading"><div><div class="overline">DEVELOPER PANEL</div><h2>Debug tools</h2><p>Local context and connector checks.</p></div><button id="debug-close" class="close-button" type="button" aria-label="Close debug tools">×</button></div><div class="inspect-section"><div class="inspect-label">IDENTITY</div><div class="identity-line"><span class="user-avatar light">LD</span><span><strong>Local Developer</strong><small>LOCAL-PREVIEW</small></span></div></div><div class="inspect-section"><div class="inspect-label">CONNECTORS</div><div id="connectors" class="connectors"><span class="muted">Loading configuration…</span></div></div><div class="inspect-section"><div class="inspect-label">LAST SDK REQUEST</div><div id="request-state" class="request-state"><span class="request-dot idle"></span><span>Waiting for extension</span></div><pre id="response-detail" class="response-detail" hidden></pre></div><div class="inspector-foot">Read-only checks use declared routes and the address in <code>env/local.yaml</code>.</div></aside></div><script src="/preview/shell.js"></script></body></html>`;
+<aside id="debug-panel" class="inspector" aria-label="Debug tools" hidden><div class="inspector-heading"><div><div class="overline">DEVELOPER PANEL</div><h2>Debug tools</h2><p>Connector checks for the selected Staff ID.</p></div><button id="debug-close" class="close-button" type="button" aria-label="Close debug tools">×</button></div><div class="inspect-section"><div class="inspect-label">CONNECTORS</div><div id="connectors" class="connectors"><span class="muted">Loading configuration…</span></div></div><div class="inspect-section"><div class="inspect-label">LAST SDK REQUEST</div><div id="request-state" class="request-state"><span class="request-dot idle"></span><span>Waiting for extension</span></div><pre id="response-detail" class="response-detail" hidden></pre></div><div class="inspector-foot">Read-only checks use declared routes and the address in <code>env/local.yaml</code>.</div></aside></div><script src="/preview/shell.js"></script></body></html>`;
 }
 
 function staticFile(root, relative, res, extension = false) {
@@ -88,9 +88,11 @@ export async function runStandaloneDev({ name, dir }, port) {
     if (req.method === "GET" && url.pathname.startsWith("/sdk/")) return staticFile(path.join(REPO_ROOT, "sdk"), url.pathname.slice(5), res);
     if (req.method === "POST" && url.pathname === "/api/bridge") {
       try {
+        const staffId = req.headers["x-harbor-preview-staff-id"] ?? "local";
+        if (typeof staffId !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(staffId)) throw new Error("Invalid preview Staff ID");
         let body = "";
         for await (const chunk of req) { body += chunk; if (body.length > 1024 * 1024) throw new Error("Request too large"); }
-        const response = await bridge(inspectStandalone(dir), JSON.parse(body));
+        const response = await bridge(inspectStandalone(dir), JSON.parse(body), staffId);
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(response));
       } catch (error) {
         res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify(result(400, { reason: error.message }, "bad_request")));

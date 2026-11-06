@@ -3,6 +3,33 @@
 const frame = document.getElementById("extension");
 const requestState = document.getElementById("request-state");
 const responseDetail = document.getElementById("response-detail");
+const identityToggle = document.getElementById("identity-toggle");
+const identityForm = document.getElementById("identity-form");
+const staffInput = document.getElementById("staff-id");
+const STAFF_ID = /^[A-Za-z0-9._-]{1,64}$/;
+let staffId = sessionStorage.getItem("harbor-preview-staff-id") || "local";
+if (!STAFF_ID.test(staffId)) staffId = "local";
+
+function updateIdentity() {
+  document.getElementById("identity-label").textContent = staffId === "local" ? "Local Developer" : staffId;
+  document.getElementById("identity-avatar").textContent = staffId === "local" ? "LD" : staffId.slice(0, 2).toUpperCase();
+  staffInput.value = staffId === "local" ? "" : staffId;
+}
+
+function showIdentityForm(open) {
+  identityForm.hidden = !open;
+  identityToggle.setAttribute("aria-expanded", String(open));
+  if (open) staffInput.focus();
+}
+
+function selectIdentity(next) {
+  staffId = next;
+  sessionStorage.setItem("harbor-preview-staff-id", staffId);
+  updateIdentity();
+  showIdentityForm(false);
+  showRequest("Waiting for extension");
+  frame.src = frame.src;
+}
 
 function showRequest(message, bad = false, detail = null) {
   requestState.className = `request-state${bad ? " bad" : ""}`;
@@ -17,7 +44,7 @@ function showRequest(message, bad = false, detail = null) {
 
 async function requestBridge(message) {
   try {
-    const response = await fetch("/api/bridge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(message) });
+    const response = await fetch("/api/bridge", { method: "POST", headers: { "Content-Type": "application/json", "X-Harbor-Preview-Staff-Id": staffId }, body: JSON.stringify(message) });
     return await response.json();
   } catch (error) {
     return { ok: false, status: 502, gatewayError: "bridge_error", data: { reason: String(error) } };
@@ -69,6 +96,17 @@ window.addEventListener("message", async (event) => {
 });
 
 document.getElementById("reload").addEventListener("click", () => { showRequest("Waiting for extension"); frame.src = frame.src; });
+identityToggle.addEventListener("click", () => showIdentityForm(identityForm.hidden));
+identityForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const next = staffInput.value.trim();
+  if (!STAFF_ID.test(next)) { staffInput.setCustomValidity("Use 1–64 letters, numbers, dots, underscores or hyphens"); staffInput.reportValidity(); return; }
+  staffInput.setCustomValidity("");
+  selectIdentity(next);
+});
+staffInput.addEventListener("input", () => staffInput.setCustomValidity(""));
+document.getElementById("identity-reset").addEventListener("click", () => selectIdentity("local"));
+document.addEventListener("click", (event) => { if (!event.target.closest(".identity-control")) showIdentityForm(false); });
 const debugPanel = document.getElementById("debug-panel");
 const debugToggle = document.getElementById("debug-toggle");
 function setDebugOpen(open) {
@@ -77,5 +115,6 @@ function setDebugOpen(open) {
 }
 debugToggle.addEventListener("click", () => setDebugOpen(debugPanel.hidden));
 document.getElementById("debug-close").addEventListener("click", () => setDebugOpen(false));
-window.addEventListener("keydown", (event) => { if (event.key === "Escape") setDebugOpen(false); });
+window.addEventListener("keydown", (event) => { if (event.key === "Escape") { setDebugOpen(false); showIdentityForm(false); } });
+updateIdentity();
 loadConnectors();
