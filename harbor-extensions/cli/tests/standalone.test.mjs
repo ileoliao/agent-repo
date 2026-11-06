@@ -199,6 +199,10 @@ test("Node preview serves web and forwards connector calls to a local backend", 
   }
   assert.equal(page?.status, 200);
   assert.match(await page.text(), /Team Demo/);
+  const preview = await fetch(`${origin}/api/preview-config`);
+  assert.equal(preview.status, 200);
+  assert.deepEqual((await preview.json()).connectors, [{ id: "team-demo-api", upstream: `http://127.0.0.1:${backendPort}`, probes: ["/health"] }]);
+  assert.equal((await fetch(`${origin}/preview/shell.js`)).status, 200);
   assert.equal((await fetch(`${origin}/ext/team-demo/env/prod.yaml`)).status, 404);
   const response = await fetch(`${origin}/api/bridge`, {
     method: "POST", headers: { "Content-Type": "application/json", Origin: origin },

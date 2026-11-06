@@ -8,10 +8,26 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <main class="demo-page" id="app">
-      <div class="loading">Opening My Extension…</div>
+    <main class="demo-page">
+      <div class="eyebrow">HARBOR / DEMO WORKSPACE</div>
+      <section class="hero">
+        <div class="hero-content">
+          <span class="sample-tag">SAMPLE INTERFACE</span>
+          <h1>Make the work<br />move forward.</h1>
+          <p>A focused space for your team’s next action. Replace this sample workflow with the experience your extension provides.</p>
+        </div>
+        <div class="hero-art" aria-hidden="true"><div class="hero-diamond"><span>H</span></div></div>
+      </section>
+      <section class="work-panel" aria-label="Example requests">
+        <header class="panel-heading">
+          <div><div class="section-label">EXAMPLE WORKFLOW</div><h2>Requests in focus</h2><p>Illustrative data to show how an extension can present a useful workflow.</p></div>
+          <span class="sample-data">SAMPLE DATA</span>
+        </header>
+        <div class="toolbar"><div class="tabs" role="tablist" aria-label="Filter requests"><button type="button" role="tab" data-filter="All">All</button><button type="button" role="tab" data-filter="Open">Open</button><button type="button" role="tab" data-filter="Reviewed">Reviewed</button></div><span id="request-count"></span></div>
+        <div id="request-list" class="request-list"></div>
+      </section>
+      <footer>HARBOR EXTENSIONS <span>Designed for the work that matters.</span></footer>
     </main>
-    <script src="../../sdk/harbor.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
