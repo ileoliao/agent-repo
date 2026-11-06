@@ -29,7 +29,7 @@ try {
   const manifest = policyOnly ? null : YAML.parse(fs.readFileSync(path.join(bundle, "extensions", name, "extension.yaml"), "utf8"));
   if (!policyOnly && manifest?.name !== name) throw new Error("bundle manifest name mismatch");
   const connectorNames = policyOnly ? [] : files(path.join(bundle, "connectors"));
-  if (!policyOnly && (!connectorNames.length || connectorNames.some((file) => !file.startsWith(`${name}-`) || !file.endsWith(".yaml")))) {
+  if (!policyOnly && connectorNames.some((file) => !file.startsWith(`${name}-`) || !file.endsWith(".yaml"))) {
     throw new Error("bundle connectors must belong to this extension namespace");
   }
   fs.mkdirSync(output, { recursive: true });

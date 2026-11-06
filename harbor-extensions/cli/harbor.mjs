@@ -18,7 +18,7 @@ function rootHelp() {
 Usage:
   harbor extension new <name> [--owner X --contact Y --description Z]
                                          Create an independent extension repository directory
-  harbor extension dev [path] [--port N]  Preview with a local connector backend
+  harbor extension dev [path] [--port N]  Preview with a local backend or Dev gateway
   harbor extension validate [path]       Check manifest, connector and environment configuration
 
 Publishing is triggered only by GitHub pushes to dev or prod.

@@ -64,14 +64,24 @@ async function loadConnectors() {
   try {
     const response = await fetch("/api/preview-config");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const { connectors } = await response.json();
+    const { connectors, gateway } = await response.json();
+    if (gateway) {
+      document.getElementById("preview-mode").textContent = "DEV GATEWAY";
+      identityToggle.disabled = true;
+      identityToggle.title = "Dev gateway uses the identity of HARBOR_DEV_PAT";
+      const me = await requestBridge({ op: "me" });
+      const label = me.ok ? me.data.display_name || me.data.user : "Dev PAT required";
+      document.getElementById("identity-label").textContent = label;
+      document.getElementById("identity-avatar").textContent = me.ok ? me.data.user.slice(0, 2).toUpperCase() : "DEV";
+    }
     root.replaceChildren();
     for (const connector of connectors) {
       const row = document.createElement("div"); row.className = "connector-row";
       const name = document.createElement("div"); name.className = "connector-name";
       const dot = document.createElement("span"); dot.className = "request-dot idle";
       const label = document.createElement("span"); label.textContent = connector.id;
-      name.append(dot, label);
+      const mode = document.createElement("span"); mode.className = "connector-mode"; mode.textContent = connector.via === "gateway" ? "DEV GATEWAY" : "DIRECT";
+      name.append(dot, label, mode);
       const address = document.createElement("span"); address.className = "connector-address"; address.textContent = connector.upstream;
       row.append(name, address);
       for (const path of connector.probes) {
@@ -80,6 +90,13 @@ async function loadConnectors() {
         button.textContent = `↗  Test GET ${path}`;
         button.addEventListener("click", () => probe(button, connector.id, path));
         row.append(button);
+      }
+      if (connector.via === "gateway") {
+        const form = document.createElement("form"); form.className = "gateway-probe";
+        const input = document.createElement("input"); input.type = "text"; input.placeholder = "/path/to/read"; input.setAttribute("aria-label", `GET path for ${connector.id}`); input.required = true;
+        const button = document.createElement("button"); button.type = "submit"; button.textContent = "GET";
+        form.addEventListener("submit", (event) => { event.preventDefault(); probe(button, connector.id, input.value.trim()); });
+        form.append(input, button); row.append(form);
       }
       root.append(row);
     }

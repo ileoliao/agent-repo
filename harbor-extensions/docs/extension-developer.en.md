@@ -28,23 +28,33 @@ Main repository files:
 | `extension.yaml` | Name, owner, visibility and requested capabilities |
 | `web/` | Published static pages and assets; put framework build output here |
 | `connectors/*.yaml` | Connector names, allowed methods and paths, AD groups and data classes |
-| `env/local.yaml` | Backend addresses for local debugging |
+| `env/local.yaml` | Local backend addresses or the Harbor Dev gateway address |
 | `env/dev.yaml`, `env/prod.yaml` | Real Dev and Prod backend addresses for the same connectors |
 
 `env/*.yaml` contains addresses, never credentials. Source, tests and backend code may live in the repository, but keep them outside `web/`. The platform bundles only validated `web/` files, the manifest and the target environment's connector configuration. The platform injects connector secrets separately.
 
 ## 2. Debug locally
 
-Point `env/local.yaml` at the connector backend running on your machine. The template defaults to `http://127.0.0.1:3000`. From the extension repository root, run:
+The default mode calls your own backend directly: `upstreams` in `env/local.yaml` points to your machine (`http://127.0.0.1:3000` in the template). Enter a Staff ID in the top bar to simulate a local identity; the CLI sends it as `X-Harbor-Local-User` to your local backend.
+
+To use an **existing online connector** from your local UI, replace `env/local.yaml` with:
+
+```yaml
+gateway: dev
+```
+
+Declare the existing capability in `extension.yaml`, for example `snow.change.read`. If you only reuse platform connectors, do not copy their `connectors/*.yaml` files. The standalone preview CLI is not yet integrated with the existing Harbor CLI credential file. For now, it reads `HARBOR_DEV_GATEWAY_URL` (the full `/extensions` base URL) and `HARBOR_DEV_PAT` from the local process environment; integration will replace this with the initialized CLI profile. Never put credentials in the repository or web page. The Dev gateway applies the real PAT, AD group, extension declaration and grant checks, then injects the downstream credential and signed identity. The top bar shows the PAT's real identity; Staff ID impersonation is disabled. The extension and required capabilities must already be registered in Harbor Dev. Offline validation cannot confirm that an online capability exists.
+
+After configuring either mode, run from the extension repository root:
 
 ```bash
 harbor extension validate
 harbor extension dev
 ```
 
-Open the preview URL printed by the CLI. The page calls the backend through `harbor.connector("my-extension-api").get("/health")`; replace the example connector name with yours. The CLI forwards only declared routes and capabilities to the address already configured in `env/local.yaml`. No separate local override address is needed. Use relative static asset paths. The extension page runs in a sandboxed iframe.
+Open the printed preview URL. The page calls `harbor.connector("connector-name").get("/path")`; the local proxy follows `env/local.yaml` and either calls your backend directly or forwards through Dev. Use relative static asset paths. The extension page runs in a sandboxed iframe.
 
-Local preview uses a fixed test identity. It verifies the page, routing and connection to your local backend. Verify real PAT scopes, AD groups, platform grants, connector credentials and signed downstream identity in Dev. `validate` checks all three environment files and rejects a local address that does not point to your machine.
+Direct remote calls to your own service require HTTPS. For `service-account` connectors, the CLI reads the bearer credential from the local `HARBOR_SECRET_<auth.secret>` environment variable. Use Dev gateway mode for a remote `identity-only` service that requires Harbor's signed identity. `validate` checks all three environment files; actual online capabilities and permissions are confirmed by the Dev gateway.
 
 ## 3. Release and promote
 

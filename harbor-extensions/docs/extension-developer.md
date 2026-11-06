@@ -28,23 +28,33 @@ cd my-extension
 | `extension.yaml` | 名称、负责人、可见范围、申请使用的能力 |
 | `web/` | 要发布的静态页面和资源；框架构建产物放这里 |
 | `connectors/*.yaml` | connector 名称、允许的方法和路径、AD 组、数据级别 |
-| `env/local.yaml` | 本机联调的后端地址 |
+| `env/local.yaml` | 本机后端地址，或 Harbor Dev 网关地址 |
 | `env/dev.yaml`、`env/prod.yaml` | Dev、Prod 中同一 connector 的真实后端地址 |
 
 `env/*.yaml` 只放地址，不放凭据。源码、测试和后端代码可以在仓库中，但不要放进 `web/`。平台只打包验证过的 `web/`、manifest 和目标环境 connector 配置；connector 密钥由平台注入。
 
 ## 2. 本机联调
 
-先把 `env/local.yaml` 中的地址指向本机启动的 connector 后端。模板默认是 `http://127.0.0.1:3000`。然后在扩展仓库根目录运行：
+默认模式是直连自己的后端：`env/local.yaml` 中的 `upstreams` 指向本机地址，模板使用 `http://127.0.0.1:3000`。顶栏可输入 Staff ID 模拟本地身份，CLI 会把它作为 `X-Harbor-Local-User` 发给本机后端。
+
+若要在本地页面使用**线上已有 connector**，把 `env/local.yaml` 改为：
+
+```yaml
+gateway: dev
+```
+
+在 `extension.yaml` 中声明已有能力，例如 `snow.change.read`；仅复用平台 connector 时，不需要复制它的 `connectors/*.yaml`。当前独立预览 CLI 尚未接入已有 Harbor CLI 的凭据文件，过渡期从本机进程环境读取 `HARBOR_DEV_GATEWAY_URL`（完整 `/extensions` 基地址）和 `HARBOR_DEV_PAT`；集成时会改为读取已初始化的 CLI 配置。凭据不要写进仓库或页面。此模式由 Dev 网关按真实 PAT、AD 组、扩展声明及 grants 授权，并由网关注入下游凭据和签名身份。顶栏显示 PAT 的真实身份，不能用 Staff ID 冒充。扩展及所需能力须先登记在 Harbor Dev；本地离线校验无法确认线上能力是否存在。
+
+配置好其中一种模式后，在扩展仓库根目录运行：
 
 ```bash
 harbor extension validate
 harbor extension dev
 ```
 
-打开 CLI 打印的预览地址。页面通过 `harbor.connector("my-extension-api").get("/health")` 调用后端；请以实际 connector 名称替换示例。CLI 会按仓库声明的路由和能力转发到 `env/local.yaml` 所指地址，不必另外配置一个“本地覆盖地址”。保持静态资源路径为相对路径，扩展页面运行在沙箱 iframe 中。
+打开 CLI 打印的预览地址。页面通过 `harbor.connector("连接器名称").get("/路径")` 调用；本地预览代理会根据 `env/local.yaml` 直连后端或转发至 Dev 网关。保持静态资源路径为相对路径，扩展页面运行在沙箱 iframe 中。
 
-本地预览使用固定的测试身份，能验证页面、路由和到本机后端的链路。真实 PAT、AD 组、平台 grants、connector 凭据和下游签名身份要在 Dev 验证。`validate` 会检查三个环境文件，并拒绝指向非本机的 local 地址。
+直连远端自有服务时必须使用 HTTPS；若 connector 是 `service-account`，CLI 从本机环境变量 `HARBOR_SECRET_<auth.secret>` 读取 bearer 凭据。需要平台签名身份的 `identity-only` 远端服务应使用 Dev 网关模式。`validate` 检查三个环境文件；远端能力和权限由 Dev 网关实际调用时确认。
 
 ## 3. 发布和晋级
 

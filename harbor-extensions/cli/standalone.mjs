@@ -17,21 +17,26 @@ function readYaml(file) {
 
 function upstreams(repo, environment, names) {
   const data = readYaml(path.join(repo, "env", `${environment}.yaml`));
-  const map = data.upstreams;
-  if (!map || typeof map !== "object" || Array.isArray(map)) throw new Error(`env/${environment}.yaml: upstreams mapping required`);
-  for (const name of names) if (typeof map[name] !== "string") throw new Error(`env/${environment}.yaml: missing upstream for ${name}`);
+  const gateway = data.gateway;
+  if (gateway != null && environment !== "local") throw new Error(`env/${environment}.yaml: gateway is only for local preview`);
+  if (gateway != null && (gateway !== "dev" || data.upstreams != null)) throw new Error("env/local.yaml: use gateway: dev or upstreams");
+  const map = data.upstreams || {};
+  if (typeof map !== "object" || Array.isArray(map)) throw new Error(`env/${environment}.yaml: upstreams mapping required`);
+  if (!gateway) for (const name of names) if (map[name] == null) throw new Error(`env/${environment}.yaml: missing upstream for ${name}`);
   for (const name of Object.keys(map)) if (!names.has(name)) throw new Error(`env/${environment}.yaml: unknown connector ${name}`);
+  if (environment === "local" && !gateway && !names.size) throw new Error("env/local.yaml: add an upstream or Dev gateway");
   for (const [name, value] of Object.entries(map)) {
+    if (typeof value !== "string") throw new Error(`env/${environment}.yaml: ${name} needs a URL`);
     let url;
     try { url = new URL(value); } catch { throw new Error(`env/${environment}.yaml: invalid URL for ${name}`); }
     if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password || url.search || url.hash) {
       throw new Error(`env/${environment}.yaml: ${name} must be an http(s) URL without credentials or query`);
     }
-    if (environment === "local" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-      throw new Error(`env/local.yaml: ${name} must point to localhost`);
+    if (environment === "local" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) && url.protocol !== "https:") {
+      throw new Error(`env/local.yaml: remote ${name} must use HTTPS`);
     }
   }
-  return map;
+  return { map, gateway: gateway || null };
 }
 
 export function inspectStandalone(repo, environment = "local") {
@@ -44,9 +49,8 @@ export function inspectStandalone(repo, environment = "local") {
   if (check.errors.length) throw new Error(check.errors.join("\n"));
   const dir = path.join(repo, "connectors");
   const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort() : [];
-  if (!files.length) throw new Error("connectors/: add at least one connector YAML");
   const names = new Set(files.map((f) => path.basename(f, ".yaml")));
-  const addresses = upstreams(repo, environment, names);
+  const { map: addresses, gateway } = upstreams(repo, environment, names);
   const connectors = new Map();
   for (const file of files) {
     const raw = readYaml(path.join(dir, file));
@@ -74,13 +78,15 @@ export function inspectStandalone(repo, environment = "local") {
       });
       capabilities.set(key, { ...cap, rules });
     }
-    connectors.set(name, { ...raw, upstream: addresses[name].replace(/\/$/, ""), capabilities });
+    connectors.set(name, { ...raw, via: gateway ? "gateway" : "direct", upstream: gateway ? null : addresses[name].replace(/\/$/, ""), capabilities });
   }
   for (const id of manifest.capabilities || []) {
     const [name, ...rest] = String(id).split(".");
-    if (!connectors.get(name)?.capabilities.has(rest.join("."))) throw new Error(`extension.yaml: capability ${id} is not defined by this repository`);
+    if (connectors.has(name) && !connectors.get(name).capabilities.has(rest.join("."))) throw new Error(`extension.yaml: capability ${id} is not defined by this repository`);
+    if (!connectors.has(name) && name.startsWith(`${manifest.name}-`)) throw new Error(`extension.yaml: own connector ${name} is missing`);
+    if (environment === "local" && !connectors.has(name) && !gateway) throw new Error(`env/local.yaml: use a Dev gateway to access existing connector ${name}`);
   }
-  return { repo, manifest, connectors, notes: check.notes };
+  return { repo, manifest, connectors, gateway, notes: check.notes };
 }
 
 export function validateStandalone(repo) {

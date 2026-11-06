@@ -52,10 +52,36 @@ test("local connector policy and environment bundles stay separate", (t) => {
   }
 });
 
-test("local addresses must stay on loopback", (t) => {
+test("local remote addresses require HTTPS; gateway mode is explicit", (t) => {
   const { repo } = fixture(t);
-  fs.writeFileSync(path.join(repo, "env", "local.yaml"), "upstreams:\n  team-demo-api: https://team-demo-api.prod.internal\n");
-  assert.throws(() => validateStandalone(repo), /must point to localhost/);
+  fs.writeFileSync(path.join(repo, "env", "local.yaml"), "upstreams:\n  team-demo-api: http://team-demo-api.dev.internal\n");
+  assert.throws(() => validateStandalone(repo), /must use HTTPS/);
+  fs.writeFileSync(path.join(repo, "env", "local.yaml"), "upstreams:\n  team-demo-api: https://team-demo-api.dev.internal\n");
+  assert.equal(inspectStandalone(repo).connectors.get("team-demo-api").upstream, "https://team-demo-api.dev.internal");
+  fs.writeFileSync(path.join(repo, "env", "local.yaml"), "gateway: dev\n");
+  assert.equal(inspectStandalone(repo).gateway, "dev");
+  fs.writeFileSync(path.join(repo, "env", "local.yaml"), "gateway: https://untrusted.example/extensions\n");
+  assert.throws(() => validateStandalone(repo), /gateway: dev/);
+});
+
+test("an extension may reuse a platform connector through the Dev gateway", (t) => {
+  const { temp, repo } = fixture(t);
+  fs.rmSync(path.join(repo, "connectors"), { recursive: true });
+  const manifest = path.join(repo, "extension.yaml");
+  fs.writeFileSync(manifest, fs.readFileSync(manifest, "utf8").replace("team-demo-api.health.read", "snow.change.read"));
+  fs.writeFileSync(path.join(repo, "env", "local.yaml"), "gateway: dev\n");
+  for (const env of ["dev", "prod"]) fs.writeFileSync(path.join(repo, "env", `${env}.yaml`), "upstreams: {}\n");
+  validateStandalone(repo);
+  assert.equal(inspectStandalone(repo).connectors.size, 0);
+  const output = path.join(temp, "bundle");
+  bundleStandalone(repo, "dev", output);
+  assert.equal(fs.existsSync(path.join(output, "connectors")), false);
+  const base = path.join(temp, "base");
+  fs.mkdirSync(base);
+  const release = path.join(temp, "release");
+  const composed = spawnSync(process.execPath, [path.join(ROOT, "scripts", "compose-release.mjs"), base, output, release, "d".repeat(40)], { encoding: "utf8" });
+  assert.equal(composed.status, 0, composed.stderr);
+  assert.ok(fs.existsSync(path.join(release, "extensions", "team-demo", "index.html")));
 });
 
 test("manifest YAML and navigation rules match platform validation", (t) => {
@@ -175,7 +201,14 @@ test("release composition replaces only the owning extension and writes its mark
 
 test("Node preview serves web and forwards connector calls to a local backend", async (t) => {
   const { repo } = fixture(t);
-  const backend = http.createServer((req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ message: "local backend reached", user: req.headers["x-harbor-local-user"] })));
+  const backend = http.createServer((req, res) => {
+    if (req.url.startsWith("/extensions/api/can?")) return res.writeHead(200, { "Content-Type": "application/json" }).end('{"allowed":true}');
+    if (req.url.endsWith("/forbidden")) return res.writeHead(403, { "Content-Type": "application/json", "X-Harbor-Gateway-Error": "missing_group" }).end('{"reason":"Join the required AD group"}');
+    const data = req.url === "/extensions/api/me"
+      ? { user: "dev-user", display_name: "Dev User", groups: ["APP-DEV-ALL"], credential: "pat" }
+      : { message: "local backend reached", user: req.headers["x-harbor-local-user"] || null, authorization: req.headers.authorization || null, extension: req.headers["x-harbor-extension"] || null, path: req.url };
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(data));
+  });
   try {
     await new Promise((resolve, reject) => backend.once("error", reject).listen(0, "127.0.0.1", resolve));
   } catch (error) {
@@ -189,7 +222,7 @@ test("Node preview serves web and forwards connector calls to a local backend", 
   await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
   const port = probe.address().port;
   await new Promise((resolve) => probe.close(resolve));
-  const child = spawn(process.execPath, [path.join(ROOT, "cli", "harbor.mjs"), "extension", "dev", "--port", String(port)], { cwd: repo, stdio: "ignore" });
+  const child = spawn(process.execPath, [path.join(ROOT, "cli", "harbor.mjs"), "extension", "dev", "--port", String(port)], { cwd: repo, stdio: "ignore", env: { ...process.env, HARBOR_SECRET_TEAM_DEMO_TOKEN: "local-secret", HARBOR_DEV_GATEWAY_URL: `http://127.0.0.1:${backendPort}/extensions`, HARBOR_DEV_PAT: "dev-pat" } });
   t.after(() => child.kill());
   const origin = `http://127.0.0.1:${port}`;
   let page;
@@ -201,7 +234,7 @@ test("Node preview serves web and forwards connector calls to a local backend", 
   assert.match(await page.text(), /Team Demo/);
   const preview = await fetch(`${origin}/api/preview-config`);
   assert.equal(preview.status, 200);
-  assert.deepEqual((await preview.json()).connectors, [{ id: "team-demo-api", upstream: `http://127.0.0.1:${backendPort}`, probes: ["/health"] }]);
+  assert.deepEqual(await preview.json(), { gateway: false, connectors: [{ id: "team-demo-api", upstream: `http://127.0.0.1:${backendPort}`, via: "direct", probes: ["/health"] }] });
   assert.equal((await fetch(`${origin}/preview/shell.js`)).status, 200);
   assert.equal((await fetch(`${origin}/ext/team-demo/env/prod.yaml`)).status, 404);
   const response = await fetch(`${origin}/api/bridge`, {
@@ -209,17 +242,50 @@ test("Node preview serves web and forwards connector calls to a local backend", 
     body: JSON.stringify({ op: "gw", connector: "team-demo-api", method: "GET", path: "/health" }),
   });
   assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).data, { message: "local backend reached", user: "local" });
+  assert.equal((await response.json()).data.user, "local");
   const selected = await fetch(`${origin}/api/bridge`, {
     method: "POST", headers: { "Content-Type": "application/json", Origin: origin, "X-Harbor-Preview-Staff-Id": "A12345" },
     body: JSON.stringify({ op: "gw", connector: "team-demo-api", method: "GET", path: "/health" }),
   });
   assert.equal((await selected.json()).data.user, "A12345");
+  const connectorFile = path.join(repo, "connectors", "team-demo-api.yaml");
+  fs.writeFileSync(connectorFile, fs.readFileSync(connectorFile, "utf8").replace("type: identity-only", "type: service-account\n  secret: TEAM_DEMO_TOKEN"));
+  const serviceCall = await fetch(`${origin}/api/bridge`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: origin, "X-Harbor-Preview-Staff-Id": "A12345" },
+    body: JSON.stringify({ op: "gw", connector: "team-demo-api", method: "GET", path: "/health" }),
+  });
+  assert.equal((await serviceCall.json()).data.authorization, "Bearer local-secret");
+  fs.writeFileSync(connectorFile, fs.readFileSync(connectorFile, "utf8").replace("type: service-account\n  secret: TEAM_DEMO_TOKEN", "type: identity-only"));
+  fs.writeFileSync(path.join(repo, "env", "local.yaml"), "gateway: dev\n");
+  const gatewayCall = await fetch(`${origin}/api/bridge`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: origin, "X-Harbor-Preview-Staff-Id": "A12345" },
+    body: JSON.stringify({ op: "gw", connector: "team-demo-api", method: "GET", path: "/health" }),
+  });
+  assert.deepEqual((await gatewayCall.json()).data, { message: "local backend reached", user: null, authorization: "Bearer dev-pat", extension: "team-demo", path: "/extensions/gw/team-demo-api/health" });
+  const manifest = path.join(repo, "extension.yaml");
+  fs.writeFileSync(manifest, fs.readFileSync(manifest, "utf8").replace("team-demo-api.health.read]", "team-demo-api.health.read, snow.change.read]"));
+  const external = await fetch(`${origin}/api/bridge`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: origin },
+    body: JSON.stringify({ op: "gw", connector: "snow", method: "GET", path: "/api/now/table/change_request" }),
+  });
+  assert.equal((await external.json()).data.path, "/extensions/gw/snow/api/now/table/change_request");
+  const can = await fetch(`${origin}/api/bridge`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: origin },
+    body: JSON.stringify({ op: "can", connector: "snow", capability: "change.read" }),
+  });
+  assert.equal((await can.json()).data.allowed, true);
+  const denied = await fetch(`${origin}/api/bridge`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: origin },
+    body: JSON.stringify({ op: "gw", connector: "snow", method: "GET", path: "/forbidden" }),
+  });
+  assert.equal((await denied.json()).gatewayError, "missing_group");
+  const gatewayPreview = await fetch(`${origin}/api/preview-config`);
+  assert.deepEqual((await gatewayPreview.json()).connectors.map((connector) => connector.id), ["team-demo-api", "snow"]);
   const me = await fetch(`${origin}/api/bridge`, {
     method: "POST", headers: { "Content-Type": "application/json", Origin: origin, "X-Harbor-Preview-Staff-Id": "A12345" },
     body: JSON.stringify({ op: "me" }),
   });
-  assert.deepEqual((await me.json()).data, { user: "A12345", display_name: "A12345", groups: ["LOCAL-PREVIEW"], credential: "local-preview" });
+  assert.deepEqual((await me.json()).data, { user: "dev-user", display_name: "Dev User", groups: ["APP-DEV-ALL"], credential: "pat" });
   const invalid = await fetch(`${origin}/api/bridge`, {
     method: "POST", headers: { "Content-Type": "application/json", Origin: origin, "X-Harbor-Preview-Staff-Id": "bad id" },
     body: JSON.stringify({ op: "me" }),

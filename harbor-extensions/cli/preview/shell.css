@@ -24,6 +24,8 @@ button { font: inherit; }
 .identity-control { position: relative; margin-left: 5px; }
 .identity-toggle { display: flex; align-items: center; gap: 9px; border: 0; background: none; color: #414145; font-size: 11px; font-weight: 650; cursor: pointer; }
 .identity-toggle:hover { color: #b00013; }
+.identity-toggle:disabled { cursor: default; color: #414145; }
+.identity-toggle:disabled .identity-chevron { display: none; }
 .identity-chevron { color: #a4a4a7; font-size: 16px; }
 .identity-form { position: absolute; right: 0; top: 42px; width: 295px; padding: 18px; border: 1px solid #e8e8e8; border-radius: 9px; background: #fff; box-shadow: 0 16px 42px #16161624; }
 .identity-form[hidden] { display: none; }
@@ -50,12 +52,17 @@ button { font: inherit; }
 .inspect-label { color: #a0a0a4; margin-bottom: 13px; }
 .connector-row { padding: 10px 0; }
 .connector-row + .connector-row { border-top: 1px solid #ededed; }
-.connector-name { display: flex; align-items: center; gap: 7px; color: #aa0011; font-weight: 670; font-size: 11px; overflow-wrap: anywhere; }
+.connector-name { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: #aa0011; font-weight: 670; font-size: 11px; overflow-wrap: anywhere; }
+.connector-mode { margin-left: auto; color: #9b9ba0; font-size: 9px; letter-spacing: .06em; white-space: nowrap; }
 .connector-name .request-dot { width: 6px; height: 6px; background: #bababe; }
 .connector-address { display: block; margin: 6px 0 0 14px; color: #909094; font: 10px/1.5 ui-monospace, SFMono-Regular, monospace; overflow-wrap: anywhere; }
 .probe-button { display: block; margin: 10px 0 0 14px; padding: 6px 9px; border: 1px solid #e8c8ca; border-radius: 6px; background: #fff7f7; color: #ac0012; font-size: 10px; font-weight: 700; cursor: pointer; }
 .probe-button:hover { background: #fff0f0; }
 .probe-button:disabled { opacity: .5; cursor: wait; }
+.gateway-probe { display: flex; gap: 6px; margin: 10px 0 0 14px; }
+.gateway-probe input { min-width: 0; width: 100%; height: 28px; padding: 0 8px; border: 1px solid #dedee0; border-radius: 5px; font: 10px ui-monospace, SFMono-Regular, monospace; }
+.gateway-probe button { padding: 0 9px; border: 1px solid #e8c8ca; border-radius: 5px; background: #fff7f7; color: #ac0012; font-size: 10px; font-weight: 700; cursor: pointer; }
+.gateway-probe input:focus-visible, .gateway-probe button:focus-visible { outline: 2px solid #c20014; outline-offset: 2px; }
 .request-state { display: flex; align-items: center; gap: 9px; color: #ab0012; font-size: 11px; line-height: 1.5; }
 .request-dot.idle { background: #bababe; }
 .request-dot.bad { background: #b80011; }

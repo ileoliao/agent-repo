@@ -2,7 +2,7 @@
 
 ## Supported author path
 
-Each extension has one GitHub repository with `dev` and protected `prod` branches. Authors use the Node CLI only to scaffold, validate and preview their UI with a locally running connector backend. A push to an approved branch is the only deployment trigger. The branch-specific bundle contains static UI plus its environment-specific connector definition; bucket credentials stay with the platform Jenkins agent.
+Each extension has one GitHub repository with `dev` and protected `prod` branches. Authors use the Node CLI only to scaffold, validate and preview their UI against a local backend or existing Dev gateway connectors. A push to an approved branch is the only deployment trigger. The branch-specific bundle contains static UI plus any connector definitions owned by that extension; bucket credentials stay with the platform Jenkins agent.
 
 The platform runtime serves content from a read-only FUSE mount and enforces the current PAT/AD/grant authorization policy. Extension manifests request capabilities; platform policy grants them. A developer cannot gain production connector or write authority merely by editing a manifest.
 

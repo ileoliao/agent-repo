@@ -10,16 +10,16 @@ Before enabling deployment, the platform team replaces the handle in `.github/CO
 
 Install the Harbor CLI from the platform checkout once with `npm install && npm link` there. It runs on Node; no Python is needed for this repository's local workflow.
 
-Start your connector backend at the address in `env/local.yaml` (the template uses `127.0.0.1:3000`). Then run from this repository root:
+Start your connector backend at the address in `env/local.yaml` (the template uses `127.0.0.1:3000`). To use existing online connectors instead, replace that file with `gateway: dev`. Until this standalone preview integrates with the existing Harbor CLI credential file, provide the trusted Dev `/extensions` URL and your PAT through local `HARBOR_DEV_GATEWAY_URL` and `HARBOR_DEV_PAT` environment variables. The extension and its requested capabilities must already exist in Harbor Dev. Then run from this repository root:
 
 ```bash
 harbor extension validate
 harbor extension dev
 ```
 
-Open the printed URL. The sample extension shows illustrative workflow data; replace it with your own UI and connector calls. The extension gets the whole area beside Harbor's left navigation and below its top bar. The identity control at the top right defaults to **Local Developer**; enter a Staff ID to simulate another local user. This changes `harbor.me()` and the `X-Harbor-Local-User` header sent to your backend. Open **Debug tools** in the top bar when needed: the overlay shows configured connector addresses, a read-only test button for each declared concrete GET route, and the latest SDK response. The SDK and Node preview gateway run locally; connector calls follow the declared routes and reach your backend. Staff ID switching is a local simulation; real AD groups, PAT scopes, grants and signed identity claims are checked in Dev.
+Open the printed URL. The sample extension shows illustrative workflow data; replace it with your own UI and connector calls. The extension gets the whole area beside Harbor's left navigation and below its top bar. In direct mode, enter a Staff ID at the top right to simulate a local user; this changes `harbor.me()` and `X-Harbor-Local-User` sent to a backend on your machine. In Dev gateway mode, the top bar shows the PAT identity and Staff ID switching is disabled. Open **Debug tools** for connector addresses, read-only requests and responses. The SDK and Node preview gateway run locally; connector calls follow the declared routes. Dev gateway mode applies real PAT, AD group, grant and signed downstream identity checks.
 
-`connectors/*.yaml` declares allowed operations and AD groups. `env/local.yaml`, `env/dev.yaml` and `env/prod.yaml` provide only the upstream addresses. Never commit credentials; environment secrets belong to the platform.
+`connectors/*.yaml` declares operations for a connector you own; an extension using only existing platform connectors can omit this directory. `env/local.yaml` chooses one direct upstream map or the Dev gateway. `env/dev.yaml` and `env/prod.yaml` give addresses only for connectors you own. Never commit credentials. A direct `service-account` backend may use the local `HARBOR_SECRET_<auth.secret>` environment variable; remotely hosted `identity-only` services require the Dev gateway.
 
 ## Release
 
