@@ -12,12 +12,6 @@ patches:
       - op: replace
         path: /spec/template/spec/volumes/0/csi/volumeAttributes/bucketName
         value: REPLACE_WITH_DEV_BUCKET
-      - op: replace
-        path: /spec/template/spec/containers/0/env/0/value
-        value: /content/releases/REPLACE_WITH_DEV_RELEASE_ID
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value: {name: HARBOR_RELEASE_ID, value: REPLACE_WITH_DEV_RELEASE_ID}
       - op: add
         path: /spec/template/spec/containers/0/env/-
         value: {name: FORWARDED_ALLOW_IPS, value: REPLACE_WITH_DEV_INGRESS_PROXY_CIDRS}

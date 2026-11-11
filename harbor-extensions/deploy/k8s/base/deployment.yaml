@@ -47,6 +47,7 @@ spec:
             readOnly: true
             volumeAttributes:
               bucketName: REPLACE_WITH_CONTENT_BUCKET
-              mountOptions: implicit-dirs,uid=10001,gid=65533
+              # Publishing only rewrites bucket objects; this TTL bounds how long a pod may serve the previous version.
+              mountOptions: implicit-dirs,uid=10001,gid=65533,metadata-cache:ttl-secs:30
         - name: config
           configMap: {name: harbor-extensions-config}

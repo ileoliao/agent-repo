@@ -13,7 +13,6 @@ Routes (all under settings.base_path, e.g. /extensions behind Harbor's ingress; 
 from __future__ import annotations
 
 import re
-import json
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -156,14 +155,6 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
             for p in (settings.connectors_dir, settings.extensions_dir, settings.portal_dist / "index.html")
             if not p.exists()
         ]
-        if settings.release_id:
-            marker = settings.root / "config" / "release.json"
-            try:
-                release = json.loads(marker.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                release = {}
-            if release.get("id") != settings.release_id:
-                missing.append(f"release marker {settings.release_id}")
         errors = registry.errors if not missing else []
         if missing or errors:
             return JSONResponse({"ok": False, "missing": missing, "config_errors": errors}, status_code=503)
@@ -521,7 +512,11 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
         if ext is None:
             raise GatewayError(404, "not_found", "Extension not found")
         root = ext.path.resolve()
-        target = (root / (file_path or ext.entry)).resolve()
+        relative = file_path or ext.entry
+        # Bundles never contain dotfiles, so any dot segment is platform metadata such as .harbor-publish.json
+        if any(part.startswith(".") for part in relative.replace("\\", "/").split("/")):
+            raise GatewayError(404, "not_found", "File not found")
+        target = (root / relative).resolve()
         if not target.is_relative_to(root) or not target.is_file() or target.name == "extension.yaml":
             raise GatewayError(404, "not_found", "File not found")
         return FileResponse(target, headers=ext_headers)

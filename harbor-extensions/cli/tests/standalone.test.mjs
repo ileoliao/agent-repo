@@ -78,10 +78,10 @@ test("an extension may reuse a platform connector through the Dev gateway", (t) 
   assert.equal(fs.existsSync(path.join(output, "connectors")), false);
   const base = path.join(temp, "base");
   fs.mkdirSync(base);
-  const release = path.join(temp, "release");
-  const composed = spawnSync(process.execPath, [path.join(ROOT, "scripts", "compose-release.mjs"), base, output, release, "d".repeat(40)], { encoding: "utf8" });
+  const candidate = path.join(temp, "candidate");
+  const composed = spawnSync(process.execPath, [path.join(ROOT, "scripts", "compose-candidate.mjs"), base, output, candidate], { encoding: "utf8" });
   assert.equal(composed.status, 0, composed.stderr);
-  assert.ok(fs.existsSync(path.join(release, "extensions", "team-demo", "index.html")));
+  assert.ok(fs.existsSync(path.join(candidate, "extensions", "team-demo", "index.html")));
 });
 
 test("manifest YAML and navigation rules match platform validation", (t) => {
@@ -161,44 +161,212 @@ test("Jenkins push bundle accepts detached checkout only for matching branch and
   assert.match(wrong.stderr, /must match prod/);
 });
 
-test("release composition replaces only the owning extension and writes its marker", (t) => {
+test("validation candidate replaces only the owning extension and its connectors", (t) => {
   const { temp, repo } = fixture(t);
   const bundle = path.join(temp, "bundle");
   bundleStandalone(repo, "dev", bundle);
   const base = path.join(temp, "base");
-  fs.mkdirSync(path.join(base, "extensions", "other"), { recursive: true });
-  fs.mkdirSync(path.join(base, "connectors"), { recursive: true });
-  fs.mkdirSync(path.join(base, "config"), { recursive: true });
+  for (const dir of ["extensions/other", "extensions/team-demo-extra", "extensions/team-demo", "connectors", "config"]) fs.mkdirSync(path.join(base, dir), { recursive: true });
   fs.writeFileSync(path.join(base, "extensions", "other", "index.html"), "other");
-  fs.writeFileSync(path.join(base, "connectors", "team-demo-api.yaml"), "old connector");
+  fs.writeFileSync(path.join(base, "extensions", "team-demo", "stale.js"), "old");
+  fs.writeFileSync(path.join(base, "connectors", "team-demo-old.yaml"), "old connector");
+  fs.writeFileSync(path.join(base, "connectors", "team-demo-legacy.yaml"), "seeded before publish markers existed");
+  fs.writeFileSync(path.join(base, "extensions", "team-demo", ".harbor-publish.json"), JSON.stringify({ commit: "e".repeat(40), connectors: ["team-demo-old.yaml"] }));
+  fs.writeFileSync(path.join(base, "connectors", "team-demo-extra-api.yaml"), "belongs to team-demo-extra");
   fs.writeFileSync(path.join(base, "config", "grants.yaml"), "{}\n");
+  const compose = (...args) => spawnSync(process.execPath, [path.join(ROOT, "scripts", "compose-candidate.mjs"), ...args], { encoding: "utf8" });
+  const out = path.join(temp, "candidate");
+  const composed = compose(base, bundle, out);
+  assert.equal(composed.status, 0, composed.stderr);
+  assert.equal(fs.readFileSync(path.join(out, "extensions", "other", "index.html"), "utf8"), "other");
+  assert.equal(fs.existsSync(path.join(out, "extensions", "team-demo", "stale.js")), false);
+  assert.equal(fs.existsSync(path.join(out, "connectors", "team-demo-old.yaml")), false, "connector recorded by the previous publish is retired");
+  assert.ok(fs.existsSync(path.join(out, "connectors", "team-demo-legacy.yaml")), "unrecorded connectors are never claimed by prefix");
+  assert.ok(fs.existsSync(path.join(out, "connectors", "team-demo-extra-api.yaml")));
+  assert.match(fs.readFileSync(path.join(out, "connectors", "team-demo-api.yaml"), "utf8"), /team-demo-api.dev.internal/);
+  assert.equal(fs.readFileSync(path.join(out, "config", "grants.yaml"), "utf8"), "{}\n");
+  assert.equal(fs.existsSync(path.join(out, "config", "release.json")), false);
   const policy = path.join(temp, "policy");
   fs.mkdirSync(policy);
   fs.writeFileSync(path.join(policy, "grants.yaml"), "team-demo: []\n");
   fs.writeFileSync(path.join(policy, "nav.yaml"), "sections: {}\n");
-  const out = path.join(temp, "release");
-  const sha = "a".repeat(40);
-  const composed = spawnSync(process.execPath, [path.join(ROOT, "scripts", "compose-release.mjs"), base, bundle, out, sha, policy], { encoding: "utf8" });
-  assert.equal(composed.status, 0, composed.stderr);
-  assert.equal(fs.readFileSync(path.join(out, "extensions", "other", "index.html"), "utf8"), "other");
-  assert.match(fs.readFileSync(path.join(out, "connectors", "team-demo-api.yaml"), "utf8"), /team-demo-api.dev.internal/);
-  assert.equal(fs.readFileSync(path.join(out, "config", "grants.yaml"), "utf8"), "team-demo: []\n");
-  assert.equal(JSON.parse(fs.readFileSync(path.join(out, "config", "release.json"), "utf8")).id, sha);
-  const policyOut = path.join(temp, "policy-release");
-  const policyComposed = spawnSync(process.execPath, [path.join(ROOT, "scripts", "compose-release.mjs"), out, "-", policyOut, "b".repeat(40), policy], { encoding: "utf8" });
+  assert.equal(compose(base, bundle, path.join(temp, "mixed"), policy).status, 1);
+  const policyOut = path.join(temp, "policy-candidate");
+  const policyComposed = compose(out, "-", policyOut, policy);
   assert.equal(policyComposed.status, 0, policyComposed.stderr);
   assert.ok(fs.existsSync(path.join(policyOut, "extensions", "team-demo", "index.html")));
-  assert.equal(JSON.parse(fs.readFileSync(path.join(policyOut, "config", "release.json"), "utf8")).extension, "platform-policy");
-  const empty = path.join(temp, "empty");
-  fs.mkdirSync(empty);
-  const boot = path.join(temp, "bootstrap");
-  const bootstrapped = spawnSync(process.execPath, [path.join(ROOT, "scripts", "compose-release.mjs"), empty, "-", boot, "c".repeat(40), path.join(ROOT, "deploy", "policy", "dev")], { encoding: "utf8" });
-  assert.equal(bootstrapped.status, 0, bootstrapped.stderr);
-  assert.ok(fs.existsSync(path.join(boot, "extensions", ".keep")));
-  assert.ok(fs.existsSync(path.join(boot, "connectors", ".keep")));
-  assert.equal(fs.readFileSync(path.join(boot, "config", "grants.yaml"), "utf8"), "{}\n");
+  assert.equal(fs.readFileSync(path.join(policyOut, "config", "grants.yaml"), "utf8"), "team-demo: []\n");
+  fs.writeFileSync(path.join(bundle, "extensions", "team-demo", ".harbor-publish.json"), "{}");
+  const reserved = compose(base, bundle, path.join(temp, "reserved"));
+  assert.equal(reserved.status, 1);
+  assert.match(reserved.stderr, /reserved for the platform/);
 });
 
+function platformPython() {
+  const candidates = [process.env.HARBOR_PYTHON, path.join(ROOT, ".venv", "bin", "python"), "python3", "python"].filter(Boolean);
+  return candidates.find((python) => spawnSync(python, ["-c", "import harbor_platform.validate"], { cwd: path.join(ROOT, "backend") }).status === 0);
+}
+
+function run(command, args, options) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", (d) => { stderr += d; });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+test("bucket-only publish writes just the pushed extension, in a safe order, and never a Deployment", async (t) => {
+  if (process.platform === "win32") { t.skip("platform publish job runs on Linux Jenkins agents"); return; }
+  const python = platformPython();
+  if (!python) { t.skip("backend requirements are not installed for any python"); return; }
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "harbor-publish-test-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const bucket = path.join(temp, "bucket");
+  const log = path.join(temp, "writes.log");
+  fs.mkdirSync(bucket);
+  const cli = path.join(ROOT, "cli", "harbor.mjs");
+  const git = (repo, ...args) => {
+    const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const commit = (repo, message) => {
+    git(repo, "add", "-A");
+    git(repo, "-c", "user.name=Harbor", "-c", "user.email=harbor@local.test", "commit", "-qm", message);
+    return git(repo, "rev-parse", "HEAD");
+  };
+  const scaffold = (name) => {
+    const created = spawnSync(process.execPath, [cli, "extension", "new", name, "--owner", name, "--contact", `${name}@corp.test`, "--description", `${name} publish test`], { cwd: temp, encoding: "utf8" });
+    assert.equal(created.status, 0, created.stderr);
+    const repo = path.join(temp, name);
+    git(repo, "init", "-q", "-b", "dev");
+    return { repo, sha: commit(repo, "initial") };
+  };
+  const writes = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
+  const publish = (env) => {
+    fs.rmSync(log, { force: true });
+    return run("bash", [path.join(ROOT, "scripts", "publish-content.sh")], {
+      env: {
+        ...process.env, HARBOR_CI: "jenkins", HARBOR_SOURCE_EVENT: "push", HARBOR_BUCKET: "harbor-test-content",
+        HARBOR_STORAGE_ADAPTER: path.join(ROOT, "cli", "tests", "fixtures", "fs-storage.sh"),
+        HARBOR_TEST_BUCKET_DIR: bucket, HARBOR_TEST_STORAGE_LOG: log, HARBOR_PYTHON: python, ...env,
+      },
+    });
+  };
+  const extensionPush = (repo, sha, extra = {}) => ({ HARBOR_SOURCE_REF: "refs/heads/dev", HARBOR_SOURCE_SHA: sha, HARBOR_EXTENSION_CHECKOUT: repo, HARBOR_PLATFORM_REVIEW_ENFORCED: "true", ...extra });
+  const object = (rel) => path.join(bucket, rel);
+
+  const demo = scaffold("team-demo");
+  const extra = scaffold("team-demo-extra");
+
+  const early = await publish(extensionPush(demo.repo, demo.sha));
+  assert.equal(early.status, 1);
+  assert.match(early.stderr, /not bootstrapped/);
+  assert.deepEqual(writes(), []);
+
+  const boot = await publish({ HARBOR_POLICY_ONLY: "true", HARBOR_POLICY_DIR: path.join(ROOT, "deploy", "policy", "dev"), HARBOR_SOURCE_REF: "refs/heads/main", HARBOR_ENVIRONMENT: "dev", HARBOR_SOURCE_SHA: "c".repeat(40), HARBOR_PLATFORM_REVIEW_ENFORCED: "true" });
+  assert.equal(boot.status, 0, boot.stderr);
+  assert.deepEqual(writes().sort(), ["put config/grants.yaml", "put config/nav.yaml", "put connectors/.keep", "put extensions/.keep"]);
+
+  const unreviewed = await publish(extensionPush(demo.repo, demo.sha, { HARBOR_PLATFORM_REVIEW_ENFORCED: "" }));
+  assert.equal(unreviewed.status, 1, "a new connector needs the platform review gate");
+  assert.deepEqual(writes(), []);
+
+  const [first, second] = await Promise.all([publish(extensionPush(demo.repo, demo.sha)), publish(extensionPush(extra.repo, extra.sha))]);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(second.status, 0, second.stderr);
+  for (const name of ["team-demo", "team-demo-extra"]) {
+    assert.ok(fs.existsSync(object(`extensions/${name}/index.html`)), name);
+    assert.ok(fs.existsSync(object(`connectors/${name}-api.yaml`)), name);
+  }
+  const marker = JSON.parse(fs.readFileSync(object("extensions/team-demo/.harbor-publish.json"), "utf8"));
+  assert.equal(marker.commit, demo.sha);
+  assert.deepEqual(marker.connectors, ["team-demo-api.yaml"]);
+  assert.match(first.stdout, /no Deployment change/);
+
+  fs.appendFileSync(path.join(demo.repo, "web", "index.html"), "\n<!-- v2-marker -->\n");
+  fs.writeFileSync(path.join(demo.repo, "web", "extra.css"), "body { margin: 0; }\n");
+  const v2 = commit(demo.repo, "v2");
+  const second2 = await publish(extensionPush(demo.repo, v2));
+  assert.equal(second2.status, 0, second2.stderr);
+  const order = writes();
+  const at = (line) => { const i = order.indexOf(line); assert.notEqual(i, -1, `${line} in ${order.join(", ")}`); return i; };
+  assert.ok(at("put extensions/team-demo/extra.css") < at("put extensions/team-demo/index.html"));
+  assert.ok(at("put extensions/team-demo/index.html") < at("put extensions/team-demo/extension.yaml"));
+  assert.equal(order.at(-1), "put extensions/team-demo/.harbor-publish.json");
+  assert.ok(order.every((line) => /^put (extensions\/team-demo\/|connectors\/team-demo-api\.yaml$)/.test(line)), order.join(", "));
+  assert.equal(order.some((line) => line.includes("app.js")), false, "unchanged files are not rewritten");
+
+  fs.rmSync(path.join(demo.repo, "web", "extra.css"));
+  const v3 = commit(demo.repo, "v3");
+  const third = await publish(extensionPush(demo.repo, v3));
+  assert.equal(third.status, 0, third.stderr);
+  const removal = writes();
+  assert.ok(removal.indexOf("del extensions/team-demo/extra.css") > removal.indexOf("put extensions/team-demo/extension.yaml"));
+  assert.ok(fs.existsSync(object("connectors/team-demo-extra-api.yaml")), "a longer-named extension keeps its connector");
+  assert.ok(fs.existsSync(object("extensions/team-demo-extra/index.html")));
+
+  const again = await publish(extensionPush(demo.repo, v3));
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /Already published/);
+  assert.deepEqual(writes(), []);
+
+  const manifest = path.join(demo.repo, "extension.yaml");
+  fs.writeFileSync(manifest, fs.readFileSync(manifest, "utf8").replace("team-demo-api.health.read", "nope.read"));
+  const broken = commit(demo.repo, "broken");
+  const before = fs.readFileSync(object("extensions/team-demo/extension.yaml"), "utf8");
+  const rejected = await publish(extensionPush(demo.repo, broken));
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /nothing was changed in the bucket/);
+  assert.deepEqual(writes(), []);
+  assert.equal(fs.readFileSync(object("extensions/team-demo/extension.yaml"), "utf8"), before);
+
+  // Renaming the connector retires the old object through the marker, never by prefix.
+  git(demo.repo, "checkout", "-q", v3);
+  git(demo.repo, "checkout", "-q", "-B", "dev");
+  for (const rel of ["extension.yaml", "env/dev.yaml", "env/local.yaml", "env/prod.yaml", "connectors/team-demo-api.yaml"]) {
+    const file = path.join(demo.repo, rel);
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replaceAll("team-demo-api", "team-demo-svc"));
+  }
+  fs.renameSync(path.join(demo.repo, "connectors", "team-demo-api.yaml"), path.join(demo.repo, "connectors", "team-demo-svc.yaml"));
+  const renamed = commit(demo.repo, "rename connector");
+  const rename = await publish(extensionPush(demo.repo, renamed));
+  assert.equal(rename.status, 0, rename.stderr);
+  assert.ok(writes().indexOf("del connectors/team-demo-api.yaml") > writes().indexOf("put extensions/team-demo/extension.yaml"));
+  assert.equal(fs.existsSync(object("connectors/team-demo-api.yaml")), false);
+  assert.ok(fs.existsSync(object("connectors/team-demo-svc.yaml")));
+  assert.ok(fs.existsSync(object("connectors/team-demo-extra-api.yaml")));
+  assert.deepEqual(JSON.parse(fs.readFileSync(object("extensions/team-demo/.harbor-publish.json"), "utf8")).connectors, ["team-demo-svc.yaml"]);
+});
+
+test("GKE manifest check requires the bucket root and a bounded FUSE metadata TTL", (t) => {
+  if (spawnSync("kubectl", ["version", "--client"], { encoding: "utf8" }).status !== 0) { t.skip("kubectl not installed"); return; }
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "harbor-manifest-test-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  fs.cpSync(path.join(ROOT, "deploy", "k8s"), path.join(temp, "deploy", "k8s"), { recursive: true });
+  const overlay = path.join(temp, "deploy", "k8s", "overlays", "dev", "kustomization.yaml");
+  const values = {
+    IMAGE_REPOSITORY: "registry.test/harbor/harbor-extensions", IMAGE_DIGEST: "a".repeat(64), DEV_BUCKET: "harbor-dev-content",
+    DEV_INGRESS_PROXY_CIDRS: "10.0.0.0/8", DEV_PAT_URL: "https://pat.test/pat", DEV_HARBOR_ORIGIN: "https://harbor.test", DEV_LOGIN_URL: "https://harbor.test/login",
+  };
+  const filled = fs.readFileSync(overlay, "utf8").replace(/REPLACE_WITH_([A-Z_]+)/g, (match, key) => values[key] ?? match);
+  assert.doesNotMatch(filled, /REPLACE_WITH_/);
+  const check = () => spawnSync(process.execPath, [path.join(ROOT, "scripts", "check-gke-manifest.mjs"), "dev"], { cwd: temp, encoding: "utf8", env: { ...process.env, NODE_PATH: path.join(ROOT, "node_modules") } });
+  fs.writeFileSync(overlay, filled);
+  const ok = check();
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /metadata TTL 30s/);
+  const pinRoot = "\n      - op: replace\n        path: /spec/template/spec/containers/0/env/0/value\n        value: /content/releases/" + "b".repeat(40);
+  fs.writeFileSync(overlay, filled.replace("value: harbor-dev-content", "value: harbor-dev-content" + pinRoot));
+  assert.match(check().stderr, /bucket root/);
+  const base = path.join(temp, "deploy", "k8s", "base", "deployment.yaml");
+  fs.writeFileSync(overlay, filled);
+  fs.writeFileSync(base, fs.readFileSync(base, "utf8").replace(",metadata-cache:ttl-secs:30", ""));
+  assert.match(check().stderr, /metadata-cache:ttl-secs/);
+});
 test("Node preview serves web and forwards connector calls to a local backend", async (t) => {
   const { repo } = fixture(t);
   const backend = http.createServer((req, res) => {

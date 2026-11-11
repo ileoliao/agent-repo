@@ -9,7 +9,7 @@ import pytest
 
 from harbor_platform.config import load_settings, normalize_base_path
 
-from conftest import ext
+from conftest import ext, login
 
 BASE = "/extensions"
 
@@ -81,15 +81,40 @@ def test_readyz_rejects_invalid_content(make_client, root):
     assert c.get("/readyz").status_code in (200, 503)  # portal may be unbuilt
 
 
-def test_readyz_requires_matching_release_marker(make_client, root):
-    release = "a" * 40
-    c = make_client(base_path=BASE, release_id=release)
-    assert c.get("/readyz").status_code == 503
-    (root / "config" / "release.json").write_text('{"id":"' + release + '"}\n', encoding="utf-8")
-    assert c.get("/readyz").status_code in (200, 503)  # portal may be unbuilt
+def test_readyz_does_not_pin_a_content_release(make_client, root):
+    c = make_client(base_path=BASE)
+    before = c.get("/readyz").status_code
     (root / "config" / "release.json").write_text('{"id":"' + "b" * 40 + '"}\n', encoding="utf-8")
-    assert c.get("/readyz").status_code == 503
+    assert c.get("/readyz").status_code == before
 
+
+def test_release_id_setting_is_gone(root, monkeypatch):
+    monkeypatch.setenv("HARBOR_RELEASE_ID", "not-a-sha")
+    assert not hasattr(load_settings(root=root), "release_id")
+
+
+def test_publish_marker_and_dotfiles_are_not_served(client, root):
+    login(client, "alice")
+    folder = root / "extensions" / "outage-console"
+    (folder / ".harbor-publish.json").write_text('{"commit":"' + "a" * 40 + '"}\n', encoding="utf-8")
+    (folder / ".secret").mkdir()
+    (folder / ".secret" / "x.js").write_text("x", encoding="utf-8")
+    for path in (".harbor-publish.json", ".secret/x.js", "%2Eharbor-publish.json"):
+        assert client.get(f"/ext/outage-console/{path}").status_code == 404, path
+    assert client.get("/ext/outage-console/index.html").status_code == 200
+
+
+def test_content_update_in_place_is_served_without_restart(client, root):
+    """Bucket-only publishing: the same process serves a changed manifest and page after the files change."""
+    login(client, "alice")
+    folder = root / "extensions" / "outage-console"
+    manifest = folder / "extension.yaml"
+    title = next(i["title"] for i in client.get("/api/extensions").json()["items"] if i["name"] == "outage-console")
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace(f"title: {title}", "title: Outage Console v2"), encoding="utf-8")
+    (folder / "index.html").write_text((folder / "index.html").read_text(encoding="utf-8") + "\n<!-- v2-marker -->\n", encoding="utf-8")
+    items = {i["name"]: i for i in client.get("/api/extensions").json()["items"]}
+    assert items["outage-console"]["title"] == "Outage Console v2"
+    assert "v2-marker" in client.get("/ext/outage-console/index.html").text
 
 def test_readyz_rejects_unknown_connector_reference(make_client, root):
     c = make_client(base_path=BASE)

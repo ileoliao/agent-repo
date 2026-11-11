@@ -124,6 +124,22 @@ def test_template_heading_blocks_ci_validation(root):
     assert any("template heading" in e for e in validate(root)["errors"])
 
 
+def test_publish_validation_does_not_block_on_errors_already_in_base(root, tmp_path):
+    entry = root / "extensions" / "outage-console" / "index.html"
+    entry.write_text(entry.read_text(encoding="utf-8") + "<h1>My Extension</h1>", encoding="utf-8")
+    base = tmp_path / "base"
+    shutil.copytree(root, base)
+    m = root / "extensions" / "release-calendar" / "extension.yaml"
+    m.write_text(m.read_text(encoding="utf-8").replace("title: ", "title: Renamed ", 1), encoding="utf-8")
+    assert validate(root, base)["errors"]  # PR CI still sees the existing error
+    report = validate(root, base, ignore_base_errors=True)
+    assert report["errors"] == []
+    assert any("template heading" in e for e in report["preexisting_errors"])
+    (root / "extensions" / "release-calendar" / "index.html").write_text("<h1>My Extension</h1>", encoding="utf-8")
+    new = validate(root, base, ignore_base_errors=True)["errors"]
+    assert any("release-calendar" in e and "template heading" in e for e in new)
+
+
 @pytest.mark.parametrize("field, placeholder", [
     ("title", "My Extension"),
     ("owner", "team-xxx"),

@@ -11,7 +11,6 @@ Both default to the repository checkout, so local development needs no configura
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -43,7 +42,6 @@ def normalize_base_path(value: str | None) -> str:
 @dataclass
 class Settings:
     root: Path = REPO_ROOT
-    release_id: str = ""  # set on GKE to require the immutable content snapshot's marker
     app_dir: Path = REPO_ROOT
     data_dir: Path = REPO_ROOT / "data"
     # Path prefix the service is served under, e.g. "/extensions" behind Harbor's ingress; "" serves at the root
@@ -96,7 +94,6 @@ class Settings:
 
 _ENV = {
     "HARBOR_ROOT": ("root", Path),
-    "HARBOR_RELEASE_ID": ("release_id", str),
     "HARBOR_APP_DIR": ("app_dir", Path),
     "HARBOR_DATA_DIR": ("data_dir", Path),
     "HARBOR_BASE_PATH": ("base_path", str),
@@ -140,8 +137,6 @@ def load_settings(**overrides: Any) -> Settings:
     s.app_dir = Path(s.app_dir)
     s.data_dir = Path(s.data_dir)
     s.base_path = normalize_base_path(s.base_path)
-    if s.release_id and not re.fullmatch(r"[a-f0-9]{40}", s.release_id):
-        raise ValueError("HARBOR_RELEASE_ID must be a 40-character Git commit SHA")
     if s.audit_sink not in ("file", "stdout"):
         raise ValueError(f"audit_sink must be 'file' or 'stdout', not {s.audit_sink!r}")
     # Outside dev, refuse to start with the well-known dev signing key: every downstream would accept forged identities

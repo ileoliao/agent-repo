@@ -1,8 +1,11 @@
 """CI validation: runs on PRs and decides whether a change can be auto-merged.
 
-  python -m harbor_platform.validate [--root REPO] [--base MAIN_CHECKOUT] [--json]
+  python -m harbor_platform.validate [--root REPO] [--base MAIN_CHECKOUT] [--ignore-base-errors] [--json]
 
 Exit codes: 0 = valid and auto-mergeable; 1 = errors; 2 = valid but needs platform-team review.
+
+--ignore-base-errors (content publishing): errors already present in --base are reported but do not block, so one
+extension that is already live with an error cannot stop every other extension or policy from publishing.
 
 Errors: invalid config, references to nonexistent capabilities, extension code violating rules (see lint.py: custom login, own network requests, etc.).
 
@@ -33,7 +36,7 @@ def _file_text(path: Path) -> str | None:
     return path.read_text(encoding="utf-8") if path.exists() else None
 
 
-def validate(root: Path, base: Path | None = None) -> dict[str, Any]:
+def validate(root: Path, base: Path | None = None, ignore_base_errors: bool = False) -> dict[str, Any]:
     connectors, errors = load_connectors(root / "connectors", "http://mock")
     extensions, ext_errors = load_extensions(root / "extensions")
     grants, grant_errors = load_grants(root / "config" / "grants.yaml")
@@ -89,8 +92,15 @@ def validate(root: Path, base: Path | None = None) -> dict[str, Any]:
             if _file_text(root / path) != _file_text(base / path):
                 platform_changes.append(path)
 
+    preexisting: list[str] = []
+    if ignore_base_errors and base is not None:
+        known = set(validate(base)["errors"])
+        preexisting = [e for e in errors if e in known]
+        errors = [e for e in errors if e not in known]
+
     return {
         "errors": errors,
+        "preexisting_errors": preexisting,
         "review": review,
         "platform_changes": platform_changes,
         "extensions": sorted(extensions),
@@ -102,10 +112,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", type=Path, default=REPO_ROOT)
     ap.add_argument("--base", type=Path, default=None, help="main-branch checkout directory, used to compare visibility and platform file changes")
+    ap.add_argument("--ignore-base-errors", action="store_true", help="do not block on errors that --base already has")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
-    report = validate(args.root, args.base)
+    report = validate(args.root, args.base, args.ignore_base_errors)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
@@ -113,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Extensions: {', '.join(report['extensions']) or 'none'}")
         for e in report["errors"]:
             print(f"  ✗ {e}")
+        for e in report["preexisting_errors"]:
+            print(f"  ! already in base, not blocking: {e}")
         for name, reasons in report["review"].items():
             for r in reasons:
                 print(f"  ⚑ {name}: {r}")

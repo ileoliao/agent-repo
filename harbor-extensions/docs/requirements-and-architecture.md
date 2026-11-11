@@ -109,9 +109,9 @@ Runtime resources (the secrets service, the OTel Collector, and a shared cache w
 **Target release: independent extension repo with dev and prod branches**
 
 1. The contributor develops in their extension repo. `harbor extension dev` reads local connector addresses and proxies to their locally running backend; `validate` checks the UI, connector contract and all environment addresses.
-2. A PR into `dev` is reviewed and merged. The platform Jenkins job receives the push webhook, bundles that branch with `env/dev.yaml` and deploys it to Dev.
-3. After Dev acceptance, a `dev` → `prod` PR is reviewed and merged. The Prod job bundles `prod` with `env/prod.yaml` and deploys it to Prod. Connector and permission changes require platform review.
-4. Each environment rolls its GKE Pods to a new immutable content release without rebuilding the platform image. The bundle renderer and platform-owned Jenkinsfile are implemented; webhook jobs, credentials and branch protection remain to be integrated.
+2. A PR into `dev` is reviewed and merged. The platform Jenkins job receives the push webhook, bundles that branch with `env/dev.yaml` and publishes it to the Dev bucket.
+3. After Dev acceptance, a `dev` → `prod` PR is reviewed and merged. The Prod job bundles `prod` with `env/prod.yaml` and publishes it to the Prod bucket. Connector and permission changes require platform review.
+4. The job writes only that extension's files to the environment bucket; running GKE Pods hot-reload them from the FUSE mount without a rollout, restart or platform image rebuild. The bundle renderer and platform-owned Jenkinsfile are implemented; webhook jobs, credentials and branch protection remain to be integrated.
 
 **Request: the gateway passes it through unchanged**
 
