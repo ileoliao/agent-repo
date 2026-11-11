@@ -1,7 +1,8 @@
 // Platform-owned Pipeline script from SCM. The Jenkins job, not the extension repo, owns this file and GCP access.
+// Publishing writes the environment's content bucket only; the running GKE Deployment hot-reloads and is never touched.
 properties([disableConcurrentBuilds()])
 
-node('harbor-gke-deploy') {
+node('harbor-content-publish') {
   timeout(time: 30, unit: 'MINUTES') {
     deleteDir()
     stage('Verify push') {
@@ -9,7 +10,7 @@ node('harbor-gke-deploy') {
       if (!env.HARBOR_REGISTERED_REPO || env.HARBOR_WEBHOOK_REPO != env.HARBOR_REGISTERED_REPO) error('Webhook repository is not registered for this job')
       if (!(env.HARBOR_WEBHOOK_SHA ==~ /[a-f0-9]{40}/)) error('Invalid push commit')
       if (!(env.HARBOR_JOB_MODE in ['extension', 'policy'])) error('Invalid platform job mode')
-      if (env.HARBOR_JOB_MODE == 'extension' && !(env.HARBOR_WEBHOOK_REF in ['refs/heads/dev', 'refs/heads/prod'])) error('Only dev/prod branch pushes deploy extensions')
+      if (env.HARBOR_JOB_MODE == 'extension' && !(env.HARBOR_WEBHOOK_REF in ['refs/heads/dev', 'refs/heads/prod'])) error('Only dev/prod branch pushes publish extensions')
       if (env.HARBOR_JOB_MODE == 'policy' && env.HARBOR_WEBHOOK_REF != 'refs/heads/main') error('Platform policy must come from main')
     }
 
@@ -44,34 +45,25 @@ node('harbor-gke-deploy') {
       }
     }
 
-    stage('Deploy immutable release') {
+    stage('Publish content to bucket') {
       def environments = env.HARBOR_JOB_MODE == 'policy' ? ['dev', 'prod'] : [env.HARBOR_WEBHOOK_REF.substring('refs/heads/'.length())]
       for (def target in environments) {
-        def upper = target.toUpperCase()
-        def bucket = env["HARBOR_${upper}_BUCKET"]
-        def namespace = env["HARBOR_${upper}_NAMESPACE"]
-        def project = env["HARBOR_${upper}_GKE_PROJECT"]
-        def cluster = env["HARBOR_${upper}_GKE_CLUSTER"]
-        def location = env["HARBOR_${upper}_GKE_LOCATION"]
-        if (!bucket || !namespace || !project || !cluster || !location) error("Platform ${target} GKE settings are not configured")
+        def bucket = env["HARBOR_${target.toUpperCase()}_BUCKET"]
+        if (!bucket) error("Platform ${target} bucket is not configured")
         withEnv([
           'HARBOR_CI=jenkins',
           'HARBOR_SOURCE_EVENT=push',
+          'HARBOR_STORAGE_ADAPTER=gcloud',
           "HARBOR_SOURCE_REF=${env.HARBOR_WEBHOOK_REF}",
           "HARBOR_SOURCE_SHA=${env.HARBOR_WEBHOOK_SHA}",
           "HARBOR_BUCKET=${bucket}",
-          "HARBOR_NAMESPACE=${namespace}",
-          "HARBOR_GKE_PROJECT=${project}",
-          "HARBOR_GKE_CLUSTER=${cluster}",
-          "HARBOR_GKE_LOCATION=${location}",
           "HARBOR_ENVIRONMENT=${target}",
           "HARBOR_POLICY_DIR=${pwd()}/harbor-extensions/deploy/policy/${target}",
           "HARBOR_POLICY_ONLY=${env.HARBOR_JOB_MODE == 'policy'}",
           "HARBOR_EXTENSION_CHECKOUT=${pwd()}/extension",
         ]) {
-          sh 'gcloud container clusters get-credentials "$HARBOR_GKE_CLUSTER" --location "$HARBOR_GKE_LOCATION" --project "$HARBOR_GKE_PROJECT"'
           dir('harbor-extensions') {
-            sh 'bash scripts/deploy-gke-release.sh'
+            sh 'bash scripts/publish-content.sh'
           }
         }
       }

@@ -58,7 +58,7 @@ harbor extension dev
 
 ## 3. 发布和晋级
 
-1. 提交 PR 到 `dev`。通过检查与审查后合并，GitHub 推送触发平台 Jenkins 将该分支发布到 Dev。
+1. 提交 PR 到 `dev`。通过检查与审查后合并，GitHub 推送触发平台 Jenkins 将该分支发布到 Dev，通常 30 秒内可见，平台不需要重启。
 2. 在 Harbor Dev 检查页面、connector 读写、目标 AD 组、授权拒绝和审计记录。Dev 失败时继续修改 `dev`，不影响 Prod。
 3. 准备晋级时提交 `dev` → `prod` PR。检查代码和 `env/prod.yaml` 指向的后端，经审查合并后由 Jenkins 发布 Prod。
 4. 若只需修复 Prod，可从 `prod` 建修复分支并合入 `prod`，随后把修复带回 `dev`。

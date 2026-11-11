@@ -13,7 +13,7 @@ The platform runtime serves content from a read-only FUSE mount and enforces the
 
 ## Remaining integration gates
 
-- Configure platform-owned Jenkins jobs to receive GitHub `dev` and `prod` push webhooks, with separate environment buckets, GCP identities and GKE access. The branch-checked bundle, full release composition, GCS upload, compare-and-swap rollout and rollback scripts are present; actual Jenkins/GCP parameters remain to be connected.
+- Configure platform-owned Jenkins jobs to receive GitHub `dev` and `prod` push webhooks, with separate environment buckets and bucket-only GCP identities. The branch-checked bundle, candidate validation and extension-scoped bucket publish are present; actual Jenkins/GCP parameters remain to be connected.
 - Protect both branches, replace the CODEOWNERS placeholder and require platform review for connector, write capability, visibility and navigation changes. PR checks must block those changes without the reviewer; a warning alone is insufficient.
 - Verify real PAT/SSO, production connector credentials, signed downstream identity claims and GKE FUSE cache behaviour with owning teams.
-- Exercise the GCS FUSE CSI driver, Workload Identity Federation, concurrent pushes and rollback on the organization's actual GKE cluster. The kind simulation uses rclone FUSE and cannot establish those GKE properties.
+- Exercise the GCS FUSE CSI driver, Workload Identity Federation, GCS FUSE metadata-cache visibility, concurrent pushes and rollback on the organization's actual GKE cluster. The kind simulation uses rclone FUSE and cannot establish those GKE properties.

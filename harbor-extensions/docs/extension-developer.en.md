@@ -58,9 +58,9 @@ Direct remote calls to your own service require HTTPS. For `service-account` con
 
 ## 3. Release and promote
 
-1. Open a PR into `dev`. After checks and review, merging pushes that branch to GitHub; the platform Jenkins job deploys it to Dev.
+1. Open a PR into `dev`. After checks and review, merging pushes that branch to GitHub; the platform Jenkins job publishes it to Dev, usually visible within 30 seconds without a platform restart.
 2. In Harbor Dev, check the UI, connector reads and writes, intended AD groups, denied access and audit records. Keep fixing `dev` if needed; Prod remains on its current version.
-3. When ready, open a `dev` → `prod` PR. Review both code and the backend address in `env/prod.yaml`. After approval and merge, Jenkins deploys Prod.
+3. When ready, open a `dev` → `prod` PR. Review both code and the backend address in `env/prod.yaml`. After approval and merge, Jenkins publishes it to Prod.
 4. For a Prod-only urgent fix, branch from `prod`, merge the fix into `prod`, then bring it back into `dev`.
 
 Ask the platform team to configure protection for both branches, CODEOWNERS, PR checks and repository registration first. Connector addresses, allowed routes, AD groups, write capabilities, visibility and navigation promotion require platform review. Do not put a credentialed Jenkinsfile or service-account keys in the extension repository. Developers have no `publish` command or content upload API.
