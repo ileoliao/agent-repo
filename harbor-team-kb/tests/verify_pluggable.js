@@ -161,7 +161,15 @@ function stubExternalSkills(wsRoot) {
   fs.mkdirSync(isolatedHome, { recursive: true });
   // Copy git identity if present or configure isolated HOME gitconfig so git commits work cleanly
   const origHome = process.env.HOME;
+  const origXdg = process.env.XDG_CONFIG_HOME;
+  const origAppData = process.env.APPDATA;
+  const origUserSettings = process.env.HARBOR_VSCODE_USER_SETTINGS;
+  const origDefaultProfile = process.env.HARBOR_DEFAULT_PROFILE;
   process.env.HOME = isolatedHome;
+  process.env.XDG_CONFIG_HOME = path.join(isolatedHome, '.config');
+  process.env.APPDATA = path.join(isolatedHome, 'AppData', 'Roaming');
+  delete process.env.HARBOR_VSCODE_USER_SETTINGS;
+  delete process.env.HARBOR_DEFAULT_PROFILE;
   spawnSync('git', ['config', '--global', 'user.name', 'Harbor KB Verifier'], { encoding: 'utf8' });
   spawnSync('git', ['config', '--global', 'user.email', 'verifier@example.local'], { encoding: 'utf8' });
   spawnSync('git', ['config', '--global', 'init.defaultBranch', 'main'], { encoding: 'utf8' });
@@ -1452,7 +1460,7 @@ function stubExternalSkills(wsRoot) {
         'plug.js preserves 4-space YAML loop indentation (inline & block skills) and restores byte-for-byte on uninstall'
       );
 
-      // (R4) Default workspace without `.loop/policy.json` + `standard` policy without explicit `approveCommands`
+      // (R4) Default workspace without `.loop/policy.json` across `standard`, `strict` (P1 no-downgrade), `trusted` & custom `policyFile`
       const wsNoPol = path.join(tmpBase, 'rev-nopol-ws');
       fs.mkdirSync(path.join(wsNoPol, '.github', 'agents'), { recursive: true });
       fs.writeFileSync(path.join(wsNoPol, '.github', 'agents', 'worker.agent.md'), fourInline);
@@ -1474,7 +1482,123 @@ function stubExternalSkills(wsRoot) {
           gitPushDecision.approval === true &&
           !fs.existsSync(path.join(wsNoPol, '.loop')) &&
           JSON.stringify(noPolBefore) === JSON.stringify(noPolAfter),
-        'workspace without .loop/policy.json gets publish.js approval gate + STANDARD_APPROVE defaults, and cleans up byte-for-byte on uninstall'
+        'workspace without .loop/policy.json (default standard) gets publish.js approval gate + STANDARD_APPROVE defaults, and cleans up byte-for-byte on uninstall'
+      );
+
+      // (R4b - P1) Workspace with `harborMate.defaultProfile: "strict"` (JSONC comments + trailing commas) and NO `.loop/policy.json`
+      // MUST NOT be downgraded to `standard`!
+      const wsStrictCfg = path.join(tmpBase, 'rev-strict-cfg-ws');
+      fs.mkdirSync(path.join(wsStrictCfg, '.github', 'agents'), { recursive: true });
+      fs.mkdirSync(path.join(wsStrictCfg, '.vscode'), { recursive: true });
+      fs.writeFileSync(path.join(wsStrictCfg, '.github', 'agents', 'worker.agent.md'), fourInline);
+      fs.writeFileSync(
+        path.join(wsStrictCfg, '.vscode', 'settings.json'),
+        [
+          '{',
+          '  // Keep Harbor Mate in strict allowlist mode (URL https://example.com//not-a-comment/*ok*/)',
+          '  "telemetry.endpoint": "https://example.com//v1/*keep*/",',
+          '  /* Multi-line JSONC comment + trailing comma */',
+          '  "harborMate.defaultProfile": "strict",',
+          '}',
+          '',
+        ].join('\n')
+      );
+      const strictBefore = snapshotTree(wsStrictCfg);
+
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsStrictCfg, '--no-gardener']).status, 0);
+      const strictPolOnDisk = fs.existsSync(path.join(wsStrictCfg, '.loop', 'policy.json'));
+      const effStrictPol = loadPolicy(wsStrictCfg, '.loop/policy.json', 'strict');
+      const kbSkillRule = skillScriptRule('.github/skills/team-kb');
+      const strictPyCmd = decideCommand(effStrictPol, 'python3 -c "print(1)"', [kbSkillRule]);
+      const strictReadmeWrite = decideWrite(effStrictPol, 'README.md');
+      const strictPubCmd = decideCommand(
+        effStrictPol,
+        'node .github/skills/team-kb-publish/scripts/publish.js .loop/outbox/kb/gateway/gotcha/x.md',
+        [kbSkillRule]
+      );
+      const strictKbCmd = decideCommand(
+        effStrictPol,
+        'node .github/skills/team-kb/scripts/kb.js search retry',
+        [kbSkillRule]
+      );
+      assert.strictEqual(runNode([PLUG_JS, 'uninstall', '-w', wsStrictCfg]).status, 0);
+      const strictAfter = snapshotTree(wsStrictCfg);
+      ok(
+        !strictPolOnDisk &&
+          effStrictPol.profile === 'strict' &&
+          strictPyCmd.decision === 'deny' &&
+          strictReadmeWrite.decision === 'deny' &&
+          strictPubCmd.decision === 'deny' &&
+          strictKbCmd.decision === 'allow' &&
+          JSON.stringify(strictBefore) === JSON.stringify(strictAfter),
+        'harborMate.defaultProfile=strict (JSONC .vscode/settings.json, no policy.json) preserves strict allowlist & writablePaths without downgrading to standard'
+      );
+
+      // (R4c - P1) User-level VS Code `settings.json` (`loopRunner.defaultProfile: "strict"` fallback) + standard->strict re-install cleanup
+      const userSettingsPath =
+        process.platform === 'darwin'
+          ? path.join(isolatedHome, 'Library', 'Application Support', 'Code', 'User', 'settings.json')
+          : process.platform === 'win32'
+            ? path.join(process.env.APPDATA, 'Code', 'User', 'settings.json')
+            : path.join(process.env.XDG_CONFIG_HOME, 'Code', 'User', 'settings.json');
+      const wsUserStrict = path.join(tmpBase, 'rev-user-strict-ws');
+      fs.mkdirSync(path.join(wsUserStrict, '.github', 'agents'), { recursive: true });
+      fs.writeFileSync(path.join(wsUserStrict, '.github', 'agents', 'worker.agent.md'), fourInline);
+      // Step 1: install first while no strict setting exists (synthesizes standard `.loop/policy.json`)
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsUserStrict, '--no-gardener']).status, 0);
+      const hadSynthesizedBeforeStrict = fs.existsSync(path.join(wsUserStrict, '.loop', 'policy.json'));
+      // Step 2: user configures legacy `loopRunner.defaultProfile: "strict"` in global VS Code User settings and re-runs `plug.js install`
+      fs.mkdirSync(path.dirname(userSettingsPath), { recursive: true });
+      fs.writeFileSync(userSettingsPath, '// User settings\n{\n  "loopRunner.defaultProfile": "strict",\n}\n');
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsUserStrict, '--no-gardener']).status, 0);
+      const removedSynthesizedOnStrict = !fs.existsSync(path.join(wsUserStrict, '.loop', 'policy.json')) && !fs.existsSync(path.join(wsUserStrict, '.loop'));
+      const statusStrictObj = JSON.parse(runNode([PLUG_JS, 'status', '-w', wsUserStrict, '--json']).stdout);
+      assert.strictEqual(runNode([PLUG_JS, 'uninstall', '-w', wsUserStrict]).status, 0);
+      fs.unlinkSync(userSettingsPath);
+      ok(
+        hadSynthesizedBeforeStrict &&
+          removedSynthesizedOnStrict &&
+          statusStrictObj.workspace_status.effective_default_profile === 'strict',
+        'VS Code User settings.json (loopRunner.defaultProfile=strict) is respected and re-install cleans up prior untouched synthesized standard policy'
+      );
+
+      // (R4d - P1) `harborMate.defaultProfile: "trusted"` + custom `harborMate.policyFile` preserves `trusted` while gating `publish.js`
+      const wsTrustedCfg = path.join(tmpBase, 'rev-trusted-cfg-ws');
+      fs.mkdirSync(path.join(wsTrustedCfg, '.github', 'agents'), { recursive: true });
+      fs.mkdirSync(path.join(wsTrustedCfg, '.vscode'), { recursive: true });
+      fs.writeFileSync(path.join(wsTrustedCfg, '.github', 'agents', 'worker.agent.md'), fourInline);
+      fs.writeFileSync(
+        path.join(wsTrustedCfg, '.vscode', 'settings.json'),
+        JSON.stringify(
+          {
+            'harborMate.defaultProfile': 'trusted',
+            'harborMate.policyFile': '.loop/custom-default.json',
+          },
+          null,
+          2
+        ) + '\n'
+      );
+      const trustedBefore = snapshotTree(wsTrustedCfg);
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsTrustedCfg, '--no-gardener']).status, 0);
+      const hasCustomPol = fs.existsSync(path.join(wsTrustedCfg, '.loop', 'custom-default.json'));
+      const hasDefaultPol = fs.existsSync(path.join(wsTrustedCfg, '.loop', 'policy.json'));
+      const effTrustedPol = loadPolicy(wsTrustedCfg, '.loop/custom-default.json', 'trusted');
+      const trustedGitPush = decideCommand(effTrustedPol, 'git push origin main');
+      const trustedPubGate = decideCommand(
+        effTrustedPol,
+        'node .github/skills/team-kb-publish/scripts/publish.js .loop/outbox/kb/gateway/gotcha/x.md'
+      );
+      assert.strictEqual(runNode([PLUG_JS, 'uninstall', '-w', wsTrustedCfg]).status, 0);
+      const trustedAfter = snapshotTree(wsTrustedCfg);
+      ok(
+        hasCustomPol &&
+          !hasDefaultPol &&
+          effTrustedPol.profile === 'trusted' &&
+          trustedGitPush.decision === 'allow' &&
+          trustedPubGate.decision === 'deny' &&
+          trustedPubGate.approval === true &&
+          JSON.stringify(trustedBefore) === JSON.stringify(trustedAfter),
+        'harborMate.defaultProfile=trusted + custom policyFile keeps trusted commands allowed, gates publish.js, and restores byte-for-byte on uninstall'
       );
 
       const wsImplicitStd = path.join(tmpBase, 'rev-implicit-std-ws');
@@ -1630,6 +1754,14 @@ function stubExternalSkills(wsRoot) {
     console.log('============================================================\n');
   } finally {
     process.env.HOME = origHome;
+    if (origXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = origXdg;
+    if (origAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = origAppData;
+    if (origUserSettings === undefined) delete process.env.HARBOR_VSCODE_USER_SETTINGS;
+    else process.env.HARBOR_VSCODE_USER_SETTINGS = origUserSettings;
+    if (origDefaultProfile === undefined) delete process.env.HARBOR_DEFAULT_PROFILE;
+    else process.env.HARBOR_DEFAULT_PROFILE = origDefaultProfile;
     fs.rmSync(tmpBase, { recursive: true, force: true });
   }
 })().catch(err => {

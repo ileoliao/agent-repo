@@ -540,6 +540,276 @@ function removeSkillFromAgentText(raw, skillName = 'team-kb') {
   return [nl === '\r\n' ? out.replace(/\n/g, '\r\n') : out, true];
 }
 
+const VALID_PROFILES = ['strict', 'standard', 'trusted'];
+
+function parseJsonc(raw) {
+  const src = String(raw || '').replace(/^\uFEFF/, '');
+  // Pass 1: strip // line comments and /* */ block comments outside string literals
+  let noComments = '';
+  let inStr = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inStr) {
+      noComments += ch;
+      if (ch === '\\' && i + 1 < src.length) {
+        noComments += src[++i];
+      } else if (ch === '"') {
+        inStr = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      noComments += ch;
+    } else if (ch === '/' && src[i + 1] === '/') {
+      i += 2;
+      while (i < src.length && src[i] !== '\n') i++;
+      if (i < src.length) noComments += '\n';
+    } else if (ch === '/' && src[i + 1] === '*') {
+      i += 2;
+      while (i + 1 < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i++;
+    } else {
+      noComments += ch;
+    }
+  }
+
+  // Pass 2: strip trailing commas before `}` or `]` outside string literals
+  let cleaned = '';
+  inStr = false;
+  for (let i = 0; i < noComments.length; i++) {
+    const ch = noComments[i];
+    if (inStr) {
+      cleaned += ch;
+      if (ch === '\\' && i + 1 < noComments.length) {
+        cleaned += noComments[++i];
+      } else if (ch === '"') {
+        inStr = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      cleaned += ch;
+    } else if (ch === ',') {
+      let j = i + 1;
+      while (j < noComments.length && /\s/.test(noComments[j])) j++;
+      if (j < noComments.length && (noComments[j] === '}' || noComments[j] === ']')) {
+        continue;
+      }
+      cleaned += ch;
+    } else {
+      cleaned += ch;
+    }
+  }
+
+  if (!cleaned.trim()) return {};
+  return JSON.parse(cleaned);
+}
+
+function readJsoncFile(filePath) {
+  if (!filePath || !isFile(filePath)) return null;
+  try {
+    const parsed = parseJsonc(fs.readFileSync(filePath, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readSectionKey(settingsObj, section, key) {
+  if (!settingsObj || typeof settingsObj !== 'object') return undefined;
+  const flatKey = `${section}.${key}`;
+  if (
+    Object.prototype.hasOwnProperty.call(settingsObj, flatKey) &&
+    settingsObj[flatKey] !== undefined &&
+    settingsObj[flatKey] !== null
+  ) {
+    return settingsObj[flatKey];
+  }
+  const nested = settingsObj[section];
+  if (
+    nested &&
+    typeof nested === 'object' &&
+    !Array.isArray(nested) &&
+    Object.prototype.hasOwnProperty.call(nested, key) &&
+    nested[key] !== undefined &&
+    nested[key] !== null
+  ) {
+    return nested[key];
+  }
+  return undefined;
+}
+
+function collectCodeWorkspaceSettingsObjects(ws) {
+  if (!ws) return [];
+  const wsAbs = path.resolve(ws);
+  const searchDirs = [...new Set([wsAbs, path.dirname(wsAbs)])];
+  const out = [];
+  for (const dir of searchDirs) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir).filter(f => f.endsWith('.code-workspace')).sort();
+    } catch {
+      continue;
+    }
+    for (const fn of entries) {
+      const cwPath = path.join(dir, fn);
+      const doc = readJsoncFile(cwPath);
+      if (!doc || !doc.settings || typeof doc.settings !== 'object' || Array.isArray(doc.settings)) {
+        continue;
+      }
+      if (Array.isArray(doc.folders)) {
+        const matchesWs = doc.folders.some(
+          f =>
+            f &&
+            typeof f === 'object' &&
+            typeof f.path === 'string' &&
+            path.resolve(path.dirname(cwPath), f.path) === wsAbs
+        );
+        if (!matchesWs) continue;
+      } else if (dir !== wsAbs) {
+        continue;
+      }
+      out.push(doc.settings);
+    }
+  }
+  return out;
+}
+
+function matchWorkspaceUriKey(uriOrPath, wsAbs) {
+  if (typeof uriOrPath !== 'string' || !uriOrPath) return false;
+  try {
+    if (uriOrPath.startsWith('file://')) {
+      const u = new URL(uriOrPath);
+      let p = decodeURIComponent(u.pathname);
+      if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(p)) p = p.slice(1);
+      return path.resolve(p) === wsAbs;
+    }
+    return path.resolve(uriOrPath) === wsAbs;
+  } catch {
+    return false;
+  }
+}
+
+function collectVsCodeUserSettingsObjects(ws) {
+  const out = [];
+  const wsAbs = ws ? path.resolve(ws) : null;
+  if (process.env.HARBOR_VSCODE_USER_SETTINGS) {
+    const custom = readJsoncFile(path.resolve(expandHome(process.env.HARBOR_VSCODE_USER_SETTINGS)));
+    if (custom) out.push(custom);
+  }
+
+  const home = os.homedir();
+  const remoteCandidates = [
+    path.join(home, '.vscode-server', 'data', 'Machine', 'settings.json'),
+    path.join(home, '.vscode-server-insiders', 'data', 'Machine', 'settings.json'),
+    path.join(home, '.vscode-remote', 'data', 'Machine', 'settings.json'),
+  ];
+  for (const rc of remoteCandidates) {
+    const obj = readJsoncFile(rc);
+    if (obj) out.push(obj);
+  }
+
+  const appBase =
+    process.platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support')
+      : process.platform === 'win32'
+        ? process.env.APPDATA || path.join(home, 'AppData', 'Roaming')
+        : process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+
+  for (const appName of ['Code', 'Code - Insiders', 'Cursor', 'VSCodium']) {
+    const userDir = path.join(appBase, appName, 'User');
+    if (wsAbs) {
+      const storage = readJsoncFile(path.join(userDir, 'globalStorage', 'storage.json'));
+      const assoc =
+        storage &&
+        storage.profileAssociations &&
+        typeof storage.profileAssociations === 'object' &&
+        storage.profileAssociations.workspaces;
+      if (assoc && typeof assoc === 'object') {
+        for (const [k, profId] of Object.entries(assoc)) {
+          if (
+            typeof profId === 'string' &&
+            profId &&
+            !profId.includes('/') &&
+            !profId.includes('\\') &&
+            !profId.includes('..') &&
+            matchWorkspaceUriKey(k, wsAbs)
+          ) {
+            const profObj = readJsoncFile(path.join(userDir, 'profiles', profId, 'settings.json'));
+            if (profObj) out.push(profObj);
+          }
+        }
+      }
+    }
+    const userObj = readJsoncFile(path.join(userDir, 'settings.json'));
+    if (userObj) out.push(userObj);
+  }
+
+  return out;
+}
+
+/**
+ * Resolve effective `defaultProfile` and `policyFile` matching `loop-runner/src/extension.ts`:
+ *   1. Explicit CLI `--default-profile` or `HARBOR_DEFAULT_PROFILE` env override
+ *   2. `harborMate.<key>` across folder `.vscode/settings.json` -> `.code-workspace` -> Machine/User `settings.json`
+ *   3. Legacy `loopRunner.<key>` across the same scopes
+ *   4. Built-in Harbor Mate defaults (`defaultProfile = 'standard'`, `policyFile = '.loop/policy.json'`)
+ */
+function resolveEffectiveHarborSettings(ws, cliDefaultProfile = null) {
+  let explicitProfile = cliDefaultProfile;
+  if (!explicitProfile && process.env.HARBOR_DEFAULT_PROFILE) {
+    const envVal = process.env.HARBOR_DEFAULT_PROFILE.trim();
+    if (!VALID_PROFILES.includes(envVal)) {
+      throw new PlugError(
+        `Invalid HARBOR_DEFAULT_PROFILE "${envVal}". Allowed: ${VALID_PROFILES.join(', ')}`
+      );
+    }
+    explicitProfile = envVal;
+  }
+
+  const scopes = [];
+  if (ws) {
+    const folderObj = readJsoncFile(path.join(ws, '.vscode', 'settings.json'));
+    if (folderObj) scopes.push(folderObj);
+    scopes.push(...collectCodeWorkspaceSettingsObjects(ws));
+  }
+  scopes.push(...collectVsCodeUserSettingsObjects(ws));
+
+  const getCfg = (key, fallback) => {
+    for (const s of scopes) {
+      const v = readSectionKey(s, 'harborMate', key);
+      if (v !== undefined) return v;
+    }
+    for (const s of scopes) {
+      const v = readSectionKey(s, 'loopRunner', key);
+      if (v !== undefined) return v;
+    }
+    return fallback;
+  };
+
+  let defaultProfile = explicitProfile;
+  if (!defaultProfile) {
+    const rawProfile = getCfg('defaultProfile', 'standard');
+    defaultProfile =
+      typeof rawProfile === 'string' && VALID_PROFILES.includes(rawProfile)
+        ? rawProfile
+        : 'standard';
+  }
+
+  const rawPolicyFile = getCfg('policyFile', '.loop/policy.json');
+  let policyFile = '.loop/policy.json';
+  if (typeof rawPolicyFile === 'string') {
+    const trimmed = rawPolicyFile.trim();
+    if (trimmed && !path.isAbsolute(trimmed) && !trimmed.split(/[\\/]/).includes('..')) {
+      policyFile = trimmed.replace(/\\/g, '/');
+    }
+  }
+
+  return { defaultProfile, policyFile };
+}
+
 function extractReferencedPoliciesFromAgent(raw) {
   const [fm] = splitFrontmatter(raw);
   if (!fm) return [];
@@ -560,8 +830,11 @@ function extractReferencedPoliciesFromAgent(raw) {
   return refs;
 }
 
-function collectWorkspacePolicyRelPaths(ws, targetAgentFiles) {
-  const relSet = new Set(['.loop/policy.json']);
+function collectWorkspacePolicyRelPaths(ws, targetAgentFiles = [], defaultPolicyRel = '.loop/policy.json') {
+  const relSet = new Set([defaultPolicyRel]);
+  if (isFile(path.join(ws, '.loop', 'policy.json'))) {
+    relSet.add('.loop/policy.json');
+  }
   const policiesDir = path.join(ws, '.loop', 'policies');
   if (isDir(policiesDir)) {
     for (const fn of fs.readdirSync(policiesDir).sort()) {
@@ -570,7 +843,14 @@ function collectWorkspacePolicyRelPaths(ws, targetAgentFiles) {
       }
     }
   }
-  for (const af of targetAgentFiles) {
+  const agentSet = new Set(targetAgentFiles);
+  const agentsDir = path.join(ws, '.github', 'agents');
+  if (isDir(agentsDir)) {
+    for (const fn of fs.readdirSync(agentsDir).sort()) {
+      if (fn.endsWith('.agent.md')) agentSet.add(path.join(agentsDir, fn));
+    }
+  }
+  for (const af of agentSet) {
     if (!isFile(af)) continue;
     for (const ref of extractReferencedPoliciesFromAgent(fs.readFileSync(af, 'utf8'))) {
       relSet.add(ref);
@@ -579,44 +859,122 @@ function collectWorkspacePolicyRelPaths(ws, targetAgentFiles) {
   return [...relSet];
 }
 
-function isSynthesizedDefaultStandardPolicy(data) {
-  if (!data || typeof data !== 'object') return false;
-  const keys = Object.keys(data);
-  if (keys.length !== 2 || data.profile !== 'standard' || !Array.isArray(data.approveCommands)) {
-    return false;
+function synthesizedPolicyObject(profile) {
+  if (profile === 'standard') {
+    return {
+      profile: 'standard',
+      approveCommands: [...STANDARD_APPROVE_DEFAULTS, APPROVE_RULE],
+    };
   }
-  const expected = [...STANDARD_APPROVE_DEFAULTS, APPROVE_RULE];
-  return (
-    data.approveCommands.length === expected.length &&
-    data.approveCommands.every((v, idx) => v === expected[idx])
-  );
+  if (profile === 'trusted') {
+    return {
+      profile: 'trusted',
+      approveCommands: [APPROVE_RULE],
+    };
+  }
+  // `strict` profile uses DEFAULT_POLICY allowlist, which already denies `publish.js`
+  // without needing a policy file on disk.
+  return null;
 }
 
-function ensureApprovalGateInPolicy(ws, relPath, manifestPolicies, createdDirsSet) {
+function isSynthesizedDefaultPolicy(data) {
+  if (!data || typeof data !== 'object') return false;
+  const keys = Object.keys(data);
+  if (keys.length !== 2 || !Array.isArray(data.approveCommands)) {
+    return false;
+  }
+  if (data.profile === 'standard') {
+    const expected = [...STANDARD_APPROVE_DEFAULTS, APPROVE_RULE];
+    return (
+      data.approveCommands.length === expected.length &&
+      data.approveCommands.every((v, idx) => v === expected[idx])
+    );
+  }
+  if (data.profile === 'trusted') {
+    return data.approveCommands.length === 1 && data.approveCommands[0] === APPROVE_RULE;
+  }
+  return false;
+}
+
+function pruneEmptyTrackedDirs(startDir, ws, createdDirsSet) {
+  if (!createdDirsSet) return;
+  const wsPrefix = path.resolve(ws) + path.sep;
+  let dir = path.resolve(startDir);
+  while (dir.startsWith(wsPrefix)) {
+    const relDir = path.relative(ws, dir).replace(/\\/g, '/');
+    if (!createdDirsSet.has(relDir)) break;
+    try {
+      if (isDir(dir) && fs.readdirSync(dir).length === 0) {
+        fs.rmdirSync(dir);
+        createdDirsSet.delete(relDir);
+        dir = path.dirname(dir);
+      } else {
+        break;
+      }
+    } catch {
+      break;
+    }
+  }
+}
+
+function ensureApprovalGateInPolicy(
+  ws,
+  relPath,
+  manifestPolicies,
+  createdDirsSet,
+  effectiveDefaultProfile = 'standard'
+) {
   const absPath = path.join(ws, relPath);
   const prevEntry = manifestPolicies[relPath] || null;
 
   if (!lstatExists(absPath)) {
+    const createdObj = synthesizedPolicyObject(effectiveDefaultProfile);
+    if (!createdObj) {
+      delete manifestPolicies[relPath];
+      return null;
+    }
     ensureDirTracked(path.dirname(absPath), ws, createdDirsSet);
-    const createdObj = {
-      profile: 'standard',
-      approveCommands: [...STANDARD_APPROVE_DEFAULTS, APPROVE_RULE],
-    };
     const content = `${JSON.stringify(createdObj, null, 2)}\n`;
     fs.writeFileSync(absPath, content, 'utf8');
     manifestPolicies[relPath] = {
       created: true,
       installedSha256: sha256Bytes(Buffer.from(content, 'utf8')),
     };
-    return `created ${relPath} (standard profile + publish.js approval gate)`;
+    return `created ${relPath} (${effectiveDefaultProfile} profile + publish.js approval gate)`;
   }
 
   if (!isFile(absPath)) return null;
+  let rawBytes;
   let data;
   try {
-    data = JSON.parse(fs.readFileSync(absPath, 'utf8'));
+    rawBytes = fs.readFileSync(absPath);
+    data = JSON.parse(rawBytes.toString('utf8'));
   } catch {
     return null;
+  }
+
+  const curSha = sha256Bytes(rawBytes);
+  const isUntouchedSynthesized =
+    (prevEntry && prevEntry.created === true && curSha === prevEntry.installedSha256) ||
+    (!prevEntry && isSynthesizedDefaultPolicy(data));
+
+  if (isUntouchedSynthesized) {
+    const desiredObj = synthesizedPolicyObject(effectiveDefaultProfile);
+    if (!desiredObj) {
+      fs.unlinkSync(absPath);
+      delete manifestPolicies[relPath];
+      pruneEmptyTrackedDirs(path.dirname(absPath), ws, createdDirsSet);
+      return `removed synthesized ${relPath} (defaultProfile is strict)`;
+    }
+    const desiredContent = `${JSON.stringify(desiredObj, null, 2)}\n`;
+    const desiredSha = sha256Bytes(Buffer.from(desiredContent, 'utf8'));
+    manifestPolicies[relPath] = {
+      created: true,
+      installedSha256: desiredSha,
+    };
+    if (curSha === desiredSha) return null;
+    fs.writeFileSync(absPath, desiredContent, 'utf8');
+    return `updated synthesized ${relPath} (${effectiveDefaultProfile} profile + publish.js approval gate)`;
   }
 
   const profile = data.profile;
@@ -675,7 +1033,7 @@ function restorePolicyOnUninstall(ws, relPath, manifestEntry) {
   const curSha = sha256Bytes(rawBytes);
   if (
     (manifestEntry && manifestEntry.created && curSha === manifestEntry.installedSha256) ||
-    (!manifestEntry && isSynthesizedDefaultStandardPolicy(data))
+    (!manifestEntry && isSynthesizedDefaultPolicy(data))
   ) {
     fs.unlinkSync(absPath);
     return `removed synthesized ${relPath}`;
@@ -770,6 +1128,7 @@ function cmdInstall(a) {
 
   const agentsSpec = a.agents !== null ? a.agents : 'all';
   const installGardener = a.noGardener ? false : Boolean(a.withGardener) || a.agents === null;
+  const effSettings = ws ? resolveEffectiveHarborSettings(ws, a.defaultProfile) : null;
 
   // Pre-flight collision checks BEFORE mutating any file on disk
   if (ws) {
@@ -857,8 +1216,14 @@ function cmdInstall(a) {
       }
     }
 
-    for (const polRel of collectWorkspacePolicyRelPaths(ws, selectedAgents)) {
-      const act = ensureApprovalGateInPolicy(ws, polRel, wsManifest.policies, createdDirsSet);
+    for (const polRel of collectWorkspacePolicyRelPaths(ws, selectedAgents, effSettings.policyFile)) {
+      const act = ensureApprovalGateInPolicy(
+        ws,
+        polRel,
+        wsManifest.policies,
+        createdDirsSet,
+        effSettings.defaultProfile
+      );
       if (act) actions.push(act);
     }
 
@@ -1026,7 +1391,10 @@ function cmdUninstall(a) {
       }
     }
 
-    const policyPaths = new Set(collectWorkspacePolicyRelPaths(ws, agentFiles));
+    const effSettings = resolveEffectiveHarborSettings(ws, a.defaultProfile);
+    const policyPaths = new Set(
+      collectWorkspacePolicyRelPaths(ws, agentFiles, effSettings.policyFile)
+    );
     if (wsManifest && wsManifest.policies) {
       for (const k of Object.keys(wsManifest.policies)) policyPaths.add(k);
     }
@@ -1160,8 +1528,10 @@ function cmdStatus(a) {
         }
       }
     }
+    const effSettings = resolveEffectiveHarborSettings(ws, a.defaultProfile);
     wsChecks = {
       workspace: ws,
+      effective_default_profile: effSettings.defaultProfile,
       team_kb_installed: isDir(skDir) && isFile(path.join(skDir, 'SKILL.md')),
       team_kb_mode: isSymlink(skDir) ? 'symlink' : isDir(skDir) ? 'copy' : 'absent',
       publish_installed: isDir(pubDir) && isFile(path.join(pubDir, 'SKILL.md')),
@@ -1224,6 +1594,7 @@ function parseCliArgs(argv) {
     workspace: null,
     mode: 'auto',
     agents: null,
+    defaultProfile: null,
     withGardener: false,
     noGardener: false,
     withHooks: false,
@@ -1237,6 +1608,7 @@ function parseCliArgs(argv) {
     '-w': 'workspace',
     '--mode': 'mode',
     '--agents': 'agents',
+    '--default-profile': 'defaultProfile',
   };
   const BOOL_FLAGS = {
     '--with-gardener': 'withGardener',
@@ -1277,6 +1649,11 @@ function parseCliArgs(argv) {
   if (!['auto', 'symlink', 'copy'].includes(opts.mode)) {
     throw new PlugError(`Invalid --mode "${opts.mode}". Allowed: auto, symlink, copy`);
   }
+  if (opts.defaultProfile !== null && !VALID_PROFILES.includes(opts.defaultProfile)) {
+    throw new PlugError(
+      `Invalid --default-profile "${opts.defaultProfile}". Allowed: ${VALID_PROFILES.join(', ')}`
+    );
+  }
   return opts;
 }
 
@@ -1286,7 +1663,7 @@ function printHelp() {
       'Usage: node plug.js <install|uninstall|status> [options]',
       '',
       'Commands:',
-      '  install [-w <workspace>] [--copilot] [--agents all|none|a,b] [--no-gardener] [--with-hooks] [--mode auto|symlink|copy] [--force]',
+      '  install [-w <workspace>] [--copilot] [--agents all|none|a,b] [--default-profile strict|standard|trusted] [--no-gardener] [--with-hooks] [--mode auto|symlink|copy] [--force]',
       '  uninstall [-w <workspace>] [--copilot] [--force]',
       '  status [-w <workspace>]',
     ].join('\n')
@@ -1324,6 +1701,8 @@ module.exports = {
   PlugError,
   APPROVE_RULE,
   STANDARD_APPROVE_DEFAULTS,
+  parseJsonc,
+  resolveEffectiveHarborSettings,
   addSkillToAgentText,
   removeSkillFromAgentText,
   main,

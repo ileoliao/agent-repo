@@ -254,5 +254,5 @@ node .github/skills/team-kb-publish/scripts/publish.js .loop/outbox/kb/gateway/g
 8. **实况冲突标记（`kb.js dispute`）**：一键生成带原因的争议修订草稿并在检索排序中自动降权。
 9. **端到端 Token 使用率与 `foldForRequest` 折叠验证**：实证 `O(1)` 上下文规模不变性与首行 `[team-kb REFERENCE]` 折叠保留能力。
 10. **独立 VS Code Copilot Chat 单仓直用与低认知负担体验闭环**：零参数 `plug.js install`、单参数 `-w` 全自动挂载、`redlines --auto` 自动按当前仓库过滤、单微服务仓实时代码锚点漂移核验、缓存暂存草稿保持业务仓 `git status` 100% 干净，以及无 `gh` 时的一键 GitHub PR Compare URL 解析。
-11. **安全与边界回归验证（6 类审查边界）**：安装/卸载归属清单防误删与冲突拒写、`constructor`/`__proto__`/`toString` 无原型链污染索引与检索、任意合法 YAML 缩进（如 4 空格）保留还原、无 `.loop/policy.json` 默认工作区及隐式 `standard` 策略审批门禁自动补齐、`publish.js` 远端 `fetch` 失败硬阻断与非 `main` 默认分支（如 `origin/trunk`）防夹带本地未合并提交、以及不传 `--sync` 时的默认节流自动同步与 `--no-sync` 离线跳过。
+11. **安全与边界回归验证（审查边界全覆盖）**：安装/卸载归属清单防误删与冲突拒写、`constructor`/`__proto__`/`toString` 无原型链污染索引与检索、任意合法 YAML 缩进（如 4 空格）保留还原、无 `.loop/policy.json` 时严格遵循实际生效的 `defaultProfile`（`strict` 不降级白名单、`trusted` 保留信任态仅门禁 `publish.js`、`standard` 保留内置 `STANDARD_APPROVE` 并补齐门禁）、`publish.js` 远端 `fetch` 失败硬阻断与非 `main` 默认分支（如 `origin/trunk`）防夹带本地未合并提交、以及不传 `--sync` 时的默认节流自动同步与 `--no-sync` 离线跳过。
 
