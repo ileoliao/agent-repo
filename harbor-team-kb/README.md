@@ -39,7 +39,7 @@ python3 harbor-team-kb/plug.py uninstall --workspace /path/to/your-harbor-worksp
 # 编译并运行 Harbor Mate 本体全部测试（含软链 Skill 加载测试）
 cd loop-runner && npm test
 
-# 运行知识库 8 大场景 43 项真实运行时插拔与检索基准测试
+# 运行知识库 9 大套件 50 项真实运行时插拔、分层召回率与 Token 使用率基准测试
 node harbor-team-kb/tests/verify_pluggable.js
 ```
 
@@ -68,7 +68,7 @@ node harbor-team-kb/tests/verify_pluggable.js
 └───────────┬──────────────┘      │ - request_approval(wait:false)│──┘ (SHA-256 哈希防篡改绑定)
             └──────────────┬──────┴───────────────────────────────┘
                            ▼
-     本机可丢弃派生索引 ~/.cache/harbor-kb/<hash>/index.sqlite (FTS5 + 中文双字 + 代码拆词)
+     本机可丢弃派生索引 ~/.cache/harbor-kb/<hash>/index.sqlite (Porter FTS5 + IDF 加权覆盖度 + 代码拆词 + CJK 兜底)
 ```
 
 ### 结合 `loop-runner` 源码核实的 6 项关键工程决策
@@ -113,32 +113,33 @@ harbor-team-kb/
 │   └── kb-gardener.agent.md                 # 可选每周一零 Token 锚点漂移巡检 Mate
 ├── hooks/
 │   └── harbor-kb.hooks.json                 # 可选 Copilot sessionStart 红线自动注入钩子
-├── kb/                                      # 12 条跨领域种子知识 (gateway/observability/storage/release)
+├── kb/                                      # 12 条英文主语料种子知识（兼容少量中文触发词）
 │   ├── gateway/{redline,gotcha,postmortem}/
 │   ├── observability/{redline,gotcha,runbook,adr}/
 │   ├── storage/{redline,gotcha,runbook}/
 │   └── release/{redline,runbook}/
 └── tests/
-    ├── golden_queries.json                  # 中英双字词、驼峰/下划线符号与负样本黄金评测集
-    └── verify_pluggable.js                  # 对接真实 loop-runner 编译产物的 43 项端到端验证
+    ├── golden_queries.json                  # 48 条 7 维度分层检索评测集（英文词形/自然句/改写/中文/口语极限/邻近负样本）
+    └── verify_pluggable.js                  # 对接真实 loop-runner 编译产物与 tiktoken 的 50 项端到端验证
 ```
 
 ### 知识条目最小示例（`kb/gateway/redline/rate-limit-shadow-mode-first.md`）
 
 ```markdown
 ---
-title: "网关限流变更红线：RateLimitConfig 必须先开启 24 小时 shadow_only 灰度"
-summary: "修改 harbor-gateway 的 RateLimitConfig 配额或突发桶前必须先以 shadow_only 模式运行至少 24 小时，禁止直接下发强拦截 429。"
+title: "Gateway Rate-Limit Redline: Run RateLimitConfig in shadow_only for 24h Before Enforcing 429"
+summary: "Any RateLimitConfig quota or burst change on harbor-gateway must run in shadow_only mode for at least 24 hours with zero false-positive hits before enforcing HTTP 429."
 sources:
   - "harbor-gateway:pkg/ratelimit/limiter.go#RateLimitConfig"
 triggers:
   - "RateLimitConfig"
   - "shadow_only"
   - "429 Too Many Requests"
+  - "rate limit"
   - "限流"
 ---
 
-## 红线规则
+## Redline Rule
 ...
 ```
 
@@ -184,17 +185,70 @@ python3 .github/skills/team-kb-publish/scripts/publish.py .loop/outbox/kb/gatewa
 
 ---
 
-## 六、全链路实测验证报告（`tests/verify_pluggable.js`）
+## 六、检索召回率分层实测报告（英文主场景 + 少量中文，48 条黄金评测集）
 
-基于真实编译的 Harbor Mate 运行时模块（`team.js`、`skillAuthoring.js`、`manage.js`、`policy.js`、`wake.js`、`tools.js`、`gates.js`、`runner.js`）完成了 **8 大测试套件、43 项断言** 实测验证：
+围绕真实工程排障查询习惯构建了 **`tests/golden_queries.json`（7 大类共 48 条查询）**，分别在 **`N = 12`（种子库）** 与 **`N = 500`（注入 488 条跨 10 个基础设施领域的全尺寸三段式真实干扰词条）** 规模下实测 `kb.py`（SQLite FTS5 `porter unicode61` + 英文词干化 + `token_df` 规模归一化 IDF 覆盖度重排 + 词边界 Trigger 提权 + CJK 分句兜底）：
 
-| 验证维度 | 实测方法 | 实测指标 / 结果 |
-|---|---|---|
-| **1. Harbor Mate 静态安全审计** | 调用真实 `lintSkill` 扫描 `team-kb` 与 `team-kb-publish`，`designWarnings` + `validateTeam` 扫描 `kb-gardener` | **0 Errors, 0 Warnings**（无受保护路径引用、无密钥/网络违规，`SKILL.md` `< 4KB`） |
-| **2. 黄金检索准确率（12 种子词条）** | 覆盖中文双字词（`限流`、`死锁`、`回滚`）、`camelCase`、`snake_case`、SQLSTATE/HTTP 错误码及无关噪声查询 | **Recall@1 = 100% (13/13)**，**Recall@5 = 100%**，**MRR = 1.0**，噪声误召回 **0**；冷启动建索引 **165ms**，热查询 P50 **147ms**（含 Python 启动） |
-| **3. 500 词条团队规模与抗干扰压测** | 注入 488 条多领域干扰词条 + 12 条种子词条（共 500 条）重跑全部黄金评测 | 冷启动全量建索引 **545ms**，热查询 P50 **170ms**，**Recall@1 = 100%**，**Recall@5 = 100%** |
-| **4. 24 进程冷缓存并发锁压测** | 清空缓存后同时拉起 **24 个并行 `kb.py` 子进程** 并发建库与检索 | **24/24 退出码 0**，零 `database is locked` 报错，原子替换后残留 `.tmp` 文件数为 **0** |
-| **5. 零拷贝热插拔与逐字节卸载** | 对 `examples/harbor-team` 分别执行 `symlink` 与 `copy` 模式重复安装 + 卸载 | 安装幂等、`loadSkills` 识别软链成功，卸载后目录快照 **100% 逐字节还原** |
-| **6. 最严只读策略与 SHA-256 防篡改** | 在 `techlead.json`（`writablePaths: []`）与隔离 `buildShellEnv` 下执行读写、篡改拦截与双克隆同步 | `kb.py` 读写校验全部 `allow`；直接调 `publish.py` 被 `deny` 拦截；审批后篡改草稿 1 字节被 SHA-256 硬拦截；合并 PR 后第二台克隆通过 `--sync` 自动拉取重建索引并 Top-1 命中新知识 |
-| **7. `runItem` 闭环与零 Token 漂移唤醒** | 驱动真实 `runner.js` 完成排障提案，随后重命名 `repos/` 中的 `RateLimitConfig` 测试 `checkWake` | 主任务不因 `request_approval(wait: false)` 挂起；代码未改时 `wakeIf` 退出码 `1`（**0 Token**），符号重命名后退出码 `0` 精准唤醒并报告漂移，`kb.py get` 同步输出实时漂移告警 |
-| **8. 线上实况冲突标记（Dispute）** | 执行 `kb.py dispute` 并复验输出草稿 | 自动生成带日期与原因的 `disputed` 草稿并通过 Schema 校验，检索结果自动降权提示 |
+| 查询类别（48 条） | 样本数 | 典型查询示例 | `N = 12` Recall@1 / @5 | `N = 500` Recall@1 / @5 |
+|---|---:|---|---|---|
+| **1. 精确符号 / 错误码 / 配置键** (`symbol_code`) | 7 | `RateLimitConfig shadow_only`、`SQLSTATE 40P01 batch_upsert_orders` | **100% / 100%** (7/7) | **100% / 100%** (7/7) |
+| **2. 英文词形变化（复数/分词/时态）** (`en_inflection`) | 7 | `clients retrying aggressively on 429`、`pods OOMKilled when exporting high cardinality` | **100% / 100%** (7/7) | **100% / 100%** (7/7) |
+| **3. 冗长英文自然语言提问** (`en_natural_question`) | 7 | `Why did our gateway return 429 waves every 5 seconds even though total traffic barely rose?` | **100% / 100%** (7/7) | **100% / 100%** (7/7) |
+| **4. 同义故障症状改写** (`en_symptom_paraphrase`) | 6 | `synchronized thundering herd from external SDK callers after throttling` | **100% / 100%** (6/6) | **100% / 100%** (6/6) |
+| **5. 少量中文与中英混排查询** (`zh_minor`) | 5 | `为什么网关调整限流配置不能直接上线拦截`、`订单批量写入并发死锁` | **100% / 100%** (5/5) | **100% / 100%** (5/5) |
+| **核心工程查询小计（1–5 类）** | **32** | 含任一工程术语、服务名、症状词或配置概念 | **100.0% / 100.0%** (`MRR=1.00`) | **100.0% / 100.0%** (`MRR=1.00`) |
+| **6. 零符号纯口语极限压测** (`zero_symbol_colloquial`) | 8 | `why do we throw away most normal spans to save disk`（故意回避全部代码符号与标准术语） | 单次 **75.0%** (6/8)<br>Agent 1 次改写后 **100%** (8/8) | 单次 **62.5%** (5/8)<br>Agent 1 次改写后 **100%** (8/8) |
+| **7. 领域邻近与跨界强负样本** (`hard_negative`) | 8 | `gateway envoy TLS certificate expired x509`、`Redis cluster failover sentinel split brain` | **误召回率 FPR = 0.0%** (0/8) | **误召回率 FPR = 0.0%** (0/8) |
+
+- **延迟指标**（含 Python 进程冷启动 + SQLite 查询）：`N = 12` 冷建库 **193ms** / 热查询 P50 **157ms**；`N = 500` 冷建库 **1.11s** / 热查询 P50 **211ms**。
+- **诚实方法论边界**：纯词法 BM25/FTS5 在完全不含任何共享词根的纯口语表达（如用 `throw away` 指代 `tail sampling`）下存在天然天花板（单次命中 62.5%–75.0%）。`SKILL.md` 已内置 1 句话改写指引（`0 matches` 时换用标准基础设施术语重试 1 次），重试后召回率恢复至 **100%**，无需为 10–20 人团队引入 2GB 本地向量模型。
+
+---
+
+## 七、Token 使用率与 128k 上下文窗口实测报告（`tiktoken: o200k_base`）
+
+使用 GitHub Copilot / GPT-4o 同源分词器 **`tiktoken (o200k_base)`**，对接真实 `loop-runner` 的 `buildPrompt()`、`LONG_SKILL_CHARS (4096)`、`foldedLine()` 与 `foldForRequest()`（以 `128,000` Token 上下文窗口为基准），实测 **1 次完整 5 轮无人值守排障闭环**（`redlines -> search -> get -> write_file + validate -> request_approval + finish`）的真实消耗：
+
+### 1. 单组件 Token 精确拆解
+
+| 组件 | 实测字符数 | 实测 Token (`o200k_base`) | 占 `128k` 窗口比例 | 说明 |
+|---|---:|---:|---:|---|
+| 未挂载 KB 的原始 `techlead` Prompt | 9,604 | **2,313** | 1.81% | Harbor Mate 基础角色 + 原有 Skills |
+| 挂载 `team-kb` 后的常驻静态增量 | +2,623 | **+691** | **+0.54%** | `SKILL.md` (`615` tok, `< 4096` 字符不截断) + 角色简短指引 (`76` tok)，且 **87.1% 位于静态前缀可命中 Prompt Cache** |
+| `kb.py redlines --repo harbor-gateway` | 354 | **79** | 0.06% | 按目标仓库精准过滤红线（全量 4 域红线也仅 `316` tok） |
+| `kb.py search`（Top-5 紧凑命中列表） | 1,098 | **293** | 0.23% | `N = 12` 与 `N = 500` 输出均为 **293 tok**（严格 `O(1)`） |
+| `kb.py get <id>`（按需拉取 1 篇完整词条） | 1,587 | **397** | 0.31% | 含 `[team-kb REFERENCE]` 首行标识与防注入横幅 |
+| 超长词条经 `foldForRequest` 折叠后 | 129 | **47** | 0.04% | 旧轮次 `>2000` 字符输出自动折叠为 1 行，保留 `REFERENCE`、ID 与标题 |
+| `kb-gardener` 每周无漂移巡检 (`wakeIf`) | 0 | **0** | **0.00%** | 本地代码符号未漂移时 `exit 1`，完全不发起模型请求 |
+
+### 2. 四种方案在 `N = 12 / 100 / 500` 词条规模下的 5 轮实测对比
+
+| 词条规模 | 方案 | 首轮输入 Token | 第 5 轮峰值 Token（占 `128k`） | 5 轮累计输入 Token | 相比 `team-kb` 节省率 |
+|---|---|---:|---:|---:|---|
+| **无知识库基线** | `No KB` | 2,313 | 2,529 (1.98%) | 12,117 | 基线（无历史经验） |
+| **`N = 12`**（起步期） | 全量塞入 Prompt | 6,340 | 6,556 (5.12%) | 32,252 | `team-kb` 省 **46.5%** |
+| | 全量摘要塞入 Prompt | 3,511 | 4,084 (3.19%) | 19,547 | `team-kb` 省 **11.8%** |
+| | **`team-kb` 渐进披露** | **3,004** | **3,893 (3.04%)** | **17,249**（KB 净增仅 `5,132`） | — |
+| **`N = 100`**（成长期） | 全量塞入 Prompt | 31,267 | 31,483 (24.60%) | 156,887 | `team-kb` 省 **89.0%** |
+| | 全量摘要塞入 Prompt | 10,441 | 11,014 (8.60%) | 54,197 | `team-kb` 省 **68.2%** |
+| | **`team-kb` 渐进披露** | **3,004** | **3,893 (3.04%)** | **17,249** | — |
+| **`N = 500`**（成熟期） | 全量塞入 Prompt | **144,567（首轮即爆窗）** | **144,783 (113.11%)** | 723,387 | `team-kb` 省 **97.6%** |
+| | 全量摘要塞入 Prompt | 41,941 | 42,514 (33.21%) | 211,697 | `team-kb` 省 **91.9%** |
+| | **`team-kb` 渐进披露** | **3,004** | **3,893 (3.04%)** | **17,249** | **`O(1)` 恒定开销** |
+
+---
+
+## 八、全链路运行时验证套件汇总（`tests/verify_pluggable.js` — 9 大套件 50 项断言全绿）
+
+基于真实编译的 Harbor Mate 运行时模块（`team.js`、`skillAuthoring.js`、`manage.js`、`policy.js`、`wake.js`、`tools.js`、`gates.js`、`runner.js`、`fold.js`）完成了 **9 大测试套件、50 项断言** 端到端验证：
+
+1. **Harbor Mate 静态安全审计**：`lintSkill`、`designWarnings`、`validateTeam` 均为 **0 Errors, 0 Warnings**。
+2. **分层检索召回率与强负样本压测（`N=12` & `N=500`）**：32 条核心工程查询 **Recall@1 = 100%**，8 条领域邻近强负样本 **FPR = 0%**，口语极限查询经 1 步改写 **Recall@1 = 100%**。
+3. **草稿门禁校验**：拦截 `ghp_` 等凭据泄漏、拦截 `/Users/...` 本机路径泄漏、Jaccard 近重复告警。
+4. **24 进程冷缓存并发锁压测**：24 个并行子进程同时建库查询 **24/24 退出码 0**，零 SQLite 锁冲突与残留临时文件。
+5. **零拷贝热插拔与逐字节无痕卸载**：`symlink` 与 `copy` 双模式安装幂等，卸载后工作区 **100% 逐字节还原**。
+6. **最严只读策略（`techlead.json`）+ SHA-256 防篡改 + 双机 Git 同步**：`publish.py` 直接调用被策略硬拦截；审批后篡改 1 字节被 SHA-256 拒绝；合并后第二台克隆通过 `--sync` 自动拉取并在 Top-1 命中新词条。
+7. **`runItem` 无人值守闭环 + `kb-gardener` 零 Token 漂移唤醒**：`request_approval(wait: false)` 不阻塞主循环；源码符号重命名后精准唤醒巡检并在 `kb.py get` 实时标红告警。
+8. **实况冲突标记（`kb.py dispute`）**：一键生成带原因的争议修订草稿并在检索排序中自动降权。
+9. **端到端 Token 使用率与 `foldForRequest` 折叠验证**：实证 `O(1)` 上下文规模不变性与首行 `[team-kb REFERENCE]` 折叠保留能力。
+

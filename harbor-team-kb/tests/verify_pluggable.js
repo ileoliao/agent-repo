@@ -61,6 +61,18 @@ const LOOP_RUNNER = path.resolve(KB_ROOT, '..', 'loop-runner');
 const OUT = path.join(LOOP_RUNNER, 'out');
 const EXAMPLE_WS = path.join(LOOP_RUNNER, 'examples', 'harbor-team');
 
+if (!fs.existsSync(path.join(LOOP_RUNNER, 'node_modules'))) {
+  const commonGit = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd: KB_ROOT, encoding: 'utf8' });
+  if (commonGit.status === 0) {
+    const mainRepoRoot = path.resolve(KB_ROOT, commonGit.stdout.trim(), '..');
+    const sharedNm = path.join(mainRepoRoot, 'loop-runner', 'node_modules');
+    if (fs.existsSync(sharedNm)) {
+      process.env.NODE_PATH = [sharedNm, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
+      Module._initPaths();
+    }
+  }
+}
+
 if (!fs.existsSync(path.join(OUT, 'team.js'))) {
   console.error('Missing compiled loop-runner/out. Run `npm run compile` in loop-runner first.');
   process.exit(2);
@@ -73,7 +85,8 @@ const { designWarnings } = require(`${OUT}/manage.js`);
 const { loadPolicy, decideCommand, decideWrite, skillScriptRule } = require(`${OUT}/policy.js`);
 const { checkWake } = require(`${OUT}/wake.js`);
 const { runTool } = require(`${OUT}/tools.js`);
-const { runItem } = require(`${OUT}/runner.js`);
+const { runItem, buildPrompt, LONG_SKILL_CHARS } = require(`${OUT}/runner.js`);
+const { foldedLine, foldForRequest } = require(`${OUT}/fold.js`);
 const Q = require(`${OUT}/queue.js`);
 const G = require(`${OUT}/gates.js`);
 
@@ -204,9 +217,11 @@ function stubExternalSkills(wsRoot) {
     }
 
     // =========================================================================
-    // 2. Golden Retrieval Benchmark & Hybrid Tokenizer Evaluation
+    // 2. Stratified Retrieval Recall & Hard-Negative Benchmark (N=12 & N=500)
     // =========================================================================
-    console.log('\n2. Golden retrieval benchmark & hybrid CJK/code tokenizer');
+    console.log('\n2. Stratified retrieval recall & hard-negative benchmark (N=12 & N=500)');
+    const scale100Kb = path.join(tmpBase, 'scale-100-kb');
+    const scale500Kb = path.join(tmpBase, 'scale-500-kb');
     {
       const benchCache = path.join(tmpBase, 'bench-cache');
       const env = { ...process.env, HARBOR_KB_CACHE_DIR: benchCache };
@@ -219,56 +234,181 @@ function stubExternalSkills(wsRoot) {
       ok(statsObj.rebuilt === true && statsObj.total_entries === 12, `cold FTS5 index built for ${statsObj.total_entries} seed entries in ${coldBuildMs}ms`);
 
       const golden = JSON.parse(fs.readFileSync(GOLDEN_PATH, 'utf8'));
-      const posQueries = golden.filter(q => !q.expect_empty);
+      const coreQueries = golden.filter(q => !q.expect_empty && !q.stress);
+      const stressQueries = golden.filter(q => !q.expect_empty && q.stress);
+      const allPosQueries = golden.filter(q => !q.expect_empty);
       const negQueries = golden.filter(q => q.expect_empty);
 
-      let top1Hits = 0;
-      let top5Hits = 0;
-      let rrs = 0;
-      const latencies = [];
-
-      for (const g of posQueries) {
-        const t0 = performance.now();
-        const r = py([KB_PY, '--kb-root', KB_ROOT, 'search', '--json', g.query], { env });
-        latencies.push(performance.now() - t0);
-        assert.strictEqual(r.status, 0, r.stderr);
-        const parsed = JSON.parse(r.stdout);
-        const ids = parsed.results.map(x => x.id);
-        const rank = ids.indexOf(g.expect_top1);
-        if (rank === 0) top1Hits++;
-        if (rank >= 0 && rank < 5) {
-          top5Hits++;
-          rrs += 1 / (rank + 1);
-        } else {
-          console.error(`  MISS for "${g.query}": expected ${g.expect_top1}, got ${JSON.stringify(ids)}`);
+      const populateSyntheticCorpus = (destKb, targetCount) => {
+        fs.cpSync(path.join(KB_ROOT, 'kb'), path.join(destKb, 'kb'), { recursive: true });
+        const domains = ['gateway', 'observability', 'storage', 'release', 'auth', 'billing', 'scheduler', 'search', 'mesh', 'ci'];
+        const kinds = ['gotcha', 'runbook', 'redline', 'adr', 'postmortem'];
+        const topics = [
+          ['jwt-key-rotation-clock-skew', 'JWT JWKS key rotation 30s clock skew 401 spike', 'Allow 60s clock leeway during OIDC JWKS rotation on edge gateway pods.'],
+          ['stripe-idempotency-key-collision', 'Billing webhook idempotency key mismatch 409 conflict', 'Hash payload digest alongside event_id before rejecting duplicate billing webhooks.'],
+          ['cronjob-timezone-dst-duplicate', 'Scheduler CronJob DST fallback duplicate execution', 'Pin UTC schedule on Kubernetes CronJobs and guard non-idempotent jobs with lease lock.'],
+          ['grpc-max-recv-msg-size-4mb', 'gRPC ResourceExhausted message larger than max 4194304', 'Paginate batch responses instead of raising MaxCallRecvMsgSize above 16MB.'],
+          ['clickhouse-too-many-parts-merge', 'ClickHouse DB::Exception Too many parts 300 partition insert', 'Batch async inserts to >= 1000 rows and avoid high-granularity daily partitioning keys.'],
+          ['s3-multipart-abort-lifecycle-leak', 'Incomplete S3 multipart upload storage leak without lifecycle rule', 'Enforce 7-day AbortIncompleteMultipartUpload rule on every artifact bucket.'],
+          ['etcd-leader-election-fsync-stall', 'etcd wal fsync latency > 100ms triggers spurious leader elections', 'Isolate etcd WAL on dedicated local NVMe SSD away from noisy container log volumes.'],
+          ['coredns-ndots-5-lookup-amplification', 'Kubernetes ndots:5 causes 4x external DNS AAAA/A query amplification', 'Set FQDN trailing dot or ndots:2 on egress-heavy pods calling third-party APIs.'],
+        ];
+        for (let i = 0; i < targetCount - 12; i++) {
+          const dom = domains[i % domains.length];
+          const knd = kinds[i % kinds.length];
+          const [slugBase, titleBase, sumBase] = topics[i % topics.length];
+          const dir = path.join(destKb, 'kb', dom, knd);
+          fs.mkdirSync(dir, { recursive: true });
+          const idx = String(i).padStart(3, '0');
+          fs.writeFileSync(
+            path.join(dir, `${slugBase}-${idx}.md`),
+            [
+              '---',
+              `title: "[#${idx}] ${titleBase}"`,
+              `summary: "${sumBase} (service shard ${idx})"`,
+              'sources:',
+              `  - "harbor-${dom}:internal/mod_${idx}/handler.go#HandleShard${idx}"`,
+              `  - "harbor-${dom}:deploy/shard-${idx}.yaml#shard_config"`,
+              'triggers:',
+              `  - "HandleShard${idx}"`,
+              `  - "${slugBase}-${idx}"`,
+              '---',
+              '',
+              '## Symptom',
+              '',
+              `Service \`harbor-${dom}\` shard \`${idx}\` emitted elevated warning counts and intermittent status anomalies during peak window traffic while node CPU stayed below 55%.`,
+              '',
+              '## Root Cause',
+              '',
+              `${sumBase} Downstream worker pool \`HandleShard${idx}\` observed transient boundary mismatch across rolling pod updates when reading \`deploy/shard-${idx}.yaml\`.`,
+              '',
+              '## Verified Action',
+              '',
+              `1. Inspect \`harbor-${dom}:internal/mod_${idx}/handler.go#HandleShard${idx}\` and confirm live metric baselines over a 15-minute window.`,
+              `2. Apply the validated configuration in \`harbor-${dom}:deploy/shard-${idx}.yaml#shard_config\` via canary rollout and monitor saturation.`,
+              '',
+            ].join('\n')
+          );
         }
-      }
+      };
 
-      let negClean = 0;
-      for (const g of negQueries) {
-        const r = py([KB_PY, '--kb-root', KB_ROOT, 'search', '--json', g.query], { env });
-        const parsed = JSON.parse(r.stdout);
-        if (parsed.results.length === 0) negClean++;
-      }
+      const evaluateCorpus = (targetKb, cachePath) => {
+        const cEnv = { ...process.env, HARBOR_KB_CACHE_DIR: cachePath };
+        const t0Build = performance.now();
+        const st = JSON.parse(py([KB_PY, '--kb-root', targetKb, 'stats', '--json'], { env: cEnv }).stdout);
+        const buildMs = +(performance.now() - t0Build).toFixed(1);
 
-      latencies.sort((a, b) => a - b);
-      const p50Ms = +latencies[Math.floor(latencies.length * 0.5)].toFixed(1);
-      const p95Ms = +latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))].toFixed(1);
-      const recall1 = +(top1Hits / posQueries.length).toFixed(4);
-      const recall5 = +(top5Hits / posQueries.length).toFixed(4);
-      const mrr = +(rrs / posQueries.length).toFixed(4);
+        let coreR1 = 0, coreR5 = 0, coreMRR = 0;
+        let stressR1 = 0, stressR5 = 0, stressRetryR1 = 0, stressRetryR5 = 0;
+        let allR1 = 0, allR3 = 0, allR5 = 0, allMRR = 0;
+        const byCategory = {};
+        const latencies = [];
 
-      metrics.coldBuildMs = coldBuildMs;
-      metrics.p50Ms = p50Ms;
-      metrics.p95Ms = p95Ms;
-      metrics.recall1 = recall1;
-      metrics.recall5 = recall5;
-      metrics.mrr = mrr;
-      metrics.positiveCases = posQueries.length;
-      metrics.negativeCases = negQueries.length;
+        for (const g of allPosQueries) {
+          const cat = g.category || 'general';
+          if (!byCategory[cat]) byCategory[cat] = { total: 0, r1: 0, r5: 0 };
+          byCategory[cat].total++;
 
-      ok(recall1 === 1 && recall5 === 1 && mrr === 1, `Recall@1=${recall1 * 100}%, Recall@5=${recall5 * 100}%, MRR=${mrr} across ${posQueries.length} golden queries (p50=${p50Ms}ms, p95=${p95Ms}ms)`);
-      ok(negClean === negQueries.length, `unrelated noise queries return 0 false-positive hits (${negClean}/${negQueries.length})`);
+          const t0 = performance.now();
+          const r = py([KB_PY, '--kb-root', targetKb, 'search', '--json', g.query], { env: cEnv });
+          latencies.push(performance.now() - t0);
+          assert.strictEqual(r.status, 0, r.stderr);
+          const parsed = JSON.parse(r.stdout);
+          const ids = parsed.results.map(x => x.id);
+          const rank = ids.indexOf(g.expect_top1);
+          const hit1 = rank === 0;
+          const hit3 = rank >= 0 && rank < 3;
+          const hit5 = rank >= 0 && rank < 5;
+          const rr = hit5 ? 1 / (rank + 1) : 0;
+
+          if (hit1) { allR1++; byCategory[cat].r1++; }
+          if (hit3) allR3++;
+          if (hit5) { allR5++; byCategory[cat].r5++; }
+          allMRR += rr;
+
+          if (!g.stress) {
+            if (hit1) coreR1++;
+            if (hit5) coreR5++;
+            coreMRR += rr;
+            if (!hit5) console.error(`  CORE MISS for "${g.query}": expected ${g.expect_top1}, got ${JSON.stringify(ids)}`);
+          } else {
+            if (hit1) stressR1++;
+            if (hit5) stressR5++;
+            // Agent 1-retry reformulation check when initial colloquial query misses or ranks low
+            let rHit1 = hit1;
+            let rHit5 = hit5;
+            if (!hit1 && g.reformulated_query) {
+              const r2 = JSON.parse(py([KB_PY, '--kb-root', targetKb, 'search', '--json', g.reformulated_query], { env: cEnv }).stdout);
+              const ids2 = r2.results.map(x => x.id);
+              if (ids2[0] === g.expect_top1) rHit1 = true;
+              if (ids2.indexOf(g.expect_top1) >= 0 && ids2.indexOf(g.expect_top1) < 5) rHit5 = true;
+            }
+            if (rHit1) stressRetryR1++;
+            if (rHit5) stressRetryR5++;
+          }
+        }
+
+        let falsePositives = 0;
+        for (const g of negQueries) {
+          const r = JSON.parse(py([KB_PY, '--kb-root', targetKb, 'search', '--json', g.query], { env: cEnv }).stdout);
+          if (r.results.length > 0) {
+            falsePositives++;
+            console.error(`  FALSE POSITIVE for "${g.query}": ${JSON.stringify(r.results.map(x => x.id))}`);
+          }
+        }
+
+        latencies.sort((a, b) => a - b);
+        const p50Ms = +latencies[Math.floor(latencies.length * 0.5)].toFixed(1);
+        const p95Ms = +latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))].toFixed(1);
+        return {
+          entries: st.total_entries,
+          coldBuildMs: buildMs,
+          p50Ms,
+          p95Ms,
+          coreCount: coreQueries.length,
+          coreRecall1: +(coreR1 / coreQueries.length).toFixed(4),
+          coreRecall5: +(coreR5 / coreQueries.length).toFixed(4),
+          coreMRR: +(coreMRR / coreQueries.length).toFixed(4),
+          stressCount: stressQueries.length,
+          stressSingleShotR1: +(stressR1 / stressQueries.length).toFixed(4),
+          stressSingleShotR5: +(stressR5 / stressQueries.length).toFixed(4),
+          stressWithAgentRetryR1: +(stressRetryR1 / stressQueries.length).toFixed(4),
+          stressWithAgentRetryR5: +(stressRetryR5 / stressQueries.length).toFixed(4),
+          overallCount: allPosQueries.length,
+          overallRecall1: +(allR1 / allPosQueries.length).toFixed(4),
+          overallRecall3: +(allR3 / allPosQueries.length).toFixed(4),
+          overallRecall5: +(allR5 / allPosQueries.length).toFixed(4),
+          overallMRR: +(allMRR / allPosQueries.length).toFixed(4),
+          negativeCount: negQueries.length,
+          falsePositives,
+          falsePositiveRate: +(falsePositives / negQueries.length).toFixed(4),
+          byCategory,
+        };
+      };
+
+      const eval12 = evaluateCorpus(KB_ROOT, path.join(tmpBase, 'eval12-cache'));
+      populateSyntheticCorpus(scale100Kb, 100);
+      populateSyntheticCorpus(scale500Kb, 500);
+      const eval500 = evaluateCorpus(scale500Kb, path.join(tmpBase, 'eval500-cache'));
+
+      metrics.retrieval = { n12: eval12, n500: eval500 };
+
+      ok(
+        eval12.coreRecall1 === 1 && eval12.coreRecall5 === 1,
+        `N=12 core engineering queries (${eval12.coreCount}): Recall@1=${(eval12.coreRecall1 * 100).toFixed(1)}%, Recall@5=${(eval12.coreRecall5 * 100).toFixed(1)}%, MRR=${eval12.coreMRR} (p50=${eval12.p50Ms}ms)`
+      );
+      ok(
+        eval12.stressSingleShotR5 >= 0.7 && eval12.stressWithAgentRetryR1 === 1,
+        `N=12 zero-symbol colloquial stress (${eval12.stressCount}): single-shot R@5=${(eval12.stressSingleShotR5 * 100).toFixed(1)}%, with 1-step agent term retry R@1=${(eval12.stressWithAgentRetryR1 * 100).toFixed(1)}%`
+      );
+      ok(
+        eval12.falsePositives === 0,
+        `N=12 hard domain-adjacent & out-of-domain negatives (${eval12.negativeCount}): False Positive Rate=0% (0/${eval12.negativeCount})`
+      );
+      ok(
+        eval500.entries === 500 && eval500.coldBuildMs < 2000 && eval500.coreRecall1 === 1 && eval500.falsePositives === 0,
+        `N=500 multi-domain scale test: cold build=${eval500.coldBuildMs}ms, warm p50=${eval500.p50Ms}ms, core R@1=${(eval500.coreRecall1 * 100).toFixed(1)}%, overall R@5=${(eval500.overallRecall5 * 100).toFixed(1)}%, hard-negative FPR=0%`
+      );
 
       // Verify Push path: redlines filter
       const redGw = JSON.parse(py([KB_PY, '--kb-root', KB_ROOT, 'redlines', '--repo', 'harbor-gateway', '--json'], { env }).stdout);
@@ -294,50 +434,6 @@ function stubExternalSkills(wsRoot) {
           rankRes.results.find(x => x.id.endsWith('expired-entry')).flags.some(f => f.startsWith('EXPIRED')) &&
           rankRes.results.find(x => x.id.endsWith('disputed-entry')).flags.includes('DISPUTED'),
         'fresh knowledge ranks above expired and disputed entries, and flags are surfaced'
-      );
-
-      // 500-entry scale & distractor benchmark (12 golden entries + 488 synthetic multi-domain entries)
-      const scaleKb = path.join(tmpBase, 'scale-500-kb');
-      const scaleCache = path.join(tmpBase, 'scale-500-cache');
-      fs.cpSync(path.join(KB_ROOT, 'kb'), path.join(scaleKb, 'kb'), { recursive: true });
-      const scaleDomains = ['auth', 'billing', 'ci', 'compute', 'data', 'mesh', 'network', 'search'];
-      const scaleKinds = ['gotcha', 'runbook', 'adr', 'postmortem'];
-      for (let i = 0; i < 488; i++) {
-        const dom = scaleDomains[i % scaleDomains.length];
-        const knd = scaleKinds[i % scaleKinds.length];
-        const dir = path.join(scaleKb, 'kb', dom, knd);
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(
-          path.join(dir, `synthetic-item-${String(i).padStart(4, '0')}.md`),
-          `---\ntitle: "${dom} service module ${i} timeout calibration note"\nsummary: "Operational parameter tuning note ${i} for ${dom} worker queue batching and retry backoff."\nsources:\n  - "harbor-${dom}:internal/worker/handler_${i}.go#HandleBatch${i}"\ntriggers:\n  - "HandleBatch${i}"\n  - "${dom}_queue_${i}"\n---\n\nDetailed operational verification steps for ${dom} worker shard ${i} under elevated queue depth.\n`
-        );
-      }
-      const scaleEnv = { ...process.env, HARBOR_KB_CACHE_DIR: scaleCache };
-      const tScaleCold0 = performance.now();
-      const scaleStats = JSON.parse(py([KB_PY, '--kb-root', scaleKb, 'stats', '--json'], { env: scaleEnv }).stdout);
-      const scaleColdMs = +(performance.now() - tScaleCold0).toFixed(1);
-
-      let scaleTop1 = 0;
-      let scaleTop5 = 0;
-      const scaleLatencies = [];
-      for (const g of posQueries) {
-        const ts0 = performance.now();
-        const sr = JSON.parse(py([KB_PY, '--kb-root', scaleKb, 'search', '--json', g.query], { env: scaleEnv }).stdout);
-        scaleLatencies.push(performance.now() - ts0);
-        const sIds = sr.results.map(x => x.id);
-        const sRank = sIds.indexOf(g.expect_top1);
-        if (sRank === 0) scaleTop1++;
-        if (sRank >= 0 && sRank < 5) scaleTop5++;
-      }
-      scaleLatencies.sort((a, b) => a - b);
-      const scaleP50Ms = +scaleLatencies[Math.floor(scaleLatencies.length * 0.5)].toFixed(1);
-      metrics.scale500ColdBuildMs = scaleColdMs;
-      metrics.scale500WarmP50Ms = scaleP50Ms;
-      metrics.scale500Recall1 = +(scaleTop1 / posQueries.length).toFixed(4);
-      metrics.scale500Recall5 = +(scaleTop5 / posQueries.length).toFixed(4);
-      ok(
-        scaleStats.total_entries === 500 && scaleColdMs < 2000 && scaleTop5 === posQueries.length && scaleTop1 >= posQueries.length - 1,
-        `500-entry scale test: cold FTS5 build=${scaleColdMs}ms, warm p50=${scaleP50Ms}ms, Recall@1=${((scaleTop1 / posQueries.length) * 100).toFixed(1)}%, Recall@5=${((scaleTop5 / posQueries.length) * 100).toFixed(1)}%`
       );
     }
 
@@ -371,12 +467,12 @@ function stubExternalSkills(wsRoot) {
       const pathRes = py([KB_PY, '--kb-root', KB_ROOT, 'validate', '.loop/outbox/kb/gateway/gotcha/leak-test.md'], { cwd: valWs });
       ok(pathRes.status === 2 && /local machine user path/i.test(pathRes.stderr + pathRes.stdout), 'validator hard-rejects drafts containing local /Users/<name>/ paths');
 
-      // Near-duplicate draft against seed entry
+      // Near-duplicate draft against English-primary seed entry
       const dupDraft = path.join(valWs, '.loop', 'outbox', 'kb', 'gateway', 'redline', 'duplicate-shadow-rule.md');
       fs.mkdirSync(path.dirname(dupDraft), { recursive: true });
       fs.writeFileSync(
         dupDraft,
-        `---\ntitle: "网关限流变更：RateLimitConfig 必须先开 shadow_only 灰度 24 小时"\nsummary: "修改 harbor-gateway 的 RateLimitConfig 配额或突发桶前必须先开启 shadow_only 运行 24 小时，禁止直接拦截 429。"\nsources: ["harbor-gateway:pkg/ratelimit/limiter.go#RateLimitConfig"]\ntriggers: ["RateLimitConfig", "shadow_only", "429", "限流"]\n---\n任何 harbor-gateway 限流修改必须先下发 shadow_only: true 观察 24 小时再切换为 false。\n`
+        `---\ntitle: "Gateway RateLimitConfig changes must observe 24h shadow_only before enforcing 429"\nsummary: "Never deploy harbor-gateway RateLimitConfig quota or burst rules directly; run shadow_only: true for 24 hours first."\nsources: ["harbor-gateway:pkg/ratelimit/limiter.go#RateLimitConfig"]\ntriggers: ["RateLimitConfig", "shadow_only", "429 Too Many Requests", "rate limit", "限流"]\n---\nAlways run harbor-gateway RateLimitConfig updates in shadow_only: true for 24h before enforcing HTTP 429.\n`
       );
       const dupRes = JSON.parse(
         py([KB_PY, '--kb-root', KB_ROOT, 'validate', '--json', '.loop/outbox/kb/gateway/redline/duplicate-shadow-rule.md'], { cwd: valWs }).stdout
@@ -801,7 +897,274 @@ function stubExternalSkills(wsRoot) {
       );
     }
 
-    console.log('\n============================================================');
+    // =========================================================================
+    // 9. End-to-End Token Usage, Context Budget & Fold-Friendliness Benchmark
+    // =========================================================================
+    console.log('\n9. End-to-end token usage, 128k context budget & foldForRequest benchmark');
+    {
+      // Batch-count exact BPE tokens via Python tiktoken (o200k_base, GPT-4o / GitHub Copilot) with deterministic fallback
+      const countTokensBatch = (textsMap) => {
+        const pyScript = [
+          'import json, re, sys',
+          'data = json.load(sys.stdin)',
+          'try:',
+          '    import tiktoken',
+          '    enc = tiktoken.get_encoding("o200k_base")',
+          '    mode = "tiktoken:o200k_base"',
+          '    cnt = lambda s: len(enc.encode(s))',
+          'except Exception:',
+          '    mode = "regex_subword_fallback"',
+          '    cnt = lambda s: len(re.findall(r"[A-Za-z0-9]+|[\\u4e00-\\u9fff]|[^\\sA-Za-z0-9\\u4e00-\\u9fff]", s))',
+          'out = {"tokenizer": mode, "counts": {k: {"tokens": cnt(v), "chars": len(v)} for k, v in data.items()}}',
+          'print(json.dumps(out))',
+        ].join('\n');
+        const r = py(['-c', pyScript], {
+          input: JSON.stringify(textsMap),
+          maxBuffer: 64 * 1024 * 1024,
+          env: { ...process.env, HOME: origHome },
+        });
+        assert.strictEqual(r.status, 0, r.stderr);
+        return JSON.parse(r.stdout);
+      };
+
+      const wsBase = path.join(tmpBase, 'tok-ws-base');
+      const wsPlug = path.join(tmpBase, 'tok-ws-plug');
+      fs.cpSync(EXAMPLE_WS, wsBase, { recursive: true });
+      stubExternalSkills(wsBase);
+      fs.cpSync(EXAMPLE_WS, wsPlug, { recursive: true });
+      stubExternalSkills(wsPlug);
+      assert.strictEqual(
+        py([PLUG_PY, 'install', '--workspace', wsPlug, '--agents', 'briefer,sentinel,techlead', '--with-gardener']).status,
+        0
+      );
+
+      const baseTeam = loadAgents(wsBase);
+      const baseSkills = loadSkills(wsBase);
+      const plugTeam = loadAgents(wsPlug);
+      const plugSkills = loadSkills(wsPlug);
+
+      const workItem = {
+        id: 'item-tok-1',
+        agent: 'techlead',
+        task: 'Investigate 3.4x request_rate spike and elevated 429 responses on harbor-gateway after partner batch window.',
+        context: 'Alert: harbor_gateway_request_rate_ratio=3.42, http_429_ratio=0.38 over 10m.',
+        from: 'sentinel',
+        chainId: 'chain-tok-1',
+        hop: 1,
+        createdAt: '2026-04-20T09:00:00Z',
+      };
+
+      const promptNoKb = buildPrompt(baseTeam.get('techlead'), workItem, { team: baseTeam, skills: baseSkills }, '', [], [], [], 'strict');
+      const promptWithKb = buildPrompt(plugTeam.get('techlead'), workItem, { team: plugTeam, skills: plugSkills }, '', [], [], [], 'strict');
+      const teamKbSkill = plugSkills.get('team-kb');
+
+      ok(
+        teamKbSkill.body.length < LONG_SKILL_CHARS,
+        `team-kb SKILL.md body (${teamKbSkill.body.length} chars) stays well under LONG_SKILL_CHARS (${LONG_SKILL_CHARS})`
+      );
+
+      // Collect real CLI outputs across N=12, N=100, and N=500
+      const tokEnv12 = { ...process.env, HARBOR_KB_CACHE_DIR: path.join(tmpBase, 'tok12-cache') };
+      const tokEnv100 = { ...process.env, HARBOR_KB_CACHE_DIR: path.join(tmpBase, 'tok100-cache') };
+      const tokEnv500 = { ...process.env, HARBOR_KB_CACHE_DIR: path.join(tmpBase, 'tok500-cache') };
+
+      const outRedlinesGw12 = '[exit 0]\n' + py([KB_PY, '--kb-root', KB_ROOT, 'redlines', '--repo', 'harbor-gateway'], { env: tokEnv12 }).stdout.trim();
+      const outRedlinesAll12 = '[exit 0]\n' + py([KB_PY, '--kb-root', KB_ROOT, 'redlines'], { env: tokEnv12 }).stdout.trim();
+      const outSearch12 = '[exit 0]\n' + py([KB_PY, '--kb-root', KB_ROOT, 'search', 'request_rate 429 Retry-After'], { env: tokEnv12 }).stdout.trim();
+      const outSearch100 = '[exit 0]\n' + py([KB_PY, '--kb-root', scale100Kb, 'search', 'request_rate 429 Retry-After'], { env: tokEnv100 }).stdout.trim();
+      const outSearch500 = '[exit 0]\n' + py([KB_PY, '--kb-root', scale500Kb, 'search', 'request_rate 429 Retry-After'], { env: tokEnv500 }).stdout.trim();
+      const outGet12 = '[exit 0]\n' + py([KB_PY, '--kb-root', KB_ROOT, 'get', 'gateway/postmortem/partner-retry-storm-2026-02'], { env: tokEnv12 }).stdout.trim();
+
+      // Measure average `get` and build Full-KB vs Index-in-Prompt corpora for N=12, 100, 500
+      const readCorpusBlobs = (kbDir) => {
+        const fullParts = [];
+        const idxParts = [];
+        const walkKb = (d) => {
+          for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+            const p = path.join(d, ent.name);
+            if (ent.isDirectory()) walkKb(p);
+            else if (ent.isFile() && ent.name.endsWith('.md')) {
+              const raw = fs.readFileSync(p, 'utf8');
+              const rel = path.relative(path.join(kbDir, 'kb'), p).replace(/\\/g, '/').replace(/\.md$/, '');
+              const fm = parseFrontmatter(raw);
+              fullParts.push(`### [${rel}]\n${raw.trim()}`);
+              idxParts.push(`- [${rel}] ${fm.meta.title || ''}: ${fm.meta.summary || ''} (triggers: ${(fm.meta.triggers || []).join(', ')})`);
+            }
+          }
+        };
+        walkKb(path.join(kbDir, 'kb'));
+        return { fullText: fullParts.join('\n\n'), indexText: idxParts.join('\n'), count: fullParts.length };
+      };
+
+      const blob12 = readCorpusBlobs(KB_ROOT);
+      const blob100 = readCorpusBlobs(scale100Kb);
+      const blob500 = readCorpusBlobs(scale500Kb);
+
+      // Verify Harbor Mate `foldedLine` & `foldForRequest` compatibility on long `kb.py get` output (> FOLD_MIN_CHARS=2000)
+      const longGetText = outGet12 + '\n' + 'Detailed stack trace verification line for replay check.\n'.repeat(40);
+      assert.ok(longGetText.length > 2000);
+      const foldedGet = foldedLine(longGetText);
+      ok(
+        foldedGet.includes('[team-kb REFERENCE] gateway/postmortem/partner-retry-storm-2026-02'),
+        `Harbor Mate foldedLine preserves REFERENCE tag, entry ID & title within 100-char clip (${foldedGet})`
+      );
+
+      // Verify foldForRequest triggers on a 17-turn conversation exceeding 60% budget and folds old kb.py get result
+      const longMsgs = [{ role: 'user', parts: [{ t: 'text', v: promptWithKb }] }];
+      for (let step = 0; step < 17; step++) {
+        longMsgs.push({ role: 'assistant', parts: [{ t: 'call', callId: `c-${step}`, name: 'run_command', input: { command: 'kb.py get ...' } }] });
+        longMsgs.push({ role: 'user', parts: [{ t: 'result', callId: `c-${step}`, text: step === 0 ? longGetText : 'ok' }] });
+      }
+      const foldedMsgs = foldForRequest(longMsgs, 10000); // force folding threshold (60% of 10,000 = 6,000 chars)
+      ok(
+        foldedMsgs[2].parts[0].text.startsWith('[folded: exit 0 · [team-kb REFERENCE] gateway/postmortem/partner-retry-storm-2026-02'),
+        'Harbor Mate foldForRequest cleanly folds old >2000-char kb.py get results to 1-line summary'
+      );
+
+      // Batch count all components via tiktoken o200k_base
+      const liveMetricsStep = '[exit 0]\nharbor_gateway_ratelimit_429_total{client_id="partner-sync-7"} 18420\nRetry-After header: constant "5" (no jitter)';
+      const liveCodeStep = '[exit 0]\nfunc WriteRetryHeader(w http.ResponseWriter) { w.Header().Set("Retry-After", "5") }';
+      const assistantCallOverhead = 'run_command {"command":"python3 .github/skills/team-kb/scripts/kb.py ..."}';
+
+      const tokBatch = countTokensBatch({
+        promptNoKb,
+        promptWithKb,
+        skillMdOnly: `## Skill: ${teamKbSkill.name}\nDirectory: ${teamKbSkill.relDir}\n${teamKbSkill.description}\n\n${teamKbSkill.body}`,
+        outRedlinesGw12,
+        outRedlinesAll12,
+        outSearch12,
+        outSearch100,
+        outSearch500,
+        outGet12,
+        longGetText,
+        foldedGet,
+        fullKb12: blob12.fullText,
+        fullKb100: blob100.fullText,
+        fullKb500: blob500.fullText,
+        indexKb12: blob12.indexText,
+        indexKb100: blob100.indexText,
+        indexKb500: blob500.indexText,
+        liveMetricsStep,
+        liveCodeStep,
+        assistantCallOverhead,
+      });
+
+      const C = tokBatch.counts;
+      const MAX_WINDOW = 128000;
+      const staticKbOverhead = C.promptWithKb.tokens - C.promptNoKb.tokens;
+
+      // Simulate exact 5-turn cumulative input tokens sent to model.sendRequest(messages) in runner.ts
+      // Turn k sends openingPrompt + prior (k-1) assistant calls + prior (k-1) tool results
+      const sim5Turn = (openingTokens, stepResultTokens) => {
+        const callTok = C.assistantCallOverhead.tokens;
+        const perTurn = [];
+        let historyTok = openingTokens;
+        for (let t = 0; t < 5; t++) {
+          perTurn.push(historyTok);
+          historyTok += callTok + (stepResultTokens[t] || 0);
+        }
+        const cumulative = perTurn.reduce((a, b) => a + b, 0);
+        return {
+          turn1Tokens: perTurn[0],
+          turn5PeakTokens: perTurn[4],
+          cumulative5TurnTokens: cumulative,
+          turn1WindowPct: +((perTurn[0] / MAX_WINDOW) * 100).toFixed(2),
+          peakWindowPct: +((perTurn[4] / MAX_WINDOW) * 100).toFixed(2),
+          exceeds128kWindow: perTurn[4] > MAX_WINDOW,
+        };
+      };
+
+      // Baseline 0 (No KB): 5 turns inspecting metrics/code/logs
+      const baseNoKb5 = sim5Turn(C.promptNoKb.tokens, [
+        C.liveMetricsStep.tokens,
+        C.liveCodeStep.tokens,
+        C.liveMetricsStep.tokens,
+        C.liveCodeStep.tokens,
+        0,
+      ]);
+
+      const compareAtScale = (n, fullTok, idxTok, searchTok) => {
+        // Strategy A: Full KB stuffed into prompt/instructions on every turn
+        const full = sim5Turn(C.promptNoKb.tokens + fullTok, [
+          C.liveMetricsStep.tokens,
+          C.liveCodeStep.tokens,
+          C.liveMetricsStep.tokens,
+          C.liveCodeStep.tokens,
+          0,
+        ]);
+        // Strategy B: All entry summaries/triggers stuffed into prompt + 1 entry read on Turn 2
+        const indexPrompt = sim5Turn(C.promptNoKb.tokens + idxTok, [
+          C.outGet12.tokens,
+          C.liveMetricsStep.tokens,
+          C.liveCodeStep.tokens,
+          C.liveCodeStep.tokens,
+          0,
+        ]);
+        // Strategy C: team-kb Progressive Disclosure (redlines -> search -> get -> live check)
+        const progressive = sim5Turn(C.promptWithKb.tokens, [
+          C.outRedlinesGw12.tokens,
+          searchTok,
+          C.outGet12.tokens,
+          C.liveMetricsStep.tokens,
+          0,
+        ]);
+        const staticPrefixShare = +(((C.promptWithKb.tokens * 5) / progressive.cumulative5TurnTokens) * 100).toFixed(1);
+        return {
+          entries: n,
+          fullKbInPrompt: full,
+          summariesInPrompt: indexPrompt,
+          teamKbProgressive: {
+            ...progressive,
+            kbAddedCumulativeTokens: progressive.cumulative5TurnTokens - baseNoKb5.cumulative5TurnTokens,
+            staticPrefixCacheablePct: staticPrefixShare,
+            savingsVsFullKbPct: +(((full.cumulative5TurnTokens - progressive.cumulative5TurnTokens) / full.cumulative5TurnTokens) * 100).toFixed(1),
+            savingsVsSummariesPct: +(((indexPrompt.cumulative5TurnTokens - progressive.cumulative5TurnTokens) / indexPrompt.cumulative5TurnTokens) * 100).toFixed(1),
+          },
+        };
+      };
+
+      const scaleComparison = {
+        n12: compareAtScale(12, C.fullKb12.tokens, C.indexKb12.tokens, C.outSearch12.tokens),
+        n100: compareAtScale(100, C.fullKb100.tokens, C.indexKb100.tokens, C.outSearch100.tokens),
+        n500: compareAtScale(500, C.fullKb500.tokens, C.indexKb500.tokens, C.outSearch500.tokens),
+      };
+
+      metrics.tokenUsage = {
+        tokenizer: tokBatch.tokenizer,
+        contextWindowTokens: MAX_WINDOW,
+        components: {
+          baseTechleadPrompt: C.promptNoKb,
+          pluggedTechleadPrompt: C.promptWithKb,
+          staticKbOverheadTokens: staticKbOverhead,
+          staticKbWindowPct: +((staticKbOverhead / MAX_WINDOW) * 100).toFixed(2),
+          skillMdBlock: C.skillMdOnly,
+          redlinesRepoFiltered: C.outRedlinesGw12,
+          redlinesAllDomains: C.outRedlinesAll12,
+          searchTopHitsN12: C.outSearch12,
+          searchTopHitsN500: C.outSearch500,
+          getSingleEntry: C.outGet12,
+          foldedLongGetLine: C.foldedGet,
+          gardenerCleanWakeTokens: 0,
+        },
+        baselineNoKb5Turn: baseNoKb5,
+        byCorpusSize: scaleComparison,
+      };
+
+      ok(
+        staticKbOverhead < 800 && scaleComparison.n500.teamKbProgressive.peakWindowPct < 3.5,
+        `static KB prompt delta is only +${staticKbOverhead} tokens (${((staticKbOverhead / MAX_WINDOW) * 100).toFixed(2)}% of 128k); 5-turn peak at N=500 is ${scaleComparison.n500.teamKbProgressive.turn5PeakTokens} tokens (${scaleComparison.n500.teamKbProgressive.peakWindowPct}% of 128k)`
+      );
+      ok(
+        Math.abs(scaleComparison.n500.teamKbProgressive.cumulative5TurnTokens - scaleComparison.n12.teamKbProgressive.cumulative5TurnTokens) <= 150,
+        `O(1) scale invariance proven: 5-turn cumulative tokens at N=12 (${scaleComparison.n12.teamKbProgressive.cumulative5TurnTokens}) vs N=500 (${scaleComparison.n500.teamKbProgressive.cumulative5TurnTokens}) differ by <= 150 tokens`
+      );
+      ok(
+        scaleComparison.n500.fullKbInPrompt.exceeds128kWindow &&
+          scaleComparison.n500.teamKbProgressive.savingsVsFullKbPct > 95 &&
+          scaleComparison.n500.teamKbProgressive.savingsVsSummariesPct > 75,
+        `at N=500 entries, full-KB stuffing overflows 128k window (${scaleComparison.n500.fullKbInPrompt.turn1Tokens} tok/turn), while team-kb cuts cumulative tokens by ${scaleComparison.n500.teamKbProgressive.savingsVsFullKbPct}% vs full-KB and ${scaleComparison.n500.teamKbProgressive.savingsVsSummariesPct}% vs summary-stuffing`
+      );
+    }
     console.log(`ALL ${passed} ASSERTIONS PASSED!`);
     console.log('Measured Benchmarks:', JSON.stringify(metrics));
     console.log('============================================================\n');

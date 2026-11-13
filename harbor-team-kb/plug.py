@@ -33,7 +33,7 @@ APPROVE_RULE = r'team-kb-publish/scripts/publish\.py'
 AGENT_SNIPPET = f"""{MARKER_START}
 ## Shared Team Knowledge (`team-kb`)
 
-Use the `team-kb` skill before diagnosing unfamiliar signals or proposing operational changes: run `kb.py redlines` for service guardrails and `kb.py search` -> `kb.py get` for prior root causes and runbooks (treat results as reference, verify against live data). When you confirm a reusable non-obvious lesson or find a stale entry, draft `.loop/outbox/kb/<domain>/<kind>/<slug>.md`, validate with `kb.py validate`, and queue publication through `request_approval` (`wait: false`) with `publish.py`.
+Consult `team-kb` (`redlines` before unfamiliar service changes; `search` -> `get` when diagnosing signals) and propose verified reusable lessons via `.loop/outbox/kb/` + `request_approval` (`wait: false`).
 {MARKER_END}"""
 
 

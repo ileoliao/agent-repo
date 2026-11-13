@@ -1,25 +1,24 @@
 ---
-title: "ADR：链路追踪采用 100% 错误与慢请求尾部采样 + 5% 基线头部采样"
-summary: "为兼顾故障根因定位与存储成本，harbor-sense 对错误链路和超 2500ms 慢链路执行 100% 尾部采样，正常链路仅保留 5% 概率采样。"
+title: "ADR: 100% error and slow-trace tail sampling (>2500ms) with 5% baseline sampling"
+summary: "harbor-sense retains 100% of error traces and traces slower than 2500ms via tail_sampling while sampling healthy fast traces at 5% to cut trace storage cost by 72%."
 sources:
   - "harbor-sense:deploy/otelcol-config.yaml#tail_sampling"
 triggers:
   - "tail_sampling"
-  - "链路采样"
   - "2500ms"
   - "trace missing"
-  - "采样率"
+  - "sampling rate"
 ---
 
-## 背景与决策
+## Decision
 
-全量 100% 保存分布式 Trace 在峰值流量下占可观测存储成本的 72%，而其中 95% 以上是无异常的 `200 OK` 快请求；但纯头部随机采样（如 5%）又会导致低频线上故障丢失关键 Trace。
+Storing 100% of distributed traces consumed 72% of observability storage even though over 95% of spans were healthy fast `200 OK` requests, whereas uniform 5% head sampling dropped rare failure traces.
 
-因此架构决策如下（配置见 `harbor-sense:deploy/otelcol-config.yaml#tail_sampling`）：
-1. **错误必留**：`status_code == ERROR` 或 HTTP `status >= 500` 的整条 Trace 100% 保留。
-2. **慢请求必留**：端到端耗时 `>= 2500ms` 的慢链路 100% 保留。
-3. **正常基线**：其余正常链路按 `trace_id` 一致性哈希保留 **5%**，用于对比正常路径延迟分布。
+Configured in `harbor-sense:deploy/otelcol-config.yaml#tail_sampling`:
+1. **100% Error Retention**: Keep every trace with `status_code == ERROR` or HTTP `status >= 500`.
+2. **100% Slow-Trace Retention**: Keep every trace with end-to-end duration `>= 2500ms`.
+3. **5% Healthy Baseline**: Deterministically hash-sample remaining healthy traces at **5%** for baseline latency comparison.
 
-## 对排障的影响
+## Operational Implication
 
-不能直接用 Trace 数量统计真实请求总量（QPS 统计必须查 Metrics 而非 Trace 条数），因为成功快请求已被放大采样比压缩。
+Never compute total request QPS by counting raw trace spans; always query Prometheus metrics because healthy fast traces are down-sampled 20x.

@@ -16,6 +16,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -30,14 +31,17 @@ except ImportError:  # Windows fallback: atomic rename still protects index file
 KINDS = ('redline', 'gotcha', 'runbook', 'adr', 'postmortem')
 SLUG_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
 CJK_RUN_RE = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+')
+CJK_SPLIT_RE = re.compile(
+    r'(?:为什么|为何|怎么处理|怎么解决|怎么办|怎么|如何|是不是|能不能|多长时间|多久|请问|突然|偶发|已经|需要|才能|之后|时候|[的了在是把被对与和或而且但却也都就还只当因按将吗呢吧啊])+'
+)
 ASCII_TOKEN_RE = re.compile(r'[A-Za-z0-9]+(?:[._:/+#-][A-Za-z0-9]+)*')
 CAMEL_SPLIT_RE = re.compile(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
 OUTBOX_KB = os.path.join('.loop', 'outbox', 'kb')
 POINTER_REL = os.path.join(OUTBOX_KB, '.kb_root')
-SEARCH_MAX_CHARS = 4000
+SEARCH_MAX_CHARS = 3200
 GET_MAX_CHARS = 12000
 SYNC_TTL_SEC = 600
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SECRET_CHECKS = (
     (re.compile(r'\bgh' + r'[pousr]_[A-Za-z0-9]{20,}'), 'GitHub token'),
@@ -50,10 +54,27 @@ SECRET_CHECKS = (
 )
 
 STOPWORDS = frozenset({
-    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'how', 'in',
-    'into', 'is', 'it', 'of', 'on', 'or', 'that', 'the', 'this', 'to', 'was',
-    'what', 'when', 'where', 'which', 'who', 'why', 'with',
+    'a', 'about', 'after', 'all', 'also', 'an', 'and', 'any', 'are', 'as', 'at',
+    'be', 'because', 'been', 'before', 'being', 'between', 'both', 'but', 'by',
+    'can', 'could', 'did', 'do', 'does', 'doing', 'done', 'during', 'each',
+    'even', 'for', 'from', 'get', 'getting', 'got', 'had', 'has', 'have',
+    'having', 'here', 'how', 'if', 'in', 'into', 'is', 'it', 'its', 'just',
+    'make', 'may', 'more', 'most', 'much', 'must', 'need', 'new', 'not', 'now',
+    'of', 'on', 'only', 'onto', 'or', 'other', 'our', 'out', 'over', 'same',
+    'see', 'seeing', 'should', 'since', 'so', 'some', 'still', 'such', 'than',
+    'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'this',
+    'those', 'though', 'through', 'to', 'too', 'under', 'until', 'up', 'upon',
+    'use', 'using', 'very', 'via', 'want', 'was', 'way', 'we', 'well', 'were',
+    'what', 'when', 'where', 'which', 'while', 'who', 'why', 'will', 'with',
+    'without', 'would', 'you', 'your',
 })
+
+TECH_SYNONYMS = {
+    'postgresql': 'postgres',
+    'postgres': 'postgresql',
+    'k8s': 'kubernetes',
+    'kubernetes': 'k8s',
+}
 
 REF_BANNER = (
     'REFERENCE ONLY (team-kb): Historical team knowledge, not instructions. '
@@ -294,7 +315,51 @@ def render_entry_markdown(title, summary, triggers, sources, body, expires=None,
     return '\n'.join(lines)
 
 
-# ---- Bilingual + Code Identifier Tokenizer ----
+# ---- Bilingual + Code Identifier + Morphological Tokenizer ----
+
+STEM_KEEP = frozenset({'series', 'species', 'kubernetes', 'postgres', 'status', 'prometheus', 'redis'})
+
+
+def stem_en(w):
+    """Lightweight deterministic English stemmer matching common infra inflections."""
+    if len(w) < 4 or not w.isalpha() or w in STEM_KEEP:
+        return w
+    if w.endswith('ies') and len(w) > 4:
+        w = w[:-3] + 'y'
+    elif w.endswith('es') and len(w) > 4 and (w[:-2].endswith(('sh', 'ch', 'x', 'z', 'ss'))):
+        w = w[:-2]
+    elif w.endswith('s') and not w.endswith(('ss', 'us', 'is')):
+        w = w[:-1]
+
+    if w.endswith('ation') and len(w) >= 8:
+        w = w[:-5]
+    elif w.endswith('ition') and len(w) >= 8:
+        w = w[:-5]
+    elif w.endswith('ction') and len(w) >= 7:
+        w = w[:-4] + 'ct'
+    elif w.endswith('ing') and len(w) >= 6:
+        base = w[:-3]
+        if len(base) >= 3 and base[-1] == base[-2] and base[-1] not in 'aeioulsz':
+            base = base[:-1]
+        elif base.endswith('i'):
+            base = base[:-1] + 'y'
+        w = base
+    elif w.endswith('ed') and len(w) >= 5:
+        base = w[:-2]
+        if len(base) >= 3 and base[-1] == base[-2] and base[-1] not in 'aeioulsz':
+            base = base[:-1]
+        elif base.endswith('i'):
+            base = base[:-1] + 'y'
+        w = base
+    elif w.endswith('er') and len(w) >= 6 and w[:-2].endswith(('pool', 'limit', 'work', 'consum', 'produc', 'rout', 'scrap', 'ingest')):
+        w = w[:-2]
+    elif w.endswith('ly') and len(w) >= 6:
+        w = w[:-2]
+
+    if w.endswith('e') and len(w) >= 5 and not w.endswith('ee'):
+        w = w[:-1]
+    return w
+
 
 def expand_ascii_token(tok):
     out = []
@@ -304,6 +369,9 @@ def expand_ascii_token(tok):
     compact = re.sub(r'[^a-z0-9]+', '', low)
     if compact and compact not in STOPWORDS:
         out.append(compact)
+        syn = TECH_SYNONYMS.get(compact)
+        if syn and syn not in out:
+            out.append(syn)
     raw_parts = re.split(r'[._:/+#-]+', tok)
     for part in raw_parts:
         if not part:
@@ -311,10 +379,16 @@ def expand_ascii_token(tok):
         p_low = part.lower()
         if p_low not in STOPWORDS and p_low not in out:
             out.append(p_low)
+            syn = TECH_SYNONYMS.get(p_low)
+            if syn and syn not in out:
+                out.append(syn)
         for sub in CAMEL_SPLIT_RE.split(part):
             s_low = sub.lower()
             if len(s_low) >= 2 and s_low not in STOPWORDS and s_low not in out:
                 out.append(s_low)
+                syn = TECH_SYNONYMS.get(s_low)
+                if syn and syn not in out:
+                    out.append(syn)
     return out
 
 
@@ -331,23 +405,45 @@ def segment_for_index(text):
     for m in ASCII_TOKEN_RE.finditer(text):
         tokens.extend(expand_ascii_token(m.group(0)))
     for m in CJK_RUN_RE.finditer(text):
-        run = m.group(0)
-        tokens.extend(expand_cjk_run(run))
+        tokens.extend(expand_cjk_run(m.group(0)))
     return ' '.join(tokens)
 
 
+def enrich_with_stems(tokens):
+    out = set(tokens)
+    for t in tokens:
+        if t.isalpha() and len(t) >= 4:
+            out.add(f'~{stem_en(t)}')
+    return out
+
+
 def parse_query_clauses(query_text):
-    """Break a query into clauses so BM25 OR recall pairs with multi-clause precision."""
+    """Break a query into atomic technical clauses across English, code symbols, and optional CJK."""
     clauses = []
     for chunk in (query_text or '').split():
         for m in ASCII_TOKEN_RE.finditer(chunk):
             toks = expand_ascii_token(m.group(0))
             if toks:
-                clauses.append({'kind': 'ascii', 'raw': m.group(0).lower(), 'tokens': toks})
+                stems = [f'~{stem_en(t)}' for t in toks if t.isalpha() and len(t) >= 4]
+                clauses.append({
+                    'kind': 'ascii',
+                    'orig': m.group(0),
+                    'raw': m.group(0).lower(),
+                    'fts_tokens': toks,
+                    'match_tokens': toks + [s for s in stems if s not in toks],
+                })
         for m in CJK_RUN_RE.finditer(chunk):
-            toks = expand_cjk_run(m.group(0))
-            if toks:
-                clauses.append({'kind': 'cjk', 'raw': m.group(0), 'tokens': toks})
+            raw_run = m.group(0)
+            sub_runs = [s for s in CJK_SPLIT_RE.split(raw_run) if s]
+            if not sub_runs:
+                sub_runs = [raw_run]
+            for sr in sub_runs:
+                bigrams = expand_cjk_run(sr)
+                if len(sr) <= 3:
+                    clauses.append({'kind': 'cjk', 'raw': sr, 'fts_tokens': bigrams, 'match_tokens': bigrams})
+                else:
+                    for bg in bigrams:
+                        clauses.append({'kind': 'cjk_bg', 'raw': bg, 'fts_tokens': [bg], 'match_tokens': [bg]})
     return clauses
 
 
@@ -449,6 +545,7 @@ def ensure_index(kb_root):
             conn.executescript(
                 """
                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE token_df (token TEXT PRIMARY KEY, df INTEGER NOT NULL);
                 CREATE TABLE docs (
                     id TEXT PRIMARY KEY,
                     domain TEXT NOT NULL,
@@ -471,11 +568,13 @@ def ensure_index(kb_root):
                     summary_seg,
                     sources_seg,
                     body_seg,
-                    tokenize = 'unicode61'
+                    tokenize = 'porter unicode61'
                 );
                 """
             )
             conn.execute("INSERT INTO meta(key, value) VALUES ('fingerprint', ?)", (fp,))
+            conn.execute("INSERT INTO meta(key, value) VALUES ('doc_count', ?)", (str(len(files)),))
+            df_counts = {}
             for abs_p, _, domain, kind, slug, entry_id in files:
                 e = load_entry_from_file(abs_p, domain, kind, slug, entry_id)
                 title_seg = segment_for_index(f'{domain} {slug} {e["title"]}')
@@ -483,7 +582,10 @@ def ensure_index(kb_root):
                 sum_seg = segment_for_index(e['summary'])
                 src_seg = segment_for_index(' '.join(e['sources']))
                 body_seg = segment_for_index(e['body'])
-                token_set = sorted(set(f'{title_seg} {trig_seg} {sum_seg} {src_seg} {body_seg}'.split()))
+                base_tokens = f'{title_seg} {trig_seg} {sum_seg} {src_seg} {body_seg}'.split()
+                token_set = sorted(enrich_with_stems(base_tokens))
+                for tok in token_set:
+                    df_counts[tok] = df_counts.get(tok, 0) + 1
                 conn.execute(
                     'INSERT INTO docs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (
@@ -499,6 +601,7 @@ def ensure_index(kb_root):
                     'INSERT INTO docs_fts VALUES (?, ?, ?, ?, ?, ?)',
                     (e['id'], title_seg, trig_seg, sum_seg, src_seg, body_seg),
                 )
+            conn.executemany('INSERT INTO token_df VALUES (?, ?)', df_counts.items())
             conn.commit()
         finally:
             conn.close()
@@ -516,19 +619,58 @@ def is_expired_date(expires_str, today):
         return False
 
 
+def compute_idf(total_docs, df):
+    n = max(1, total_docs)
+    d = min(max(0, df), n)
+    return math.log(1.0 + (n - d + 0.5) / (d + 0.5))
+
+
 def rank_search(conn, query_text, today, domain=None, kind=None, limit=5, exclude_id=None):
     clauses = parse_query_clauses(query_text)
     if not clauses:
         return []
-    unique_q_tokens = []
+    unique_fts_tokens = []
+    all_lookup_tokens = set()
     for cl in clauses:
-        for t in cl['tokens']:
-            if t not in unique_q_tokens:
-                unique_q_tokens.append(t)
-    if not unique_q_tokens:
+        for t in cl['fts_tokens']:
+            if t not in unique_fts_tokens:
+                unique_fts_tokens.append(t)
+        all_lookup_tokens.update(cl['match_tokens'])
+    if not unique_fts_tokens:
         return []
 
-    fts_expr = ' OR '.join(f'"{t}"' for t in unique_q_tokens)
+    n_row = conn.execute("SELECT value FROM meta WHERE key = 'doc_count'").fetchone()
+    total_docs = int(n_row[0]) if n_row else 1
+    rare_idf = max(1.0, compute_idf(total_docs, 1))
+    placeholders = ','.join('?' for _ in all_lookup_tokens)
+    df_map = dict(
+        conn.execute(f'SELECT token, df FROM token_df WHERE token IN ({placeholders})', tuple(all_lookup_tokens)).fetchall()
+    ) if all_lookup_tokens else {}
+
+    has_cjk_query = any(cl['kind'] in ('cjk', 'cjk_bg') for cl in clauses)
+    clause_weights = []
+    for cl in clauses:
+        primary = cl['match_tokens'][0]
+        stem_alt = f'~{stem_en(primary)}' if primary.isalpha() and len(primary) >= 4 else primary
+        best_df = df_map.get(primary)
+        if best_df is None and stem_alt in df_map:
+            best_df = df_map[stem_alt]
+        if best_df is None:
+            orig = cl.get('orig', '')
+            is_tech_sym = (
+                any(ch.isdigit() or ch in '_.:/-' for ch in orig)
+                or (len(orig) >= 2 and orig.isupper())
+                or bool(CAMEL_SPLIT_RE.search(orig))
+            )
+            w = rare_idf if is_tech_sym else (0.72 * rare_idf)
+        else:
+            w = max(0.35, compute_idf(total_docs, best_df))
+        if cl['kind'] == 'cjk_bg':
+            w *= 0.65
+        clause_weights.append(w)
+    total_weight = sum(clause_weights) or 1.0
+
+    fts_expr = ' OR '.join(f'"{t}"' for t in unique_fts_tokens)
     sql = """
         SELECT d.id, d.domain, d.kind, d.path, d.title, d.summary,
                d.triggers_json, d.sources_json, d.expires, d.disputed, d.all_tokens,
@@ -547,7 +689,7 @@ def rank_search(conn, query_text, today, domain=None, kind=None, limit=5, exclud
     if exclude_id:
         sql += ' AND d.id != ?'
         params.append(exclude_id)
-    sql += ' ORDER BY raw_bm25 ASC LIMIT 50'
+    sql += ' ORDER BY raw_bm25 ASC LIMIT 60'
 
     rows = conn.execute(sql, params).fetchall()
     scored = []
@@ -559,36 +701,81 @@ def rank_search(conn, query_text, today, domain=None, kind=None, limit=5, exclud
         triggers = json.loads(trig_json)
         sources = json.loads(src_json)
 
-        clause_hits = 0.0
-        for cl in clauses:
-            matched = sum(1 for t in cl['tokens'] if t in doc_tokens)
+        matched_weight = 0.0
+        matched_clauses = 0.0
+        max_matched_idf = 0.0
+        for cl, w in zip(clauses, clause_weights):
+            mt = cl['match_tokens']
+            primary = mt[0]
+            stem_alt = f'~{stem_en(primary)}' if primary.isalpha() and len(primary) >= 4 else None
+            hit_strength = 0.0
             if cl['kind'] == 'ascii':
-                if cl['tokens'][0] in doc_tokens:
-                    clause_hits += 1.0
-                elif matched > 0:
-                    clause_hits += 0.55 * (matched / len(cl['tokens']))
+                if primary in doc_tokens:
+                    hit_strength = 1.0
+                elif stem_alt and stem_alt in doc_tokens:
+                    hit_strength = 0.92
+                else:
+                    sub_hits = sum(1 for t in mt[1:] if t in doc_tokens)
+                    if sub_hits > 0:
+                        hit_strength = 0.65 * (sub_hits / max(1, len(mt) - 1))
+            elif cl['kind'] == 'cjk_bg':
+                if primary in doc_tokens:
+                    hit_strength = 1.0
             else:
-                if matched > 0:
-                    ratio = matched / len(cl['tokens'])
-                    clause_hits += 1.0 if ratio >= 0.5 else (0.5 * ratio)
+                hits = sum(1 for t in mt if t in doc_tokens)
+                if hits > 0:
+                    ratio = hits / len(mt)
+                    hit_strength = 1.0 if ratio >= 0.5 else (0.65 * ratio)
 
-        coverage = clause_hits / len(clauses)
-        if len(clauses) >= 2 and coverage < 0.34:
-            continue
-        if len(clauses) == 1 and clause_hits < 0.5:
-            continue
+            if hit_strength > 0:
+                matched_weight += w * hit_strength
+                matched_clauses += hit_strength
+                if w > max_matched_idf:
+                    max_matched_idf = w
 
-        base = max(0.1, -float(raw_bm25))
+        idf_coverage = matched_weight / total_weight
         trig_boost = 0.0
+        cjk_trig_hit = False
+        strong_trig_hit = False
         for tr in triggers:
-            tr_low = tr.lower()
-            if tr_low and tr_low in q_low:
-                trig_boost += 4.5
-        kind_boost = 1.5 if knd == 'redline' else 0.0
+            tr_low = tr.lower().strip()
+            if not tr_low:
+                continue
+            if CJK_RUN_RE.search(tr_low):
+                if tr_low in q_low:
+                    trig_boost += 4.5
+                    cjk_trig_hit = True
+            else:
+                if re.search(rf'(?<![a-z0-9]){re.escape(tr_low)}(?![a-z0-9])', q_low):
+                    trig_boost += 4.5
+                    if len(tr_low) >= 8 or ' ' in tr_low or '_' in tr_low or bool(CAMEL_SPLIT_RE.search(tr)):
+                        strong_trig_hit = True
+
+        n_clauses = len(clauses)
+        if n_clauses == 1:
+            if matched_clauses < 0.5 or (max_matched_idf < 0.35 * rare_idf and trig_boost == 0):
+                continue
+        elif has_cjk_query and cjk_trig_hit:
+            pass
+        elif n_clauses <= 3:
+            min_cov = 0.26 if strong_trig_hit else 0.34
+            if idf_coverage < min_cov:
+                continue
+        else:
+            min_cov = 0.24 if strong_trig_hit else 0.33
+            if matched_clauses < 1.8 or idf_coverage < min_cov or max_matched_idf < 0.40 * rare_idf:
+                continue
+
+        norm_weight = matched_weight / rare_idf
+        base = max(0.1, -float(raw_bm25))
+        kind_boost = 1.2 if knd == 'redline' else 0.0
         expired = is_expired_date(expires, today)
-        penalty = (4.0 if expired else 0.0) + (2.5 if disputed else 0.0)
-        final_score = round(base * (0.4 + 1.6 * (coverage ** 1.5)) + trig_boost + kind_boost - penalty, 3)
-        if final_score <= 0.35:
+        penalty = (4.5 if expired else 0.0) + (2.8 if disputed else 0.0)
+        final_score = round(
+            base * (0.45 + 1.55 * (idf_coverage ** 1.3)) + (0.8 * norm_weight) + trig_boost + kind_boost - penalty,
+            3
+        )
+        if final_score <= 0.45:
             continue
 
         flags = []
@@ -610,7 +797,7 @@ def rank_search(conn, query_text, today, domain=None, kind=None, limit=5, exclud
             'expires': expires or None,
             'disputed': disputed or None,
             'flags': flags,
-            'coverage': round(coverage, 2),
+            'coverage': round(idf_coverage, 2),
             'score': final_score,
         })
 
@@ -784,13 +971,12 @@ def cmd_search(a):
         print(f'0 matches in team-kb for: {one_line(query_text, 120)}')
         return
 
-    lines = [REF_BANNER, f'Found {len(hits)} match(es) for "{one_line(query_text, 100)}":']
+    lines = [f'[team-kb] {len(hits)} match(es) for "{one_line(query_text, 80)}" — {REF_BANNER}']
     for i, h in enumerate(hits, 1):
         badge = (' [' + ', '.join(h['flags']) + ']') if h['flags'] else ''
         lines.append(f'{i}. [{h["id"]}]{badge} (score={h["score"]}) — {h["title"]}')
-        lines.append(f'   Summary: {h["summary"]}')
-        lines.append(f'   Sources: {", ".join(h["sources"][:4])}')
-    lines.append('Read full details before acting: python3 <team-kb>/scripts/kb.py get <id>')
+        lines.append(f'   Summary: {h["summary"]} | Sources: {", ".join(h["sources"][:3])}')
+    lines.append('Next: python3 <team-kb>/scripts/kb.py get <id>')
     out = '\n'.join(lines)
     print(out if len(out) <= SEARCH_MAX_CHARS else out[:SEARCH_MAX_CHARS] + '\n… (truncated)')
 
@@ -816,7 +1002,11 @@ def cmd_get(a):
         print(json.dumps(e, ensure_ascii=False, indent=2))
         return
 
-    lines = [REF_BANNER, f'ID: {e["id"]} ({e["path"]})', f'Title: {e["title"]}', f'Summary: {e["summary"]}']
+    lines = [
+        f'[team-kb REFERENCE] {e["id"]} — {e["title"]}',
+        f'{REF_BANNER}',
+        f'Path: {e["path"]} | Summary: {e["summary"]}',
+    ]
     if expired:
         lines.append(f'WARNING [EXPIRED {e["expires"]}]: Temporary workaround passed its expiry date; verify before using.')
     if e['disputed']:

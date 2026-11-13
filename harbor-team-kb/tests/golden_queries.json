@@ -1,85 +1,346 @@
 [
   {
-    "name": "2-char Chinese term: 限流 (validates CJK bigram fix over FTS5 trigram blindspot)",
-    "query": "限流",
-    "expect_top1": "gateway/redline/rate-limit-shadow-mode-first",
-    "expect_in_top5": ["gateway/redline/rate-limit-shadow-mode-first"]
-  },
-  {
-    "name": "2-char Chinese term: 死锁",
-    "query": "死锁",
-    "expect_top1": "storage/runbook/redis-hotkey-lock-contention-mitigation",
-    "expect_in_top5": ["storage/runbook/redis-hotkey-lock-contention-mitigation"]
-  },
-  {
-    "name": "2-char Chinese term: 回滚",
-    "query": "回滚",
-    "expect_top1": "release/runbook/helm-schema-incompatible-safe-rollback",
-    "expect_in_top5": ["release/runbook/helm-schema-incompatible-safe-rollback"]
-  },
-  {
-    "name": "camelCase code identifier subtoken match: RateLimitConfig",
+    "category": "symbol_code",
+    "name": "CamelCase Go struct: RateLimitConfig",
     "query": "RateLimitConfig",
     "expect_top1": "gateway/redline/rate-limit-shadow-mode-first",
     "expect_in_top5": ["gateway/redline/rate-limit-shadow-mode-first"]
   },
   {
-    "name": "Partial camelCase words: Upstream Dialer RST_STREAM 503",
+    "category": "symbol_code",
+    "name": "Split CamelCase + HTTP/2 frame: Upstream Dialer RST_STREAM 503",
     "query": "Upstream Dialer RST_STREAM 503",
     "expect_top1": "gateway/gotcha/grpc-keepalive-rst-stream-burst",
     "expect_in_top5": ["gateway/gotcha/grpc-keepalive-rst-stream-burst"]
   },
   {
-    "name": "Sentinel incident diagnosis: request_rate 3.4x retry storm 429",
-    "query": "request_rate 429 Retry-After 重试风暴",
+    "category": "symbol_code",
+    "name": "Middleware function + status code: WriteRetryHeader 429",
+    "query": "WriteRetryHeader 429",
     "expect_top1": "gateway/postmortem/partner-retry-storm-2026-02",
     "expect_in_top5": ["gateway/postmortem/partner-retry-storm-2026-02"]
   },
   {
-    "name": "snake_case config key: memory_limiter OOMKilled otelcol",
+    "category": "symbol_code",
+    "name": "snake_case config key: otelcol memory_limiter OOMKilled",
     "query": "otelcol memory_limiter OOMKilled",
     "expect_top1": "observability/redline/otel-memory-limiter-before-batch",
     "expect_in_top5": ["observability/redline/otel-memory-limiter-before-batch"]
   },
   {
-    "name": "False positive spike after pod restart: error_rate counter reset",
-    "query": "harbor-ingester 重启后 error_rate 假阳性 counter reset",
-    "expect_top1": "observability/gotcha/harborsense-counter-reset-false-spike",
-    "expect_in_top5": ["observability/gotcha/harborsense-counter-reset-false-spike"]
-  },
-  {
-    "name": "Exact error string: ErrSeriesLimitExceeded高基数",
-    "query": "ErrSeriesLimitExceeded 高基数 labeldrop",
+    "category": "symbol_code",
+    "name": "Exact TSDB error identifier: ErrSeriesLimitExceeded",
+    "query": "ErrSeriesLimitExceeded",
     "expect_top1": "observability/runbook/high-cardinality-label-quarantine",
     "expect_in_top5": ["observability/runbook/high-cardinality-label-quarantine"]
   },
   {
-    "name": "Architecture why question: 为什么 trace 只有 5% 采样率 2500ms",
-    "query": "为什么正常链路采样率只有 5% 2500ms",
+    "category": "symbol_code",
+    "name": "PostgreSQL SQLSTATE code: SQLSTATE 42P05",
+    "query": "SQLSTATE 42P05",
+    "expect_top1": "storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt",
+    "expect_in_top5": ["storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt"]
+  },
+  {
+    "category": "symbol_code",
+    "name": "Rollout template symbol: CanaryAnalysisTemplate",
+    "query": "CanaryAnalysisTemplate",
+    "expect_top1": "release/redline/canary-bake-time-and-error-budget-gate",
+    "expect_in_top5": ["release/redline/canary-bake-time-and-error-budget-gate"]
+  },
+  {
+    "category": "en_inflection",
+    "name": "Inflected English: clients retrying aggressively on 429",
+    "query": "clients retrying aggressively on 429",
+    "expect_top1": "gateway/postmortem/partner-retry-storm-2026-02",
+    "expect_in_top5": ["gateway/postmortem/partner-retry-storm-2026-02"]
+  },
+  {
+    "category": "en_inflection",
+    "name": "Inflected English: grpc connections resetting every 5 minutes",
+    "query": "grpc connections resetting every 5 minutes",
+    "expect_top1": "gateway/gotcha/grpc-keepalive-rst-stream-burst",
+    "expect_in_top5": ["gateway/gotcha/grpc-keepalive-rst-stream-burst"]
+  },
+  {
+    "category": "en_inflection",
+    "name": "Inflected English: ingester pods restarting caused false error spikes",
+    "query": "ingester pods restarting caused false error spikes",
+    "expect_top1": "observability/gotcha/harborsense-counter-reset-false-spike",
+    "expect_in_top5": ["observability/gotcha/harborsense-counter-reset-false-spike"]
+  },
+  {
+    "category": "en_inflection",
+    "name": "Inflected English: prepared statements failing under connection pooling",
+    "query": "prepared statements failing under connection pooling",
+    "expect_top1": "storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt",
+    "expect_in_top5": ["storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt"]
+  },
+  {
+    "category": "en_inflection",
+    "name": "Inflected + postgres synonym: adding indexes on large postgres tables without locking",
+    "query": "adding indexes on large postgres tables without locking",
+    "expect_top1": "storage/redline/postgres-index-concurrently-without-tx",
+    "expect_in_top5": ["storage/redline/postgres-index-concurrently-without-tx"]
+  },
+  {
+    "category": "en_inflection",
+    "name": "Inflected English: throttled tenant burst rollout rules",
+    "query": "throttled tenant burst rollout rules",
+    "expect_top1": "gateway/redline/rate-limit-shadow-mode-first",
+    "expect_in_top5": ["gateway/redline/rate-limit-shadow-mode-first", "gateway/postmortem/partner-retry-storm-2026-02"]
+  },
+  {
+    "category": "en_inflection",
+    "name": "Inflected English: rolling back deployments after database migrations",
+    "query": "rolling back deployments after database migrations",
+    "expect_top1": "release/runbook/helm-schema-incompatible-safe-rollback",
+    "expect_in_top5": ["release/runbook/helm-schema-incompatible-safe-rollback"]
+  },
+  {
+    "category": "en_natural_question",
+    "name": "Natural question: ship gateway rate limit quota straight to prod",
+    "query": "Can we ship a gateway rate limit quota change straight to production enforcing mode?",
+    "expect_top1": "gateway/redline/rate-limit-shadow-mode-first",
+    "expect_in_top5": ["gateway/redline/rate-limit-shadow-mode-first"]
+  },
+  {
+    "category": "en_natural_question",
+    "name": "Natural question: why upstream gRPC calls fail intermittently with 503",
+    "query": "Why do upstream gRPC calls fail intermittently with 503 every 5 minutes while backend CPU is flat?",
+    "expect_top1": "gateway/gotcha/grpc-keepalive-rst-stream-burst",
+    "expect_in_top5": ["gateway/gotcha/grpc-keepalive-rst-stream-burst"]
+  },
+  {
+    "category": "en_natural_question",
+    "name": "Natural question: why 95% of healthy 200 OK traces are missing",
+    "query": "Why are healthy fast 200 OK traces sampled at 5% when counting spans for QPS?",
     "expect_top1": "observability/adr/hybrid-tail-sampling-error-and-latency",
     "expect_in_top5": ["observability/adr/hybrid-tail-sampling-error-and-latency"]
   },
   {
-    "name": "PostgreSQL DDL lock redline: 大表建索引锁表 CONCURRENTLY",
+    "category": "en_natural_question",
+    "name": "Natural question: which processor comes first in OpenTelemetry Collector",
+    "query": "Which processor must come first in OpenTelemetry Collector pipelines so traffic spikes do not OOM?",
+    "expect_top1": "observability/redline/otel-memory-limiter-before-batch",
+    "expect_in_top5": ["observability/redline/otel-memory-limiter-before-batch"]
+  },
+  {
+    "category": "en_natural_question",
+    "name": "Natural question: quarantine unbounded request_id metric label",
+    "query": "How should we quarantine an unbounded request_id metric label when TSDB memory climbs?",
+    "expect_top1": "observability/runbook/high-cardinality-label-quarantine",
+    "expect_in_top5": ["observability/runbook/high-cardinality-label-quarantine"]
+  },
+  {
+    "category": "en_natural_question",
+    "name": "Natural question: safe Helm rollback after database schema changes",
+    "query": "How do we safely roll back a Helm release if the deployment already applied database schema changes?",
+    "expect_top1": "release/runbook/helm-schema-incompatible-safe-rollback",
+    "expect_in_top5": ["release/runbook/helm-schema-incompatible-safe-rollback"]
+  },
+  {
+    "category": "en_natural_question",
+    "name": "Natural question: how long to hold 5% canary traffic on Tier-0 services",
+    "query": "How long do we need to hold 5% canary traffic on Tier-0 services before promoting?",
+    "expect_top1": "release/redline/canary-bake-time-and-error-budget-gate",
+    "expect_in_top5": ["release/redline/canary-bake-time-and-error-budget-gate"]
+  },
+  {
+    "category": "en_symptom_paraphrase",
+    "name": "Symptom paraphrase: sawtooth traffic waves every 5 seconds on 429",
+    "query": "sawtooth traffic waves every 5 seconds with high 429 responses from webhook workers",
+    "expect_top1": "gateway/postmortem/partner-retry-storm-2026-02",
+    "expect_in_top5": ["gateway/postmortem/partner-retry-storm-2026-02"]
+  },
+  {
+    "category": "en_symptom_paraphrase",
+    "name": "Symptom paraphrase: single Redis shard at 100% CPU and lock timeouts",
+    "query": "single Redis shard pegged at 100% CPU while cluster memory is low and distributed lock times out",
+    "expect_top1": "storage/runbook/redis-hotkey-lock-contention-mitigation",
+    "expect_in_top5": ["storage/runbook/redis-hotkey-lock-contention-mitigation"]
+  },
+  {
+    "category": "en_symptom_paraphrase",
+    "name": "Symptom paraphrase: sudden 10x error jump right after pod rollout",
+    "query": "custom anomaly query shows 10x error jump right after pod restart while gateway logs stay flat",
+    "expect_top1": "observability/gotcha/harborsense-counter-reset-false-spike",
+    "expect_in_top5": ["observability/gotcha/harborsense-counter-reset-false-spike"]
+  },
+  {
+    "category": "en_symptom_paraphrase",
+    "name": "Symptom paraphrase: intermittent statement already exists behind transaction pooler",
+    "query": "intermittent statement already exists errors on queries behind transaction pooler",
+    "expect_top1": "storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt",
+    "expect_in_top5": ["storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt"]
+  },
+  {
+    "category": "en_symptom_paraphrase",
+    "name": "Symptom paraphrase: collector pods OOM when batch precedes limiter",
+    "query": "collector pods crashing with OOMKilled during span bursts when batch runs ahead of limiter",
+    "expect_top1": "observability/redline/otel-memory-limiter-before-batch",
+    "expect_in_top5": ["observability/redline/otel-memory-limiter-before-batch"]
+  },
+  {
+    "category": "en_symptom_paraphrase",
+    "name": "Symptom paraphrase: DDL index build blocked reads and writes in postgres",
+    "query": "DDL migration blocked reads and writes waiting on table lock in postgres over 1M rows",
+    "expect_top1": "storage/redline/postgres-index-concurrently-without-tx",
+    "expect_in_top5": ["storage/redline/postgres-index-concurrently-without-tx"]
+  },
+  {
+    "category": "zh_minor",
+    "name": "2-char Chinese trigger: 限流",
+    "query": "限流",
+    "expect_top1": "gateway/redline/rate-limit-shadow-mode-first",
+    "expect_in_top5": ["gateway/redline/rate-limit-shadow-mode-first"]
+  },
+  {
+    "category": "zh_minor",
+    "name": "2-char Chinese trigger: 死锁",
+    "query": "死锁",
+    "expect_top1": "storage/runbook/redis-hotkey-lock-contention-mitigation",
+    "expect_in_top5": ["storage/runbook/redis-hotkey-lock-contention-mitigation"]
+  },
+  {
+    "category": "zh_minor",
+    "name": "2-char Chinese trigger: 回滚",
+    "query": "回滚",
+    "expect_top1": "release/runbook/helm-schema-incompatible-safe-rollback",
+    "expect_in_top5": ["release/runbook/helm-schema-incompatible-safe-rollback"]
+  },
+  {
+    "category": "zh_minor",
+    "name": "Mixed Chinese + SQL keyword: 大表建索引锁表 CONCURRENTLY",
     "query": "PostgreSQL 大表建索引锁表 CREATE INDEX CONCURRENTLY",
     "expect_top1": "storage/redline/postgres-index-concurrently-without-tx",
     "expect_in_top5": ["storage/redline/postgres-index-concurrently-without-tx"]
   },
   {
-    "name": "SQLSTATE code: pgbouncer 42P05 prepared statement",
-    "query": "pgbouncer 42P05 prepared statement already exists",
-    "expect_top1": "storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt",
-    "expect_in_top5": ["storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt"]
+    "category": "zh_minor",
+    "name": "Unspaced Chinese natural question: 为什么网关调整限流配置不能直接上线拦截",
+    "query": "为什么网关调整限流配置不能直接上线拦截",
+    "expect_top1": "gateway/redline/rate-limit-shadow-mode-first",
+    "expect_in_top5": ["gateway/redline/rate-limit-shadow-mode-first"]
   },
   {
-    "name": "Canary rollout guardrail: 金丝雀观察 20 分钟 1.5x",
-    "query": "tier0 金丝雀发布观察时间 error_rate 1.5x",
-    "expect_top1": "release/redline/canary-bake-time-and-error-budget-gate",
-    "expect_in_top5": ["release/redline/canary-bake-time-and-error-budget-gate"]
+    "category": "zero_symbol_colloquial",
+    "stress": true,
+    "name": "Colloquial zero-symbol: backend RPC drops periodically on idle TCP channels",
+    "query": "backend RPC drops periodically on idle TCP channels",
+    "reformulated_query": "gRPC 503 idle connection reset",
+    "expect_top1": "gateway/gotcha/grpc-keepalive-rst-stream-burst",
+    "expect_in_top5": ["gateway/gotcha/grpc-keepalive-rst-stream-burst"]
   },
   {
-    "name": "Unrelated noise query returns empty cleanly",
-    "query": "ios swiftui coreanimation metal shader compiler",
+    "category": "zero_symbol_colloquial",
+    "stress": true,
+    "name": "Colloquial zero-symbol: enforce API traffic cap immediately without dry run",
+    "query": "can we enforce API traffic cap immediately without dry run",
+    "reformulated_query": "gateway rate limit quota enforcing rollout",
+    "expect_top1": "gateway/redline/rate-limit-shadow-mode-first",
+    "expect_in_top5": ["gateway/redline/rate-limit-shadow-mode-first"]
+  },
+  {
+    "category": "zero_symbol_colloquial",
+    "stress": true,
+    "name": "Colloquial zero-symbol: external callers hammering endpoint in lockstep waves",
+    "query": "external callers hammering endpoint in lockstep waves",
+    "reformulated_query": "429 retry storm sawtooth backoff",
+    "expect_top1": "gateway/postmortem/partner-retry-storm-2026-02",
+    "expect_in_top5": ["gateway/postmortem/partner-retry-storm-2026-02"]
+  },
+  {
+    "category": "zero_symbol_colloquial",
+    "stress": true,
+    "name": "Colloquial zero-symbol: container killed by kernel OOM under heavy span load",
+    "query": "agent container killed by kernel OOM killer under heavy span load",
+    "reformulated_query": "otelcol OOMKilled span burst processor",
+    "expect_top1": "observability/redline/otel-memory-limiter-before-batch",
+    "expect_in_top5": ["observability/redline/otel-memory-limiter-before-batch"]
+  },
+  {
+    "category": "zero_symbol_colloquial",
+    "stress": true,
+    "name": "Colloquial zero-symbol: bogus alert jump right after k8s deploy",
+    "query": "bogus alert jump right after k8s deploy",
+    "reformulated_query": "false positive error_rate spike pod restart",
+    "expect_top1": "observability/gotcha/harborsense-counter-reset-false-spike",
+    "expect_in_top5": ["observability/gotcha/harborsense-counter-reset-false-spike"]
+  },
+  {
+    "category": "zero_symbol_colloquial",
+    "stress": true,
+    "name": "Colloquial zero-symbol: metric tag explosion blowing up time series RAM",
+    "query": "metric tag explosion blowing up time series RAM",
+    "reformulated_query": "high cardinality metric label TSDB memory",
+    "expect_top1": "observability/runbook/high-cardinality-label-quarantine",
+    "expect_in_top5": ["observability/runbook/high-cardinality-label-quarantine"]
+  },
+  {
+    "category": "zero_symbol_colloquial",
+    "stress": true,
+    "name": "Colloquial zero-symbol: throw away most normal spans to save disk",
+    "query": "why do we throw away most normal spans to save disk",
+    "reformulated_query": "healthy fast trace sampling storage cost",
+    "expect_top1": "observability/adr/hybrid-tail-sampling-error-and-latency",
+    "expect_in_top5": ["observability/adr/hybrid-tail-sampling-error-and-latency"]
+  },
+  {
+    "category": "zero_symbol_colloquial",
+    "stress": true,
+    "name": "Colloquial zero-symbol: mutex acquisition timing out when popular cache item expires",
+    "query": "mutex acquisition timing out when popular cache item expires",
+    "reformulated_query": "redis hotkey lock timeout cache stampede",
+    "expect_top1": "storage/runbook/redis-hotkey-lock-contention-mitigation",
+    "expect_in_top5": ["storage/runbook/redis-hotkey-lock-contention-mitigation"]
+  },
+  {
+    "category": "hard_negative",
+    "name": "Domain-adjacent negative (gateway): Envoy TLS cert expired x509 handshake",
+    "query": "gateway envoy TLS certificate expired x509 handshake failure",
+    "expect_empty": true
+  },
+  {
+    "category": "hard_negative",
+    "name": "Domain-adjacent negative (storage): PostgreSQL logical replication WAL disk full",
+    "query": "PostgreSQL logical replication slot WAL disk full standby lag",
+    "expect_empty": true
+  },
+  {
+    "category": "hard_negative",
+    "name": "Domain-adjacent negative (messaging): Kafka consumer group rebalance lag",
+    "query": "Kafka consumer group rebalance storm offset commit failed",
+    "expect_empty": true
+  },
+  {
+    "category": "hard_negative",
+    "name": "Domain-adjacent negative (storage): Redis sentinel split brain failover",
+    "query": "Redis cluster failover sentinel split brain replica promotion",
+    "expect_empty": true
+  },
+  {
+    "category": "hard_negative",
+    "name": "Domain-adjacent negative (observability): Prometheus remote write TLS error",
+    "query": "Prometheus remote write TLS certificate verification failed",
+    "expect_empty": true
+  },
+  {
+    "category": "hard_negative",
+    "name": "Domain-adjacent negative (release): Helm OCI registry 401 token expired",
+    "query": "Helm chart OCI registry authentication token expired 401",
+    "expect_empty": true
+  },
+  {
+    "category": "hard_negative",
+    "name": "Domain-adjacent negative (infra): Kubernetes Calico BGP session down",
+    "query": "Kubernetes CNI Calico BGP peer session down pod network unreachable",
+    "expect_empty": true
+  },
+  {
+    "category": "hard_negative",
+    "name": "Out-of-domain negative: iOS SwiftUI Metal shader compiler",
+    "query": "iOS SwiftUI CoreAnimation Metal shader compiler crash",
     "expect_empty": true
   }
 ]
