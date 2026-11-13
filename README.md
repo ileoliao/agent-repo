@@ -11,5 +11,6 @@
 
 - [harbor-extensions](harbor-extensions/README.md)：内部系统的统一受治理访问层原型（网关原样透传 + 按能力绑定 AD 组授权 + 沙箱扩展门户 + CLI/agent 同一通道），平台不存业务数据；含 outage 团队服务接入的参考实现，FastAPI + React，85 个测试含浏览器端到端。
 - [airflow-run-migrator](airflow-run-migrator/README.md)：纯 REST API 把 Airflow 2.x 失败的 DAG run（任务状态 + 全部 XCom）迁到 Airflow 3.x 并续跑；严格类型校验，歧义值靠类型提示文件，已在 2.9.2 → 3.3.2 端到端实测。
+- [harbor-team-kb](harbor-team-kb/README.md)：面向 10–20 人团队的 Harbor Mate 共享知识库技术调研与落地方案（无 MCP 约束下的 Git 原生 Markdown + SQLite FTS5 Skill CLI + 双通道 Agent 接入与异步整理闭环）。
 
 > 测试：这是一段随便写的说明文字，用于验证 PR 流程。
