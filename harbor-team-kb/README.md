@@ -105,7 +105,7 @@ harbor-team-kb/
 ├── skills/
 │   ├── team-kb/                             # 挂载至 Mate loop.skills 的检索/校验 Skill (< 4KB)
 │   │   ├── SKILL.md
-│   │   └── scripts/kb.py                    # 零依赖 Python 3 CLI (FTS5 + CJK Bigram + 锁)
+│   │   └── scripts/kb.py                    # 零依赖 Python 3 CLI (Porter FTS5 + IDF 重排 + 代码拆词 + CJK 兜底)
 │   └── team-kb-publish/                     # 仅经 request_approval 执行的发布器 Skill
 │       ├── SKILL.md
 │       └── scripts/publish.py               # 隔离 git worktree 分支推送与 PR 创建
