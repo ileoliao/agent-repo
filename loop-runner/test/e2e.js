@@ -1948,6 +1948,22 @@ const SECRETS = { JIRA_TOKEN: 'sekret-token-123' };
     ok(v(asTool('handoff'), call({ to: 'x', task: 't', context: 'c' })).to === 'x' && /must be one of "x"/.test((() => { try { v(asTool('handoff'), call({ to: 'y', task: 't', context: 'c' })); } catch (e) { return e.message; } })()), 'the real tools: a handoff to someone who is not a teammate is refused');
   }
 
+  console.log('symlinked skill directories');
+  if (process.platform !== 'win32') {
+    const ext = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-ext-skill-'));
+    const R = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-sym-ws-'));
+    fs.mkdirSync(path.join(ext, 'team-kb', 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(ext, 'team-kb', 'SKILL.md'), '---\nname: team-kb\ndescription: Use when searching team knowledge\n---\nRun kb.py.\n');
+    fs.writeFileSync(path.join(ext, 'team-kb', 'scripts', 'kb.py'), 'print("kb-ok")\n');
+    fs.mkdirSync(path.join(R, '.github', 'skills'), { recursive: true });
+    fs.symlinkSync(path.join(ext, 'team-kb'), path.join(R, '.github', 'skills', 'team-kb'));
+    fs.symlinkSync(path.join(ext, 'missing-skill'), path.join(R, '.github', 'skills', 'broken-link'));
+    const loaded = loadSkills(R);
+    ok(loaded.has('team-kb') && !loaded.has('broken-link') && loaded.get('team-kb').relDir === '.github/skills/team-kb', 'loadSkills follows symlinked skill directories and skips broken symlinks');
+    fs.rmSync(ext, { recursive: true, force: true });
+    fs.rmSync(R, { recursive: true, force: true });
+  }
+
   console.log(`\nALL ${pass} CHECKS PASSED`);
   fs.rmSync(W, { recursive: true, force: true });
 })().catch(e => { console.error('FAILED:', e.message); console.error(e.stack); process.exit(1); });

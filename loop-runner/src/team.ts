@@ -72,13 +72,17 @@ export interface AgentDef {
 export const SKILL_DIRS = ['.github/skills', '.agents/skills', '.claude/skills', '.loop/skills'];
 export const AGENT_DIR = '.github/agents';
 
+function isDir(p: string): boolean {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}
+
 export function loadSkills(root: string): Map<string, SkillDef> {
   const skills = new Map<string, SkillDef>();
   for (const base of SKILL_DIRS) {
     const abs = path.join(root, base);
     if (!fs.existsSync(abs)) { continue; }
     for (const d of fs.readdirSync(abs, { withFileTypes: true })) {
-      if (!d.isDirectory()) { continue; }
+      if (!d.isDirectory() && !(d.isSymbolicLink() && isDir(path.join(abs, d.name)))) { continue; }
       const f = path.join(abs, d.name, 'SKILL.md');
       if (!fs.existsSync(f)) { continue; }
       const { meta, body } = parseFrontmatter(fs.readFileSync(f, 'utf8'));

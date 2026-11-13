@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "python3 .github/skills/team-kb/scripts/kb.py redlines --limit 10 2>/dev/null || true",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

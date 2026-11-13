@@ -1,0 +1,8 @@
+# Path-as-ID ownership template for harbor-team-kb
+# Customize team handles after splitting or forking for your organization.
+#
+# /kb/gateway/        @your-org/gateway-owners
+# /kb/observability/  @your-org/observability-owners
+# /kb/storage/        @your-org/storage-owners
+# /kb/release/        @your-org/release-owners
+# /skills/            @your-org/platform-eng
