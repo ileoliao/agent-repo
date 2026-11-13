@@ -11,23 +11,23 @@
 
 ### 方式 A：只用日常 VS Code Copilot Chat
 ```sh
-python3 ~/work/harbor-team-kb/plug.py install
+node ~/work/harbor-team-kb/plug.js install
 ```
 > 唯一前置：确认 VS Code 设置中已勾选 **`chat.useAgentSkills`: `true`**（Settings 搜索 `useAgentSkills` 即可）。
 
 ### 方式 B：同时使用 Harbor Mate 工作区 + Copilot Chat
 ```sh
-python3 ~/work/harbor-team-kb/plug.py install -w /path/to/your-mate-workspace --copilot
+node ~/work/harbor-team-kb/plug.js install -w /path/to/your-mate-workspace --copilot
 ```
 > 默认会自动把 `team-kb` 挂到工作区内所有 Mate 上，并装好每周一零 Token 代码漂移巡检员 `kb-gardener`。（只想挂载指定 Mate 可加 `--agents sentinel,techlead`；不想装巡检员可加 `--no-gardener`。）
 
 ### 随时检查是否装好 / 一键无痕卸载
 ```sh
 # 自检（查看知识库条数、Copilot 技能状态、Harbor Mate 挂载状态）
-python3 ~/work/harbor-team-kb/plug.py status
+node ~/work/harbor-team-kb/plug.js status
 
 # 无痕卸载（工作区逐字节恢复原状）
-python3 ~/work/harbor-team-kb/plug.py uninstall -w /path/to/your-mate-workspace --copilot
+node ~/work/harbor-team-kb/plug.js uninstall -w /path/to/your-mate-workspace --copilot
 ```
 
 ---
@@ -59,7 +59,7 @@ python3 ~/work/harbor-team-kb/plug.py uninstall -w /path/to/your-mate-workspace 
 - **自动发生的事**：
   1. Copilot 自动生成规范词条并跑校验（自动拦截密钥泄漏、拦截本机 `/Users/...` 路径、检查是否跟已有词条重复）；
   2. 草稿自动暂存在系统缓存目录 `~/.cache/harbor-kb/drafts/`，**绝不会在你当前的业务代码仓库里留下任何未跟踪脏文件（`git status` 保持 100% 干净）**；
-  3. 给你看一眼标题和摘要，你在终端确认执行 `publish.py` 后，它会在后台临时 `git worktree` 推好分支并直接创建 GitHub PR（若本机未登录 `gh` CLI，也会直接打印一键提 PR 的网页链接，Cmd+Click 即可）。
+  3. 给你看一眼标题和摘要，你在终端确认执行 `publish.js` 后，它会在后台临时 `git worktree` 推好分支并直接创建 GitHub PR（若本机未登录 `gh` CLI，也会直接打印一键提 PR 的网页链接，Cmd+Click 即可）。
 
 ### 4. 发现知识库某条经验已经过时：一句话打标降权
 当你发现某条旧经验与现网实况不符，没空长篇重写时，直接说：
@@ -78,10 +78,10 @@ python3 ~/work/harbor-team-kb/plug.py uninstall -w /path/to/your-mate-workspace 
 
 ### 1. 后台自动发生的事（平时完全不用管）
 - **排障自动避坑与查库**：`sentinel`、`techlead` 等无人值守 Mate 在处理告警、巡检或执行任务时，会自动先查相关仓库红线（`redlines`）、按症状查历史案例（`search -> get`），只消耗约 `0.5%–3%` 的上下文窗口。
-- **每周一零 Token 自动体检**：`kb-gardener` 每周一早上自动跑一次纯本地脚本（`kb.py drift --exit-code`），逐条核对知识库引用的代码文件与函数名在本地 `repos/` 里是否还存在：
+- **每周一零 Token 自动体检**：`kb-gardener` 每周一早上自动跑一次纯本地脚本（`kb.js drift --exit-code`），逐条核对知识库引用的代码文件与函数名在本地 `repos/` 里是否还存在：
   - **没漂移**：脚本直接退出，**消耗 0 个大模型 Token，也不会打扰你**；
   - **有漂移 / 临时方案已过期**：自动唤醒 `kb-gardener` 核实代码变更并把修订草稿推到你的审批栏。
-- **安全硬隔离**：无人值守 Mate **没有权限直接往远端推分支**（直接调 `publish.py` 会被策略层硬拦截），且发起审批采用非阻塞模式（`wait: false`），绝不会卡死它手头的排障主任务。
+- **安全硬隔离**：无人值守 Mate **没有权限直接往远端推分支**（直接调 `publish.js` 会被策略层硬拦截），且发起审批采用非阻塞模式（`wait: false`），绝不会卡死它手头的排障主任务。
 
 ### 2. 在 Harbor Mate Console 对话
 跟在 Copilot Chat 里一模一样，直接用自然语言跟 `@mate` 交代任务即可：
@@ -121,24 +121,24 @@ python3 ~/work/harbor-team-kb/plug.py uninstall -w /path/to/your-mate-workspace 
 
 ### 常见问题
 1. **Copilot Chat 里没自动调用 `team-kb`？**
-   - 运行 `python3 ~/work/harbor-team-kb/plug.py status` 看 `Copilot skills` 是否为 `symlink` 或 `copy`；
+   - 运行 `node ~/work/harbor-team-kb/plug.js status` 看 `Copilot skills` 是否为 `symlink` 或 `copy`；
    - 打开 VS Code Settings，确认 `"chat.useAgentSkills": true` 已开启；或在提问里直接带上关键词 `team-kb`。
 2. **本机没装 `gh` CLI 能提知识库 PR 吗？**
-   - 可以。只要 Git 配好了 `origin` 推送权限，`publish.py` 推完分支后会自动在终端打印形如 `https://github.com/<org>/<repo>/compare/kb/...?expand=1` 的链接，点开就能一键建 PR。
+   - 可以。只要 Git 配好了 `origin` 推送权限，`publish.js` 推完分支后会自动在终端打印形如 `https://github.com/<org>/<repo>/compare/kb/...?expand=1` 的链接，点开就能一键建 PR。
 
 ### 手动终端速查（AI 背后实际执行的命令）
 ```sh
 # 自动按当前目录仓库名查红线
-python3 ~/.copilot/skills/team-kb/scripts/kb.py redlines --auto
+node ~/.copilot/skills/team-kb/scripts/kb.js redlines --auto
 
 # 检索知识库（--sync 会在距上次同步超 10 分钟时自动静默 git pull）
-python3 ~/.copilot/skills/team-kb/scripts/kb.py search --sync "40P01 deadlock"
+node ~/.copilot/skills/team-kb/scripts/kb.js search --sync "40P01 deadlock"
 
 # 查看单篇详情（自动核对当前仓库代码符号是否漂移）
-python3 ~/.copilot/skills/team-kb/scripts/kb.py get storage/gotcha/pg-deadlock-lock-ordering
+node ~/.copilot/skills/team-kb/scripts/kb.js get storage/gotcha/pg-deadlock-lock-ordering
 
 # 检查全库是否有锚点漂移 / 过期 / 争议词条
-python3 ~/.copilot/skills/team-kb/scripts/kb.py drift
+node ~/.copilot/skills/team-kb/scripts/kb.js drift
 ```
 
 </details>

@@ -6,12 +6,14 @@
  *   1. Real Harbor Mate `lintSkill` & `designWarnings` static safety/budget audits
  *   2. Golden retrieval benchmark (Recall@1, Recall@5, MRR, 2-char CJK bigrams, camelCase/snake_case, noise, latency)
  *   3. Schema validator, secret/local-path leak blocker, expired/disputed demotion, near-duplicate detector
- *   4. 24-process parallel cold-cache rebuild & search stress test (`fcntl.flock` + atomic `os.replace`)
- *   5. One-command `plug.py install` (symlink & copy modes) + byte-exact `plug.py uninstall` on `examples/harbor-team`
- *   6. Strictest `techlead.json` policy compatibility, `publish.py` direct-exec denial, SHA-256 tamper rejection,
+ *   4. 24-process parallel cold-cache rebuild & search stress test (exclusive `.lock` + atomic `fs.renameSync`)
+ *   5. One-command `plug.js install` (symlink & copy modes) + byte-exact `plug.js uninstall` on `examples/harbor-team`
+ *   6. Strictest `techlead.json` policy compatibility, `publish.js` direct-exec denial, SHA-256 tamper rejection,
  *      and Git branch push -> `sentinel` `--sync` shared knowledge closed loop
  *   7. Full unattended `runItem` loop + `kb-gardener` zero-token `checkWake` (`drift --exit-code`) on code refactor
- *   8. `kb.py dispute` contradiction workflow
+ *   8. `kb.js dispute` contradiction workflow
+ *   9. End-to-end token usage, 128k context budget & `foldForRequest` benchmark
+ *  10. Standalone VS Code Copilot Chat & zero-friction UX verification
  */
 const Module = require('module');
 const fs = require('fs');
@@ -90,8 +92,8 @@ const { foldedLine, foldForRequest } = require(`${OUT}/fold.js`);
 const Q = require(`${OUT}/queue.js`);
 const G = require(`${OUT}/gates.js`);
 
-const KB_PY = path.join(KB_ROOT, 'skills', 'team-kb', 'scripts', 'kb.py');
-const PLUG_PY = path.join(KB_ROOT, 'plug.py');
+const KB_JS = path.join(KB_ROOT, 'skills', 'team-kb', 'scripts', 'kb.js');
+const PLUG_JS = path.join(KB_ROOT, 'plug.js');
 const GOLDEN_PATH = path.join(__dirname, 'golden_queries.json');
 
 let passed = 0;
@@ -101,8 +103,8 @@ const ok = (cond, msg) => {
   console.log(`  ✓ ${msg}`);
 };
 
-function py(args, opts = {}) {
-  const res = spawnSync('python3', args, {
+function runNode(args, opts = {}) {
+  const res = spawnSync(process.execPath, args, {
     encoding: 'utf8',
     timeout: 30000,
     ...opts,
@@ -146,7 +148,7 @@ function stubExternalSkills(wsRoot) {
       `---\nname: ${name}\ndescription: Use when testing ${name} stub.\n---\nStub skill.\n`
     );
     if (name === 'harbor-anomaly-detect') {
-      fs.writeFileSync(path.join(dir, 'scripts', 'detect.py'), 'import sys; sys.exit(1)\n');
+      fs.writeFileSync(path.join(dir, 'scripts', 'detect.js'), 'process.exit(1);\n');
     }
   }
 }
@@ -203,7 +205,7 @@ function stubExternalSkills(wsRoot) {
       const lintWs = path.join(tmpBase, 'lint-ws');
       fs.cpSync(EXAMPLE_WS, lintWs, { recursive: true });
       stubExternalSkills(lintWs);
-      const plugRes = py([PLUG_PY, 'install', '--workspace', lintWs, '--mode', 'copy', '--agents', 'all', '--with-gardener']);
+      const plugRes = runNode([PLUG_JS, 'install', '--workspace', lintWs, '--mode', 'copy', '--agents', 'all', '--with-gardener']);
       assert.strictEqual(plugRes.status, 0, plugRes.stderr);
 
       const team = loadAgents(lintWs);
@@ -227,11 +229,11 @@ function stubExternalSkills(wsRoot) {
       const env = { ...process.env, HARBOR_KB_CACHE_DIR: benchCache };
 
       const tCold0 = performance.now();
-      const buildRes = py([KB_PY, '--kb-root', KB_ROOT, 'stats', '--json'], { env });
+      const buildRes = runNode([KB_JS, '--kb-root', KB_ROOT, 'stats', '--json'], { env });
       const coldBuildMs = +(performance.now() - tCold0).toFixed(1);
       assert.strictEqual(buildRes.status, 0, buildRes.stderr);
       const statsObj = JSON.parse(buildRes.stdout);
-      ok(statsObj.rebuilt === true && statsObj.total_entries === 12, `cold FTS5 index built for ${statsObj.total_entries} seed entries in ${coldBuildMs}ms`);
+      ok(statsObj.rebuilt === true && statsObj.total_entries === 12, `cold BM25F index built for ${statsObj.total_entries} seed entries in ${coldBuildMs}ms`);
 
       const golden = JSON.parse(fs.readFileSync(GOLDEN_PATH, 'utf8'));
       const coreQueries = golden.filter(q => !q.expect_empty && !q.stress);
@@ -295,7 +297,7 @@ function stubExternalSkills(wsRoot) {
       const evaluateCorpus = (targetKb, cachePath) => {
         const cEnv = { ...process.env, HARBOR_KB_CACHE_DIR: cachePath };
         const t0Build = performance.now();
-        const st = JSON.parse(py([KB_PY, '--kb-root', targetKb, 'stats', '--json'], { env: cEnv }).stdout);
+        const st = JSON.parse(runNode([KB_JS, '--kb-root', targetKb, 'stats', '--json'], { env: cEnv }).stdout);
         const buildMs = +(performance.now() - t0Build).toFixed(1);
 
         let coreR1 = 0, coreR5 = 0, coreMRR = 0;
@@ -310,7 +312,7 @@ function stubExternalSkills(wsRoot) {
           byCategory[cat].total++;
 
           const t0 = performance.now();
-          const r = py([KB_PY, '--kb-root', targetKb, 'search', '--json', g.query], { env: cEnv });
+          const r = runNode([KB_JS, '--kb-root', targetKb, 'search', '--json', g.query], { env: cEnv });
           latencies.push(performance.now() - t0);
           assert.strictEqual(r.status, 0, r.stderr);
           const parsed = JSON.parse(r.stdout);
@@ -338,7 +340,7 @@ function stubExternalSkills(wsRoot) {
             let rHit1 = hit1;
             let rHit5 = hit5;
             if (!hit1 && g.reformulated_query) {
-              const r2 = JSON.parse(py([KB_PY, '--kb-root', targetKb, 'search', '--json', g.reformulated_query], { env: cEnv }).stdout);
+              const r2 = JSON.parse(runNode([KB_JS, '--kb-root', targetKb, 'search', '--json', g.reformulated_query], { env: cEnv }).stdout);
               const ids2 = r2.results.map(x => x.id);
               if (ids2[0] === g.expect_top1) rHit1 = true;
               if (ids2.indexOf(g.expect_top1) >= 0 && ids2.indexOf(g.expect_top1) < 5) rHit5 = true;
@@ -350,7 +352,7 @@ function stubExternalSkills(wsRoot) {
 
         let falsePositives = 0;
         for (const g of negQueries) {
-          const r = JSON.parse(py([KB_PY, '--kb-root', targetKb, 'search', '--json', g.query], { env: cEnv }).stdout);
+          const r = JSON.parse(runNode([KB_JS, '--kb-root', targetKb, 'search', '--json', g.query], { env: cEnv }).stdout);
           if (r.results.length > 0) {
             falsePositives++;
             console.error(`  FALSE POSITIVE for "${g.query}": ${JSON.stringify(r.results.map(x => x.id))}`);
@@ -411,7 +413,7 @@ function stubExternalSkills(wsRoot) {
       );
 
       // Verify Push path: redlines filter
-      const redGw = JSON.parse(py([KB_PY, '--kb-root', KB_ROOT, 'redlines', '--repo', 'harbor-gateway', '--json'], { env }).stdout);
+      const redGw = JSON.parse(runNode([KB_JS, '--kb-root', KB_ROOT, 'redlines', '--repo', 'harbor-gateway', '--json'], { env }).stdout);
       ok(
         redGw.count === 1 && redGw.redlines[0].id === 'gateway/redline/rate-limit-shadow-mode-first',
         'redlines --repo harbor-gateway pushes only the gateway guardrail without unrelated domains'
@@ -427,7 +429,7 @@ function stubExternalSkills(wsRoot) {
       fs.writeFileSync(path.join(rankKb, 'kb', 'gateway', 'gotcha', 'disputed-entry.md'), mkEntry('disputed-entry', 'disputed: "2026-03-01: no longer happens"\n'));
 
       const rankRes = JSON.parse(
-        py([KB_PY, '--kb-root', rankKb, '--now', '2026-04-12', 'search', '--json', 'envoy_idle_reset'], { env }).stdout
+        runNode([KB_JS, '--kb-root', rankKb, '--now', '2026-04-12', 'search', '--json', 'envoy_idle_reset'], { env }).stdout
       );
       ok(
         rankRes.results[0].id === 'gateway/gotcha/fresh-entry' &&
@@ -445,7 +447,7 @@ function stubExternalSkills(wsRoot) {
       const valWs = path.join(tmpBase, 'val-ws');
       fs.mkdirSync(path.join(valWs, '.loop', 'outbox', 'kb', 'gateway', 'gotcha'), { recursive: true });
 
-      const allOk = JSON.parse(py([KB_PY, '--kb-root', KB_ROOT, 'validate', '--all', '--json']).stdout);
+      const allOk = JSON.parse(runNode([KB_JS, '--kb-root', KB_ROOT, 'validate', '--all', '--json']).stdout);
       ok(allOk.valid && allOk.checked === 12 && allOk.warnings.length === 0, 'all 12 seed entries pass validate --all with 0 warnings');
 
       // Secret leak draft
@@ -455,7 +457,7 @@ function stubExternalSkills(wsRoot) {
         secretDraft,
         `---\ntitle: "Leak test"\nsummary: "Bad draft"\nsources: ["gw:x.go"]\ntriggers: ["leak"]\n---\ncurl -H "Authorization: Bearer ${fakeTok}" https://example.com\n`
       );
-      const secRes = py([KB_PY, '--kb-root', KB_ROOT, 'validate', '.loop/outbox/kb/gateway/gotcha/leak-test.md'], { cwd: valWs });
+      const secRes = runNode([KB_JS, '--kb-root', KB_ROOT, 'validate', '.loop/outbox/kb/gateway/gotcha/leak-test.md'], { cwd: valWs });
       ok(secRes.status === 2 && /GitHub token|strip secrets/i.test(secRes.stderr + secRes.stdout), 'validator hard-rejects drafts containing credential tokens');
 
       // Local user path leak draft
@@ -464,7 +466,7 @@ function stubExternalSkills(wsRoot) {
         secretDraft,
         `---\ntitle: "Path test"\nsummary: "Bad path"\nsources: ["gw:x.go"]\ntriggers: ["path"]\n---\nRead config from ${pathLeak}\n`
       );
-      const pathRes = py([KB_PY, '--kb-root', KB_ROOT, 'validate', '.loop/outbox/kb/gateway/gotcha/leak-test.md'], { cwd: valWs });
+      const pathRes = runNode([KB_JS, '--kb-root', KB_ROOT, 'validate', '.loop/outbox/kb/gateway/gotcha/leak-test.md'], { cwd: valWs });
       ok(pathRes.status === 2 && /local machine user path/i.test(pathRes.stderr + pathRes.stdout), 'validator hard-rejects drafts containing local /Users/<name>/ paths');
 
       // Near-duplicate draft against English-primary seed entry
@@ -475,7 +477,7 @@ function stubExternalSkills(wsRoot) {
         `---\ntitle: "Gateway RateLimitConfig changes must observe 24h shadow_only before enforcing 429"\nsummary: "Never deploy harbor-gateway RateLimitConfig quota or burst rules directly; run shadow_only: true for 24 hours first."\nsources: ["harbor-gateway:pkg/ratelimit/limiter.go#RateLimitConfig"]\ntriggers: ["RateLimitConfig", "shadow_only", "429 Too Many Requests", "rate limit", "限流"]\n---\nAlways run harbor-gateway RateLimitConfig updates in shadow_only: true for 24h before enforcing HTTP 429.\n`
       );
       const dupRes = JSON.parse(
-        py([KB_PY, '--kb-root', KB_ROOT, 'validate', '--json', '.loop/outbox/kb/gateway/redline/duplicate-shadow-rule.md'], { cwd: valWs }).stdout
+        runNode([KB_JS, '--kb-root', KB_ROOT, 'validate', '--json', '.loop/outbox/kb/gateway/redline/duplicate-shadow-rule.md'], { cwd: valWs }).stdout
       );
       ok(
         dupRes.valid && dupRes.warnings.some(w => w.includes('gateway/redline/rate-limit-shadow-mode-first')),
@@ -495,10 +497,10 @@ function stubExternalSkills(wsRoot) {
       const procs = Array.from({ length: 24 }, (_, idx) => {
         const subArgs =
           idx % 4 === 0
-            ? [KB_PY, '--kb-root', KB_ROOT, 'redlines', '--json']
-            : [KB_PY, '--kb-root', KB_ROOT, 'search', '--json', queries[idx % queries.length]];
+            ? [KB_JS, '--kb-root', KB_ROOT, 'redlines', '--json']
+            : [KB_JS, '--kb-root', KB_ROOT, 'search', '--json', queries[idx % queries.length]];
         return new Promise((resolve, reject) => {
-          const child = spawn('python3', subArgs, { env });
+          const child = spawn(process.execPath, subArgs, { env });
           let stdout = '';
           let stderr = '';
           child.stdout.on('data', d => { stdout += d; });
@@ -510,7 +512,7 @@ function stubExternalSkills(wsRoot) {
 
       const results = await Promise.all(procs);
       const failures = results.filter(r => r.code !== 0);
-      ok(failures.length === 0, `24/24 parallel cold-cache processes exited 0 without SQLite lock failures`);
+      ok(failures.length === 0, `24/24 parallel cold-cache processes exited 0 without lock failures`);
 
       const parsedOk = results.every(r => {
         const obj = JSON.parse(r.stdout);
@@ -521,7 +523,7 @@ function stubExternalSkills(wsRoot) {
       const hashDirs = fs.readdirSync(stressCache);
       const leftoverTmp = hashDirs.flatMap(d => fs.readdirSync(path.join(stressCache, d)).filter(f => f.includes('.tmp.')));
       metrics.parallelWorkers = 24;
-      ok(leftoverTmp.length === 0, 'atomic os.replace left 0 temporary SQLite files behind');
+      ok(leftoverTmp.length === 0, 'atomic fs.renameSync left 0 temporary index files behind');
     }
 
     // =========================================================================
@@ -535,25 +537,25 @@ function stubExternalSkills(wsRoot) {
         stubExternalSkills(ws);
         const beforeSnap = snapshotTree(ws);
 
-        const inst1 = py([
-          PLUG_PY, 'install', '--workspace', ws, '--mode', mode,
+        const inst1 = runNode([
+          PLUG_JS, 'install', '--workspace', ws, '--mode', mode,
           '--agents', 'briefer,sentinel,techlead', '--with-gardener', '--with-hooks', '--json',
         ]);
         assert.strictEqual(inst1.status, 0, inst1.stderr);
 
         // Idempotency check: second install should succeed without duplicating skills/markers
-        const inst2 = py([
-          PLUG_PY, 'install', '--workspace', ws, '--mode', mode,
+        const inst2 = runNode([
+          PLUG_JS, 'install', '--workspace', ws, '--mode', mode,
           '--agents', 'briefer,sentinel,techlead', '--with-gardener', '--with-hooks', '--json',
         ]);
         assert.strictEqual(inst2.status, 0, inst2.stderr);
 
-        const statRes = py([PLUG_PY, 'status', '--workspace', ws, '--json']);
+        const statRes = runNode([PLUG_JS, 'status', '--workspace', ws, '--json']);
         assert.strictEqual(statRes.status, 0, statRes.stderr);
         const statObj = JSON.parse(statRes.stdout);
         ok(
           statObj.healthy && statObj.workspace_status.team_kb_mode === mode,
-          `plug.py install (${mode}) is healthy, idempotent, and runtime probe resolves 12 KB entries`
+          `plug.js install (${mode}) is healthy, idempotent, and runtime probe resolves 12 KB entries`
         );
 
         const skills = loadSkills(ws);
@@ -564,7 +566,7 @@ function stubExternalSkills(wsRoot) {
           `Harbor Mate loadSkills & validateTeam succeed cleanly in ${mode} mode`
         );
 
-        const uninst = py([PLUG_PY, 'uninstall', '--workspace', ws, '--json']);
+        const uninst = runNode([PLUG_JS, 'uninstall', '--workspace', ws, '--json']);
         assert.strictEqual(uninst.status, 0, uninst.stderr);
 
         // Clean empty .github/hooks or .loop/outbox/kb directories if created solely during install
@@ -575,7 +577,7 @@ function stubExternalSkills(wsRoot) {
         }
         const afterSnap = snapshotTree(ws);
         assert.deepStrictEqual(afterSnap, beforeSnap);
-        ok(true, `plug.py uninstall (${mode}) restores workspace byte-for-byte to pre-plug state`);
+        ok(true, `plug.js uninstall (${mode}) restores workspace byte-for-byte to pre-plug state`);
       }
     }
 
@@ -603,14 +605,14 @@ function stubExternalSkills(wsRoot) {
       fs.cpSync(EXAMPLE_WS, wsA, { recursive: true });
       stubExternalSkills(wsA);
       assert.strictEqual(
-        py([path.join(kbCloneA, 'plug.py'), 'install', '--workspace', wsA, '--agents', 'sentinel,techlead', '--with-gardener']).status,
+        runNode([path.join(kbCloneA, 'plug.js'), 'install', '--workspace', wsA, '--agents', 'sentinel,techlead', '--with-gardener']).status,
         0
       );
 
       fs.cpSync(EXAMPLE_WS, wsB, { recursive: true });
       stubExternalSkills(wsB);
       assert.strictEqual(
-        py([path.join(kbCloneB, 'plug.py'), 'install', '--workspace', wsB, '--agents', 'sentinel,techlead']).status,
+        runNode([path.join(kbCloneB, 'plug.js'), 'install', '--workspace', wsB, '--agents', 'sentinel,techlead']).status,
         0
       );
 
@@ -637,13 +639,13 @@ function stubExternalSkills(wsRoot) {
       ok(tlCtx.policy.writablePaths.length === 0, 'techlead.json has writablePaths: [] (strictest read-only repo policy)');
 
       // Read paths allowed under techlead.json + Harbor Mate sanitized buildShellEnv (no HARBOR_KB_ROOT env needed!)
-      const rRed = await runTool('run_command', { command: 'python3 .github/skills/team-kb/scripts/kb.py redlines --repo harbor-gateway' }, tlCtx);
-      ok(rRed.decision === 'allow' && /RateLimitConfig/.test(rRed.text), 'techlead can run kb.py redlines inside sanitized buildShellEnv without env vars');
+      const rRed = await runTool('run_command', { command: 'node .github/skills/team-kb/scripts/kb.js redlines --repo harbor-gateway' }, tlCtx);
+      ok(rRed.decision === 'allow' && /RateLimitConfig/.test(rRed.text), 'techlead can run kb.js redlines inside sanitized buildShellEnv without env vars');
 
-      const rSearch = await runTool('run_command', { command: 'python3 .github/skills/team-kb/scripts/kb.py search "request_rate 429 Retry-After"' }, tlCtx);
+      const rSearch = await runTool('run_command', { command: 'node .github/skills/team-kb/scripts/kb.js search "request_rate 429 Retry-After"' }, tlCtx);
       ok(rSearch.decision === 'allow' && /partner-retry-storm-2026-02/.test(rSearch.text), 'techlead can search team-kb and see prior postmortem');
 
-      const rGet = await runTool('run_command', { command: 'python3 .github/skills/team-kb/scripts/kb.py get gateway/postmortem/partner-retry-storm-2026-02' }, tlCtx);
+      const rGet = await runTool('run_command', { command: 'node .github/skills/team-kb/scripts/kb.js get gateway/postmortem/partner-retry-storm-2026-02' }, tlCtx);
       ok(rGet.decision === 'allow' && /REFERENCE ONLY/.test(rGet.text) && /WriteRetryHeader/.test(rGet.text), 'techlead can get full entry with REFERENCE ONLY prompt-injection banner');
 
       // Write draft with `/` code paths inside Markdown body via write_file (avoids CLI `/` denyCommands!)
@@ -669,13 +671,13 @@ function stubExternalSkills(wsRoot) {
       const rWrite = await runTool('write_file', { path: draftRel, content: draftContent }, tlCtx);
       ok(rWrite.decision === 'allow' && fs.existsSync(path.join(wsA, draftRel)), 'techlead can write KB draft containing `/` paths via write_file to .loop/outbox/kb/');
 
-      const rVal = await runTool('run_command', { command: `python3 .github/skills/team-kb/scripts/kb.py validate ${draftRel}` }, tlCtx);
-      ok(rVal.decision === 'allow' && /OK: 1 file\(s\) validated clean/.test(rVal.text), 'techlead can validate its outbox KB draft via kb.py validate');
+      const rVal = await runTool('run_command', { command: `node .github/skills/team-kb/scripts/kb.js validate ${draftRel}` }, tlCtx);
+      ok(rVal.decision === 'allow' && /OK: 1 file\(s\) validated clean/.test(rVal.text), 'techlead can validate its outbox KB draft via kb.js validate');
 
-      // Security check: unattended techlead CANNOT run publish.py directly!
-      const pubCmd = `python3 .github/skills/team-kb-publish/scripts/publish.py --no-pr ${draftRel}`;
+      // Security check: unattended techlead CANNOT run publish.js directly!
+      const pubCmd = `node .github/skills/team-kb-publish/scripts/publish.js --no-pr ${draftRel}`;
       const rDirectPub = await runTool('run_command', { command: pubCmd }, tlCtx);
-      ok(rDirectPub.decision === 'deny', 'security boundary: techlead CANNOT execute publish.py directly without human approval');
+      ok(rDirectPub.decision === 'deny', 'security boundary: techlead CANNOT execute publish.js directly without human approval');
 
       // Submit non-blocking request_approval (`wait: false`)
       const rGate1 = await runTool('request_approval', {
@@ -703,7 +705,7 @@ function stubExternalSkills(wsRoot) {
       const approved = await G.approveAndRun(wsA, gateId1, tlCtx.policy, {}, seenClean);
       ok(
         approved.ok && /Published gateway\/gotcha\/envoy-header-timeout-504/.test(approved.text),
-        'approveAndRun executes publish.py cleanly and pushes topic branch to origin'
+        'approveAndRun executes publish.js cleanly and pushes topic branch to origin'
       );
 
       // Verify local kbCloneA working tree stayed completely clean on main!
@@ -727,12 +729,12 @@ function stubExternalSkills(wsRoot) {
       const senCtxB = ctxFor(wsB, teamB, skillsB, 'sentinel');
       const rSyncSearch = await runTool(
         'run_command',
-        { command: 'python3 .github/skills/team-kb/scripts/kb.py search --sync "StreamCSVExport 504"' },
+        { command: 'node .github/skills/team-kb/scripts/kb.js search --sync "StreamCSVExport 504"' },
         senCtxB
       );
       ok(
         rSyncSearch.decision === 'allow' && /gateway\/gotcha\/envoy-header-timeout-504/.test(rSyncSearch.text),
-        'multi-laptop closed loop: sentinel on second clone pulls merged KB via --sync, auto-rebuilds FTS5, and retrieves new entry at Rank #1'
+        'multi-laptop closed loop: sentinel on second clone pulls merged KB via --sync, auto-rebuilds BM25F index, and retrieves new entry at Rank #1'
       );
     }
 
@@ -763,17 +765,17 @@ function stubExternalSkills(wsRoot) {
 
       const seenToolResults = [];
       const turns = [
-        [['run_command', { command: 'python3 .github/skills/team-kb/scripts/kb.py redlines --repo harbor-gateway' }]],
-        [['run_command', { command: 'python3 .github/skills/team-kb/scripts/kb.py search "request_rate 429 Retry-After"' }]],
-        [['run_command', { command: 'python3 .github/skills/team-kb/scripts/kb.py get gateway/postmortem/partner-retry-storm-2026-02' }]],
+        [['run_command', { command: 'node .github/skills/team-kb/scripts/kb.js redlines --repo harbor-gateway' }]],
+        [['run_command', { command: 'node .github/skills/team-kb/scripts/kb.js search "request_rate 429 Retry-After"' }]],
+        [['run_command', { command: 'node .github/skills/team-kb/scripts/kb.js get gateway/postmortem/partner-retry-storm-2026-02' }]],
         [['write_file', { path: newRunbookRel, content: newRunbookBody }]],
-        [['run_command', { command: `python3 .github/skills/team-kb/scripts/kb.py validate ${newRunbookRel}` }]],
+        [['run_command', { command: `node .github/skills/team-kb/scripts/kb.js validate ${newRunbookRel}` }]],
         [[
           'request_approval',
           {
             title: 'Publish webhook burst triage runbook',
             summary: 'Distilled from incident analysis.',
-            command: `python3 .github/skills/team-kb-publish/scripts/publish.py --no-pr ${newRunbookRel}`,
+            command: `node .github/skills/team-kb-publish/scripts/publish.js --no-pr ${newRunbookRel}`,
             files: [newRunbookRel],
             wait: false,
           },
@@ -865,21 +867,21 @@ function stubExternalSkills(wsRoot) {
         'kb-gardener wakeIf exits 0 and injects exact JSON anchor drift report when symbol is refactored'
       );
 
-      // Read-time immediate warning check via `kb.py get`
-      const getDrift = py([
-        path.join(wsA, '.github', 'skills', 'team-kb', 'scripts', 'kb.py'),
+      // Read-time immediate warning check via `kb.js get`
+      const getDrift = runNode([
+        path.join(wsA, '.github', 'skills', 'team-kb', 'scripts', 'kb.js'),
         'get', 'gateway/redline/rate-limit-shadow-mode-first',
       ], { cwd: wsA });
-      ok(/WARNING \[ANCHOR DRIFT\]/.test(getDrift.stdout), 'kb.py get immediately warns agents at read-time when a local code symbol drifted');
+      ok(/WARNING \[ANCHOR DRIFT\]/.test(getDrift.stdout), 'kb.js get immediately warns agents at read-time when a local code symbol drifted');
     }
 
     // =========================================================================
-    // 8. Contradiction / Dispute Workflow (`kb.py dispute`)
+    // 8. Contradiction / Dispute Workflow (`kb.js dispute`)
     // =========================================================================
-    console.log('\n8. Live-reality contradiction workflow (kb.py dispute)');
+    console.log('\n8. Live-reality contradiction workflow (kb.js dispute)');
     {
-      const dispRes = py([
-        path.join(wsA, '.github', 'skills', 'team-kb', 'scripts', 'kb.py'),
+      const dispRes = runNode([
+        path.join(wsA, '.github', 'skills', 'team-kb', 'scripts', 'kb.js'),
         'dispute',
         '--id', 'gateway/gotcha/grpc-keepalive-rst-stream-burst',
         '--reason', 'Envoy MaxConnectionIdle increased to 600s in commit a1b2c3d',
@@ -887,13 +889,13 @@ function stubExternalSkills(wsRoot) {
       ], { cwd: wsA });
       assert.strictEqual(dispRes.status, 0, dispRes.stderr);
       const dispObj = JSON.parse(dispRes.stdout);
-      const valDisp = py([
-        path.join(wsA, '.github', 'skills', 'team-kb', 'scripts', 'kb.py'),
+      const valDisp = runNode([
+        path.join(wsA, '.github', 'skills', 'team-kb', 'scripts', 'kb.js'),
         'validate', dispObj.draft,
       ], { cwd: wsA });
       ok(
         dispObj.status === 'dispute_drafted' && valDisp.status === 0,
-        'kb.py dispute creates a valid disputed draft in .loop/outbox/kb/ ready for request_approval'
+        'kb.js dispute creates a valid disputed draft in .loop/outbox/kb/ ready for request_approval'
       );
     }
 
@@ -902,29 +904,32 @@ function stubExternalSkills(wsRoot) {
     // =========================================================================
     console.log('\n9. End-to-end token usage, 128k context budget & foldForRequest benchmark');
     {
-      // Batch-count exact BPE tokens via Python tiktoken (o200k_base, GPT-4o / GitHub Copilot) with deterministic fallback
+      // Batch-count exact BPE tokens via optional tiktoken (o200k_base) when available, with pure Node.js deterministic fallback
       const countTokensBatch = (textsMap) => {
-        const pyScript = [
-          'import json, re, sys',
+        const tikScript = [
+          'import json, sys',
+          'import tiktoken',
           'data = json.load(sys.stdin)',
-          'try:',
-          '    import tiktoken',
-          '    enc = tiktoken.get_encoding("o200k_base")',
-          '    mode = "tiktoken:o200k_base"',
-          '    cnt = lambda s: len(enc.encode(s))',
-          'except Exception:',
-          '    mode = "regex_subword_fallback"',
-          '    cnt = lambda s: len(re.findall(r"[A-Za-z0-9]+|[\\u4e00-\\u9fff]|[^\\sA-Za-z0-9\\u4e00-\\u9fff]", s))',
-          'out = {"tokenizer": mode, "counts": {k: {"tokens": cnt(v), "chars": len(v)} for k, v in data.items()}}',
+          'enc = tiktoken.get_encoding("o200k_base")',
+          'out = {"tokenizer": "tiktoken:o200k_base", "counts": {k: {"tokens": len(enc.encode(v)), "chars": len(v)} for k, v in data.items()}}',
           'print(json.dumps(out))',
         ].join('\n');
-        const r = py(['-c', pyScript], {
+        const r = spawnSync('python3', ['-c', tikScript], {
+          encoding: 'utf8',
           input: JSON.stringify(textsMap),
           maxBuffer: 64 * 1024 * 1024,
+          timeout: 30000,
           env: { ...process.env, HOME: origHome },
         });
-        assert.strictEqual(r.status, 0, r.stderr);
-        return JSON.parse(r.stdout);
+        if (r.status === 0 && r.stdout) {
+          return JSON.parse(r.stdout);
+        }
+        const counts = {};
+        const fallbackRe = /[A-Za-z0-9]+|[\u4e00-\u9fff]|[^\sA-Za-z0-9\u4e00-\u9fff]/g;
+        for (const [k, v] of Object.entries(textsMap)) {
+          counts[k] = { tokens: (v.match(fallbackRe) || []).length, chars: v.length };
+        }
+        return { tokenizer: 'node_regex_subword_fallback', counts };
       };
 
       const wsBase = path.join(tmpBase, 'tok-ws-base');
@@ -934,7 +939,7 @@ function stubExternalSkills(wsRoot) {
       fs.cpSync(EXAMPLE_WS, wsPlug, { recursive: true });
       stubExternalSkills(wsPlug);
       assert.strictEqual(
-        py([PLUG_PY, 'install', '--workspace', wsPlug, '--agents', 'briefer,sentinel,techlead', '--with-gardener']).status,
+        runNode([PLUG_JS, 'install', '--workspace', wsPlug, '--agents', 'briefer,sentinel,techlead', '--with-gardener']).status,
         0
       );
 
@@ -968,12 +973,12 @@ function stubExternalSkills(wsRoot) {
       const tokEnv100 = { ...process.env, HARBOR_KB_CACHE_DIR: path.join(tmpBase, 'tok100-cache') };
       const tokEnv500 = { ...process.env, HARBOR_KB_CACHE_DIR: path.join(tmpBase, 'tok500-cache') };
 
-      const outRedlinesGw12 = '[exit 0]\n' + py([KB_PY, '--kb-root', KB_ROOT, 'redlines', '--repo', 'harbor-gateway'], { env: tokEnv12 }).stdout.trim();
-      const outRedlinesAll12 = '[exit 0]\n' + py([KB_PY, '--kb-root', KB_ROOT, 'redlines'], { env: tokEnv12 }).stdout.trim();
-      const outSearch12 = '[exit 0]\n' + py([KB_PY, '--kb-root', KB_ROOT, 'search', 'request_rate 429 Retry-After'], { env: tokEnv12 }).stdout.trim();
-      const outSearch100 = '[exit 0]\n' + py([KB_PY, '--kb-root', scale100Kb, 'search', 'request_rate 429 Retry-After'], { env: tokEnv100 }).stdout.trim();
-      const outSearch500 = '[exit 0]\n' + py([KB_PY, '--kb-root', scale500Kb, 'search', 'request_rate 429 Retry-After'], { env: tokEnv500 }).stdout.trim();
-      const outGet12 = '[exit 0]\n' + py([KB_PY, '--kb-root', KB_ROOT, 'get', 'gateway/postmortem/partner-retry-storm-2026-02'], { env: tokEnv12 }).stdout.trim();
+      const outRedlinesGw12 = '[exit 0]\n' + runNode([KB_JS, '--kb-root', KB_ROOT, 'redlines', '--repo', 'harbor-gateway'], { env: tokEnv12 }).stdout.trim();
+      const outRedlinesAll12 = '[exit 0]\n' + runNode([KB_JS, '--kb-root', KB_ROOT, 'redlines'], { env: tokEnv12 }).stdout.trim();
+      const outSearch12 = '[exit 0]\n' + runNode([KB_JS, '--kb-root', KB_ROOT, 'search', 'request_rate 429 Retry-After'], { env: tokEnv12 }).stdout.trim();
+      const outSearch100 = '[exit 0]\n' + runNode([KB_JS, '--kb-root', scale100Kb, 'search', 'request_rate 429 Retry-After'], { env: tokEnv100 }).stdout.trim();
+      const outSearch500 = '[exit 0]\n' + runNode([KB_JS, '--kb-root', scale500Kb, 'search', 'request_rate 429 Retry-After'], { env: tokEnv500 }).stdout.trim();
+      const outGet12 = '[exit 0]\n' + runNode([KB_JS, '--kb-root', KB_ROOT, 'get', 'gateway/postmortem/partner-retry-storm-2026-02'], { env: tokEnv12 }).stdout.trim();
 
       // Measure average `get` and build Full-KB vs Index-in-Prompt corpora for N=12, 100, 500
       const readCorpusBlobs = (kbDir) => {
@@ -1000,7 +1005,7 @@ function stubExternalSkills(wsRoot) {
       const blob100 = readCorpusBlobs(scale100Kb);
       const blob500 = readCorpusBlobs(scale500Kb);
 
-      // Verify Harbor Mate `foldedLine` & `foldForRequest` compatibility on long `kb.py get` output (> FOLD_MIN_CHARS=2000)
+      // Verify Harbor Mate `foldedLine` & `foldForRequest` compatibility on long `kb.js get` output (> FOLD_MIN_CHARS=2000)
       const longGetText = outGet12 + '\n' + 'Detailed stack trace verification line for replay check.\n'.repeat(40);
       assert.ok(longGetText.length > 2000);
       const foldedGet = foldedLine(longGetText);
@@ -1009,22 +1014,22 @@ function stubExternalSkills(wsRoot) {
         `Harbor Mate foldedLine preserves REFERENCE tag, entry ID & title within 100-char clip (${foldedGet})`
       );
 
-      // Verify foldForRequest triggers on a 17-turn conversation exceeding 60% budget and folds old kb.py get result
+      // Verify foldForRequest triggers on a 17-turn conversation exceeding 60% budget and folds old kb.js get result
       const longMsgs = [{ role: 'user', parts: [{ t: 'text', v: promptWithKb }] }];
       for (let step = 0; step < 17; step++) {
-        longMsgs.push({ role: 'assistant', parts: [{ t: 'call', callId: `c-${step}`, name: 'run_command', input: { command: 'kb.py get ...' } }] });
+        longMsgs.push({ role: 'assistant', parts: [{ t: 'call', callId: `c-${step}`, name: 'run_command', input: { command: 'kb.js get ...' } }] });
         longMsgs.push({ role: 'user', parts: [{ t: 'result', callId: `c-${step}`, text: step === 0 ? longGetText : 'ok' }] });
       }
       const foldedMsgs = foldForRequest(longMsgs, 10000); // force folding threshold (60% of 10,000 = 6,000 chars)
       ok(
         foldedMsgs[2].parts[0].text.startsWith('[folded: exit 0 · [team-kb REFERENCE] gateway/postmortem/partner-retry-storm-2026-02'),
-        'Harbor Mate foldForRequest cleanly folds old >2000-char kb.py get results to 1-line summary'
+        'Harbor Mate foldForRequest cleanly folds old >2000-char kb.js get results to 1-line summary'
       );
 
       // Batch count all components via tiktoken o200k_base
       const liveMetricsStep = '[exit 0]\nharbor_gateway_ratelimit_429_total{client_id="partner-sync-7"} 18420\nRetry-After header: constant "5" (no jitter)';
       const liveCodeStep = '[exit 0]\nfunc WriteRetryHeader(w http.ResponseWriter) { w.Header().Set("Retry-After", "5") }';
-      const assistantCallOverhead = 'run_command {"command":"python3 .github/skills/team-kb/scripts/kb.py ..."}';
+      const assistantCallOverhead = 'run_command {"command":"node .github/skills/team-kb/scripts/kb.js ..."}';
 
       const tokBatch = countTokensBatch({
         promptNoKb,
@@ -1200,32 +1205,32 @@ function stubExternalSkills(wsRoot) {
       git(['add', '.'], serviceRepo);
       git(['commit', '-m', 'initial gateway'], serviceRepo);
 
-      // 1) Zero-flag `plug.py install` inside non-Mate directory -> installs Copilot skills cleanly
-      const zeroFlagInst = py([path.join(kbCloneUx, 'plug.py'), 'install', '--json'], { cwd: serviceRepo });
+      // 1) Zero-flag `plug.js install` inside non-Mate directory -> installs Copilot skills cleanly
+      const zeroFlagInst = runNode([path.join(kbCloneUx, 'plug.js'), 'install', '--json'], { cwd: serviceRepo });
       assert.strictEqual(zeroFlagInst.status, 0, zeroFlagInst.stderr);
-      const statusCopilot = JSON.parse(py([path.join(kbCloneUx, 'plug.py'), 'status', '--json'], { cwd: serviceRepo }).stdout);
+      const statusCopilot = JSON.parse(runNode([path.join(kbCloneUx, 'plug.js'), 'status', '--json'], { cwd: serviceRepo }).stdout);
       ok(
         statusCopilot.copilot_status.team_kb_installed && statusCopilot.copilot_status.publish_installed,
-        'zero-flag `plug.py install` installs Copilot user skills and `plug.py status` reports readiness'
+        'zero-flag `plug.js install` installs Copilot user skills and `plug.js status` reports readiness'
       );
 
-      // 2) Single-flag `plug.py install -w <ws>` wires all loop Mates + weekly gardener out of the box
+      // 2) Single-flag `plug.js install -w <ws>` wires all loop Mates + weekly gardener out of the box
       fs.cpSync(EXAMPLE_WS, quickWs, { recursive: true });
       stubExternalSkills(quickWs);
-      assert.strictEqual(py([path.join(kbCloneUx, 'plug.py'), 'install', '-w', quickWs]).status, 0);
-      const quickStatus = JSON.parse(py([path.join(kbCloneUx, 'plug.py'), 'status', '-w', quickWs, '--json']).stdout);
+      assert.strictEqual(runNode([path.join(kbCloneUx, 'plug.js'), 'install', '-w', quickWs]).status, 0);
+      const quickStatus = JSON.parse(runNode([path.join(kbCloneUx, 'plug.js'), 'status', '-w', quickWs, '--json']).stdout);
       ok(
         quickStatus.workspace_status.gardener_installed && quickStatus.workspace_status.wired_agents.length >= 3,
-        'one-flag `plug.py install -w <ws>` auto-wires all loop Mates and installs kb-gardener by default'
+        'one-flag `plug.js install -w <ws>` auto-wires all loop Mates and installs kb-gardener by default'
       );
 
-      // 3) `kb.py redlines --auto` in standalone `harbor-gateway` auto-filters to gateway redlines
-      const copilotKbPy = path.join(process.env.HOME, '.copilot', 'skills', 'team-kb', 'scripts', 'kb.py');
-      const copilotPubPy = path.join(process.env.HOME, '.copilot', 'skills', 'team-kb-publish', 'scripts', 'publish.py');
-      const autoRed = JSON.parse(py([copilotKbPy, 'redlines', '--auto', '--json'], { cwd: serviceRepo }).stdout);
+      // 3) `kb.js redlines --auto` in standalone `harbor-gateway` auto-filters to gateway redlines
+      const copilotKbJs = path.join(process.env.HOME, '.copilot', 'skills', 'team-kb', 'scripts', 'kb.js');
+      const copilotPubJs = path.join(process.env.HOME, '.copilot', 'skills', 'team-kb-publish', 'scripts', 'publish.js');
+      const autoRed = JSON.parse(runNode([copilotKbJs, 'redlines', '--auto', '--json'], { cwd: serviceRepo }).stdout);
       ok(
         autoRed.count >= 1 && autoRed.redlines.every(r => r.domain === 'gateway'),
-        'kb.py redlines --auto inside standalone harbor-gateway repo returns only gateway redlines'
+        'kb.js redlines --auto inside standalone harbor-gateway repo returns only gateway redlines'
       );
 
       // 4) Dual-runtime sessionStart hook works in standalone service repo via ~/.copilot/skills fallback
@@ -1237,21 +1242,21 @@ function stubExternalSkills(wsRoot) {
       );
 
       // 5) Single-repo live anchor drift check inside standalone microservice repo
-      const getClean = py([copilotKbPy, 'get', 'gateway/redline/rate-limit-shadow-mode-first'], { cwd: serviceRepo });
+      const getClean = runNode([copilotKbJs, 'get', 'gateway/redline/rate-limit-shadow-mode-first'], { cwd: serviceRepo });
       fs.writeFileSync(
         path.join(serviceRepo, 'pkg', 'ratelimit', 'limiter.go'),
         'package ratelimit\ntype AdaptiveQuotaRule struct { DryRun bool }\n'
       );
-      const getDrifted = py([copilotKbPy, 'get', 'gateway/redline/rate-limit-shadow-mode-first'], { cwd: serviceRepo });
+      const getDrifted = runNode([copilotKbJs, 'get', 'gateway/redline/rate-limit-shadow-mode-first'], { cwd: serviceRepo });
       git(['checkout', '--', 'pkg/ratelimit/limiter.go'], serviceRepo);
       ok(
         !/WARNING \[ANCHOR DRIFT\]/.test(getClean.stdout) && /WARNING \[ANCHOR DRIFT\]/.test(getDrifted.stdout),
-        'kb.py get verifies live code symbols directly inside standalone single-repo checkouts'
+        'kb.js get verifies live code symbols directly inside standalone single-repo checkouts'
       );
 
-      // 6) Standalone `kb.py propose` stages draft in cache without leaving `.loop/` dirt in service repo
-      const propRes = py([
-        copilotKbPy, 'propose', '--force', '--json',
+      // 6) Standalone `kb.js propose` stages draft in cache without leaving `.loop/` dirt in service repo
+      const propRes = runNode([
+        copilotKbJs, 'propose', '--force', '--json',
         '--id', 'gateway/gotcha/http2-max-concurrent-streams-spike',
         '--title', 'Gateway HTTP/2 MaxConcurrentStreams Exhaustion Under Slow Upstream Reads',
         '--summary', 'Slow upstream body reads pin HTTP/2 streams on harbor-gateway until MaxConcurrentStreams (250) drops new RPCs.',
@@ -1264,28 +1269,26 @@ function stubExternalSkills(wsRoot) {
       const serviceGitDirty = git(['status', '--porcelain'], serviceRepo);
       ok(
         serviceGitDirty === '' && !fs.existsSync(path.join(serviceRepo, '.loop')) && fs.existsSync(propObj.draft),
-        'standalone Copilot `kb.py propose` stages draft in cache and leaves service repo git status 100% clean'
+        'standalone Copilot `kb.js propose` stages draft in cache and leaves service repo git status 100% clean'
       );
 
-      // 7) Standalone `publish.py` publishes cache draft, cleans cache file, and parses GitHub compare_url
-      const pubRes = py([copilotPubPy, '--no-pr', '--json', propObj.draft], { cwd: serviceRepo });
+      // 7) Standalone `publish.js` publishes cache draft, cleans cache file, and parses GitHub compare_url
+      const pubRes = runNode([copilotPubJs, '--no-pr', '--json', propObj.draft], { cwd: serviceRepo });
       assert.strictEqual(pubRes.status, 0, pubRes.stderr);
       const pubObj = JSON.parse(pubRes.stdout);
-      const slugCheck = py([
-        '-c',
-        `import importlib.util; spec=importlib.util.spec_from_file_location("p", ${JSON.stringify(copilotPubPy)}); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.parse_github_slug("git@github.com:acme/harbor-team-kb.git"))`,
-      ]);
+      const { parseGithubSlug } = require(copilotPubJs);
+      const parsedSlug = parseGithubSlug('git@github.com:acme/harbor-team-kb.git');
       ok(
-        pubObj.status === 'published' && pubObj.pushed && !fs.existsSync(propObj.draft) && slugCheck.stdout.trim() === 'acme/harbor-team-kb',
-        'standalone publish.py pushes cache draft cleanly, deletes staged cache file, and parses GitHub PR compare slug'
+        pubObj.status === 'published' && pubObj.pushed && !fs.existsSync(propObj.draft) && parsedSlug === 'acme/harbor-team-kb',
+        'standalone publish.js pushes cache draft cleanly, deletes staged cache file, and parses GitHub PR compare slug'
       );
 
-      // 8) Zero-flag `plug.py uninstall` removes Copilot skills cleanly
-      assert.strictEqual(py([path.join(kbCloneUx, 'plug.py'), 'uninstall'], { cwd: serviceRepo }).status, 0);
-      const statusAfterUninstall = JSON.parse(py([path.join(kbCloneUx, 'plug.py'), 'status', '--json'], { cwd: serviceRepo }).stdout);
+      // 8) Zero-flag `plug.js uninstall` removes Copilot skills cleanly
+      assert.strictEqual(runNode([path.join(kbCloneUx, 'plug.js'), 'uninstall'], { cwd: serviceRepo }).status, 0);
+      const statusAfterUninstall = JSON.parse(runNode([path.join(kbCloneUx, 'plug.js'), 'status', '--json'], { cwd: serviceRepo }).stdout);
       ok(
         !statusAfterUninstall.copilot_status.team_kb_installed && !statusAfterUninstall.copilot_status.publish_installed,
-        'zero-flag `plug.py uninstall` cleanly removes Copilot skills and default_root pointer'
+        'zero-flag `plug.js uninstall` cleanly removes Copilot skills and default_root pointer'
       );
     }
 

@@ -5,19 +5,19 @@ description: "Human-approved publisher for team-kb drafts. Use only inside reque
 
 # Team Knowledge Base Publisher (`team-kb-publish`)
 
-Do **not** add `team-kb-publish` to unattended agents' `loop.skills`. Unattended agents list only `team-kb` and submit `publish.py` exclusively through `request_approval` so a human reviews the SHA-256-bound Markdown file in Harbor Mate Console first.
+Do **not** add `team-kb-publish` to unattended agents' `loop.skills`. Unattended agents list only `team-kb` and submit `publish.js` exclusively through `request_approval` so a human reviews the SHA-256-bound Markdown file in Harbor Mate Console first.
 
 ## Command
 
 ```sh
 # Harbor Mate (after SHA-256 request_approval):
-python3 .github/skills/team-kb-publish/scripts/publish.py .loop/outbox/kb/<domain>/<kind>/<slug>.md
+node .github/skills/team-kb-publish/scripts/publish.js .loop/outbox/kb/<domain>/<kind>/<slug>.md
 
 # Standalone Copilot Chat / CLI (after reviewing staged draft):
-python3 ~/.copilot/skills/team-kb-publish/scripts/publish.py ~/.cache/harbor-kb/drafts/<domain>/<kind>/<slug>.md
+node ~/.copilot/skills/team-kb-publish/scripts/publish.js ~/.cache/harbor-kb/drafts/<domain>/<kind>/<slug>.md
 ```
 
-When executed after approval, `publish.py`:
+When executed after approval, `publish.js`:
 1. Re-validates the draft (schema, secrets, local user paths).
 2. Creates a clean temporary `git worktree` on branch `kb/<domain>-<slug>-<timestamp>` without touching any dirty local checkout.
 3. Writes `kb/<domain>/<kind>/<slug>.md`, commits, pushes the branch to `origin` when configured, and opens a GitHub pull request via `gh pr create` (or prints a one-click GitHub PR compare URL when `gh` is not configured).

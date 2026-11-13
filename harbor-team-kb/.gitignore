@@ -1,5 +1,3 @@
-__pycache__/
-*.py[cod]
-*.sqlite
-*.sqlite-*
+node_modules/
+index.json
 .DS_Store

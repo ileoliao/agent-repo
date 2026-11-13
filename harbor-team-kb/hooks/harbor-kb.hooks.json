@@ -3,7 +3,7 @@
     "sessionStart": [
       {
         "type": "command",
-        "command": "if [ -f .github/skills/team-kb/scripts/kb.py ]; then python3 .github/skills/team-kb/scripts/kb.py redlines --auto --limit 10; elif [ -f \"$HOME/.copilot/skills/team-kb/scripts/kb.py\" ]; then python3 \"$HOME/.copilot/skills/team-kb/scripts/kb.py\" redlines --auto --limit 10; fi 2>/dev/null || true",
+        "command": "if [ -f .github/skills/team-kb/scripts/kb.js ]; then node .github/skills/team-kb/scripts/kb.js redlines --auto --limit 10; elif [ -f \"$HOME/.copilot/skills/team-kb/scripts/kb.js\" ]; then node \"$HOME/.copilot/skills/team-kb/scripts/kb.js\" redlines --auto --limit 10; fi 2>/dev/null || true",
         "timeoutSec": 5
       }
     ]
