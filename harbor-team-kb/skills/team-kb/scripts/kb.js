@@ -33,7 +33,7 @@ const POINTER_REL = path.join(OUTBOX_KB, '.kb_root');
 const SEARCH_MAX_CHARS = 3200;
 const GET_MAX_CHARS = 12000;
 const SYNC_TTL_SEC = 600;
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const SLEEP_ARRAY = new Int32Array(new SharedArrayBuffer(4));
 
 const SECRET_CHECKS = [
@@ -62,12 +62,22 @@ const STOPWORDS = new Set([
   'without', 'would', 'you', 'your',
 ]);
 
-const TECH_SYNONYMS = {
+const TECH_SYNONYMS = Object.assign(Object.create(null), {
   postgresql: 'postgres',
   postgres: 'postgresql',
   k8s: 'kubernetes',
   kubernetes: 'k8s',
-};
+});
+
+function toNullProto(obj) {
+  const out = Object.create(null);
+  if (obj && typeof obj === 'object') {
+    for (const [k, v] of Object.entries(obj)) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
 
 const STEM_KEEP = new Set([
   'series', 'species', 'kubernetes', 'postgres', 'status', 'prometheus', 'redis',
@@ -222,13 +232,6 @@ function withFileLock(lockPath, blocking, fn) {
 }
 
 function maybeSyncGit(kbRoot, cacheDir, force = false) {
-  const inside = spawnSync('git', ['-C', kbRoot, 'rev-parse', '--is-inside-work-tree'], {
-    encoding: 'utf8',
-    timeout: 5000,
-  });
-  if (inside.status !== 0 || (inside.stdout || '').trim() !== 'true') {
-    return 'no-git';
-  }
   const stampFile = path.join(cacheDir, 'last_sync');
   const nowSec = Date.now() / 1000;
   if (!force && fs.existsSync(stampFile)) {
@@ -237,21 +240,48 @@ function maybeSyncGit(kbRoot, cacheDir, force = false) {
       if (nowSec - mtimeSec < SYNC_TTL_SEC) return 'fresh';
     } catch {}
   }
+  const touchStamp = () => {
+    try {
+      fs.writeFileSync(stampFile, String(Math.floor(Date.now() / 1000)), 'utf8');
+    } catch {}
+  };
   return withFileLock(path.join(cacheDir, 'sync.lock'), false, acquired => {
     if (!acquired) return 'busy-skipped';
-    const rem = spawnSync('git', ['-C', kbRoot, 'remote'], { encoding: 'utf8', timeout: 5000 });
+    if (!force && fs.existsSync(stampFile)) {
+      try {
+        const mtimeSec = fs.statSync(stampFile).mtimeMs / 1000;
+        if (Date.now() / 1000 - mtimeSec < SYNC_TTL_SEC) return 'fresh';
+      } catch {}
+    }
+    const inside = spawnSync('git', ['-C', kbRoot, 'rev-parse', '--is-inside-work-tree'], {
+      encoding: 'utf8',
+      timeout: 3000,
+    });
+    if (inside.status !== 0 || (inside.stdout || '').trim() !== 'true') {
+      touchStamp();
+      return 'no-git';
+    }
+    const rem = spawnSync('git', ['-C', kbRoot, 'remote'], { encoding: 'utf8', timeout: 3000 });
     const remotes = (rem.stdout || '').split(/\s+/).filter(Boolean);
-    if (rem.status !== 0 || !remotes.includes('origin')) return 'no-origin';
+    if (rem.status !== 0 || !remotes.includes('origin')) {
+      touchStamp();
+      return 'no-origin';
+    }
     const pull = spawnSync('git', ['-C', kbRoot, 'pull', '--ff-only', '--quiet'], {
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 8000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     });
-    if (pull.status === 0) {
-      fs.writeFileSync(stampFile, String(Math.floor(nowSec)), 'utf8');
-      return 'synced';
-    }
-    return 'offline-cached';
+    touchStamp();
+    return pull.status === 0 ? 'synced' : 'offline-cached';
   });
+}
+
+function autoSyncIfEnabled(kbRoot, cacheDir, opts) {
+  if (opts.noSync) return 'disabled';
+  if (opts.sync) return maybeSyncGit(kbRoot, cacheDir, true);
+  if (process.env.HARBOR_KB_NO_AUTO_SYNC === '1') return 'disabled-env';
+  return maybeSyncGit(kbRoot, cacheDir, false);
 }
 
 // ---- Minimal Deterministic YAML Frontmatter Parser ----
@@ -316,7 +346,7 @@ function parseMarkdownEntry(rawText) {
   }
   const fmBlock = text.slice(4, end);
   const body = end + 5 <= text.length ? text.slice(end + 5) : '';
-  const meta = {};
+  const meta = Object.create(null);
   let curListKey = null;
   for (const rawLine of fmBlock.split('\n')) {
     const line = stripInlineComment(rawLine);
@@ -618,11 +648,25 @@ function loadEntryFromFile(absP, domain, kind, slug, entryId) {
   };
 }
 
+function hydrateIndex(raw) {
+  raw.token_df = toNullProto(raw.token_df);
+  raw.bm25_df = toNullProto(raw.bm25_df);
+  raw.postings = toNullProto(raw.postings);
+  if (Array.isArray(raw.docs)) {
+    for (const d of raw.docs) {
+      if (d && typeof d === 'object') {
+        d.tf = toNullProto(d.tf);
+      }
+    }
+  }
+  return raw;
+}
+
 function readCachedIndex(indexPath, expectedFp) {
   if (!fs.existsSync(indexPath)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
-    if (parsed && parsed.fingerprint === expectedFp) return parsed;
+    if (parsed && parsed.fingerprint === expectedFp) return hydrateIndex(parsed);
   } catch {}
   return null;
 }
@@ -640,9 +684,9 @@ function ensureIndex(kbRoot) {
     const afterLock = readCachedIndex(indexPath, fp);
     if (afterLock) return { index: afterLock, indexPath, rebuilt: false };
 
-    const tokenDf = {};
-    const bm25Df = {};
-    const postings = {};
+    const tokenDf = Object.create(null);
+    const bm25Df = Object.create(null);
+    const postings = Object.create(null);
     const docs = [];
     let totalDl = 0;
 
@@ -664,7 +708,7 @@ function ensureIndex(kbRoot) {
         body: segmentTokens(e.body),
       };
 
-      const tf = {};
+      const tf = Object.create(null);
       let dl = 0;
       const allBase = [];
       for (const [fName, weight] of FIELD_WEIGHTS) {
@@ -746,14 +790,16 @@ function rankSearch(index, queryText, todayStr, { domain = null, kind = null, li
 
   const totalDocs = Math.max(1, index.doc_count || 1);
   const rareIdf = Math.max(1.0, computeIdf(totalDocs, 1));
-  const dfMap = index.token_df || {};
+  const dfMap = index.token_df || Object.create(null);
+  const bm25DfMap = index.bm25_df || Object.create(null);
+  const postingsMap = index.postings || Object.create(null);
   const hasCjkQuery = clauses.some(cl => cl.kind === 'cjk' || cl.kind === 'cjk_bg');
 
   const clauseWeights = clauses.map(cl => {
     const primary = cl.match_tokens[0];
     const stemAlt = /^[a-z]{4,}$/.test(primary) ? `~${stemEn(primary)}` : primary;
-    let bestDf = dfMap[primary];
-    if (bestDf === undefined && dfMap[stemAlt] !== undefined) {
+    let bestDf = Object.prototype.hasOwnProperty.call(dfMap, primary) ? dfMap[primary] : undefined;
+    if (bestDf === undefined && Object.prototype.hasOwnProperty.call(dfMap, stemAlt)) {
       bestDf = dfMap[stemAlt];
     }
     let w;
@@ -774,8 +820,8 @@ function rankSearch(index, queryText, todayStr, { domain = null, kind = null, li
 
   const candidateIdxs = new Set();
   for (const key of uniqueFtsKeys) {
-    const list = index.postings[key];
-    if (list) {
+    const list = Object.prototype.hasOwnProperty.call(postingsMap, key) ? postingsMap[key] : null;
+    if (Array.isArray(list)) {
       for (const idx of list) candidateIdxs.add(idx);
     }
   }
@@ -794,10 +840,12 @@ function rankSearch(index, queryText, todayStr, { domain = null, kind = null, li
 
     const normDl = 1 - b + b * (doc.dl / avgdl);
     let rawBm25Pos = 0;
+    const docTf = doc.tf || Object.create(null);
     for (const key of uniqueFtsKeys) {
-      const wf = doc.tf[key];
+      const wf = Object.prototype.hasOwnProperty.call(docTf, key) ? docTf[key] : 0;
       if (!wf) continue;
-      const idf = computeIdf(totalDocs, index.bm25_df[key] || 1);
+      const dfVal = Object.prototype.hasOwnProperty.call(bm25DfMap, key) ? bm25DfMap[key] : 1;
+      const idf = computeIdf(totalDocs, dfVal || 1);
       rawBm25Pos += idf * ((wf * (k1 + 1)) / (wf + k1 * normDl)) * 0.95;
     }
     candidates.push({ doc, rawBm25Pos });
@@ -1191,7 +1239,7 @@ function siblingPublishScript() {
 function cmdSearch(a) {
   const kbRoot = resolveKbRoot(a.kbRoot);
   const cacheDir = cacheDirFor(kbRoot);
-  if (a.sync) maybeSyncGit(kbRoot, cacheDir, false);
+  autoSyncIfEnabled(kbRoot, cacheDir, a);
   const queryText = (a.query || (a.rest || []).join(' ')).trim();
   if (!queryText) {
     throw new KbError('Provide a search query, e.g. `node kb.js search "RateLimit 429"`.');
@@ -1225,6 +1273,8 @@ function cmdSearch(a) {
 
 function cmdGet(a) {
   const kbRoot = resolveKbRoot(a.kbRoot);
+  const cacheDir = cacheDirFor(kbRoot);
+  autoSyncIfEnabled(kbRoot, cacheDir, a);
   const idArg = a.rest[0];
   if (!idArg) throw new KbError('Pass an entry ID (<domain>/<kind>/<slug>).');
   const [domain, kind, slug, entryId] = normalizeEntryId(idArg);
@@ -1265,6 +1315,8 @@ function cmdGet(a) {
 
 function cmdRedlines(a) {
   const kbRoot = resolveKbRoot(a.kbRoot);
+  const cacheDir = cacheDirFor(kbRoot);
+  autoSyncIfEnabled(kbRoot, cacheDir, a);
   const todayStr = parseIsoDateStr(a.now);
   const { index } = ensureIndex(kbRoot);
   const rows = index.docs
@@ -1562,8 +1614,8 @@ function cmdStats(a) {
   const cacheDir = cacheDirFor(kbRoot);
   const syncState = a.sync ? maybeSyncGit(kbRoot, cacheDir, true) : 'not-requested';
   const { index, indexPath, rebuilt } = ensureIndex(kbRoot);
-  const byDomain = {};
-  const byKind = {};
+  const byDomain = Object.create(null);
+  const byKind = Object.create(null);
   for (const d of index.docs) {
     byDomain[d.domain] = (byDomain[d.domain] || 0) + 1;
     byKind[d.kind] = (byKind[d.kind] || 0) + 1;
@@ -1597,6 +1649,7 @@ function parseCliArgs(argv) {
     kind: null,
     limit: null,
     sync: false,
+    noSync: false,
     workspaceRoot: '.',
     repo: null,
     auto: false,
@@ -1640,6 +1693,7 @@ function parseCliArgs(argv) {
   const BOOL_FLAGS = {
     '--json': 'json',
     '--sync': 'sync',
+    '--no-sync': 'noSync',
     '--auto': 'auto',
     '--force': 'force',
     '--all': 'all',
@@ -1700,7 +1754,7 @@ function printHelp() {
       '',
       'Commands:',
       '  redlines [--auto | --repo <svc> | --domain <dom>]   List active one-line guardrails',
-      '  search [--sync] <query>                             Hybrid BM25 + Porter + code/CJK search',
+      '  search [--sync | --no-sync] <query>                 Hybrid BM25 + Porter + code/CJK search',
       '  get <domain>/<kind>/<slug>                          Read full entry & verify live anchors',
       '  propose --id <id> --title ... --summary ...         Stage & validate a draft entry',
       '  dispute --id <id> --reason "..."                    Stage a live-contradiction dispute draft',

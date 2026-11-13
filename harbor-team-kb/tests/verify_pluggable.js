@@ -14,6 +14,7 @@
  *   8. `kb.js dispute` contradiction workflow
  *   9. End-to-end token usage, 128k context budget & `foldForRequest` benchmark
  *  10. Standalone VS Code Copilot Chat & zero-friction UX verification
+ *  11. Code review regressions: ownership safety, prototype keys, YAML indent, policy gate, baseRef & auto-sync
  */
 const Module = require('module');
 const fs = require('fs');
@@ -93,6 +94,7 @@ const Q = require(`${OUT}/queue.js`);
 const G = require(`${OUT}/gates.js`);
 
 const KB_JS = path.join(KB_ROOT, 'skills', 'team-kb', 'scripts', 'kb.js');
+const PUBLISH_JS = path.join(KB_ROOT, 'skills', 'team-kb-publish', 'scripts', 'publish.js');
 const PLUG_JS = path.join(KB_ROOT, 'plug.js');
 const GOLDEN_PATH = path.join(__dirname, 'golden_queries.json');
 
@@ -1289,6 +1291,337 @@ function stubExternalSkills(wsRoot) {
       ok(
         !statusAfterUninstall.copilot_status.team_kb_installed && !statusAfterUninstall.copilot_status.publish_installed,
         'zero-flag `plug.js uninstall` cleanly removes Copilot skills and default_root pointer'
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // 11. Code review security & correctness regressions (all 6 findings)
+    // -------------------------------------------------------------------------
+    console.log('\n11. Code review regressions: ownership safety, prototype keys, YAML indent, policy gate, baseRef & auto-sync');
+    {
+      // (R1) Ownership manifest: never clobber or delete pre-existing / user-modified files
+      const wsOwn = path.join(tmpBase, 'rev-own-ws');
+      fs.mkdirSync(path.join(wsOwn, '.github', 'skills', 'team-kb'), { recursive: true });
+      fs.mkdirSync(path.join(wsOwn, '.github', 'agents'), { recursive: true });
+      fs.mkdirSync(path.join(wsOwn, '.github', 'hooks'), { recursive: true });
+      const customSkillMd = '---\nname: team-kb\ndescription: Custom user skill.\n---\nCustom body.\n';
+      const customGardener = '---\nname: kb-gardener\ndescription: Custom user gardener.\n---\nKeep me.\n';
+      const customHook = '{"hooks":{"sessionStart":[{"type":"command","command":"echo custom"}]}}\n';
+      fs.writeFileSync(path.join(wsOwn, '.github', 'skills', 'team-kb', 'SKILL.md'), customSkillMd);
+      fs.writeFileSync(path.join(wsOwn, '.github', 'agents', 'kb-gardener.agent.md'), customGardener);
+      fs.writeFileSync(path.join(wsOwn, '.github', 'hooks', 'harbor-kb.json'), customHook);
+
+      const collideSkill = runNode([PLUG_JS, 'install', '-w', wsOwn]);
+      ok(
+        collideSkill.status !== 0 &&
+          /Refusing to overwrite existing skill target/.test(collideSkill.stderr) &&
+          fs.readFileSync(path.join(wsOwn, '.github', 'skills', 'team-kb', 'SKILL.md'), 'utf8') === customSkillMd,
+        'plug.js install refuses to clobber pre-existing unmanaged .github/skills/team-kb directory'
+      );
+
+      fs.rmSync(path.join(wsOwn, '.github', 'skills', 'team-kb'), { recursive: true, force: true });
+      const collideGardener = runNode([PLUG_JS, 'install', '-w', wsOwn]);
+      ok(
+        collideGardener.status !== 0 &&
+          /kb-gardener\.agent\.md/.test(collideGardener.stderr) &&
+          fs.readFileSync(path.join(wsOwn, '.github', 'agents', 'kb-gardener.agent.md'), 'utf8') === customGardener,
+        'plug.js install refuses to overwrite pre-existing custom kb-gardener.agent.md without --force'
+      );
+
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsOwn, '--no-gardener']).status, 0);
+      assert.strictEqual(runNode([PLUG_JS, 'uninstall', '-w', wsOwn]).status, 0);
+      ok(
+        fs.readFileSync(path.join(wsOwn, '.github', 'agents', 'kb-gardener.agent.md'), 'utf8') === customGardener &&
+          fs.readFileSync(path.join(wsOwn, '.github', 'hooks', 'harbor-kb.json'), 'utf8') === customHook,
+        'plug.js uninstall preserves pre-existing unmanaged kb-gardener.agent.md and .github/hooks/harbor-kb.json'
+      );
+
+      // Post-install user modification to managed kb-gardener.agent.md preserved until --force
+      const wsMod = path.join(tmpBase, 'rev-mod-ws');
+      fs.mkdirSync(path.join(wsMod, '.github', 'agents'), { recursive: true });
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsMod]).status, 0);
+      const modGardenerPath = path.join(wsMod, '.github', 'agents', 'kb-gardener.agent.md');
+      fs.appendFileSync(modGardenerPath, '\n<!-- user custom schedule note -->\n');
+      const uninstKeep = JSON.parse(runNode([PLUG_JS, 'uninstall', '-w', wsMod, '--json']).stdout);
+      const keptModified = fs.existsSync(modGardenerPath) && uninstKeep.skipped.some(s => s.includes('kb-gardener.agent.md'));
+      const uninstForce = JSON.parse(runNode([PLUG_JS, 'uninstall', '-w', wsMod, '--force', '--json']).stdout);
+      ok(
+        keptModified && !fs.existsSync(modGardenerPath) && uninstForce.skipped.length === 0,
+        'plug.js uninstall preserves user-modified managed files by default and removes them only with --force'
+      );
+
+      // (R2) Object.prototype key collision (`constructor`, `__proto__`, `toString`, `valueOf`, `hasOwnProperty`)
+      const protoKb = path.join(tmpBase, 'rev-proto-kb');
+      fs.cpSync(KB_ROOT, protoKb, { recursive: true });
+      const protoEntry = path.join(protoKb, 'kb', 'gateway', 'gotcha', 'js-prototype-constructor-guard.md');
+      fs.writeFileSync(
+        protoEntry,
+        [
+          '---',
+          'id: gateway/gotcha/js-prototype-constructor-guard',
+          'title: "Object.prototype constructor __proto__ toString valueOf hasOwnProperty Collision"',
+          'domain: gateway',
+          'kind: gotcha',
+          'summary: "Plain JS objects collide on constructor, __proto__, toString, valueOf, and hasOwnProperty keys during indexing."',
+          'triggers:',
+          '  - constructor',
+          '  - __proto__',
+          '  - toString',
+          '  - valueOf',
+          '  - hasOwnProperty',
+          'sources:',
+          '  - harbor-gateway:internal/proxy/proto.go',
+          'verified_at: 2026-04-15',
+          'confidence: high',
+          '---',
+          '',
+          '## Root Cause',
+          'Lookup on constructor or toString hits Object.prototype unless Object.create(null) is used.',
+          '',
+        ].join('\n')
+      );
+      const coldProto = runNode(
+        [KB_JS, '--kb-root', protoKb, '--no-sync', '--json', 'search', 'constructor __proto__ toString valueOf hasOwnProperty'],
+        { env: { HARBOR_KB_NO_AUTO_SYNC: '1' } }
+      );
+      assert.strictEqual(coldProto.status, 0, coldProto.stderr);
+      const warmProto = runNode(
+        [KB_JS, '--kb-root', protoKb, '--no-sync', '--json', 'search', 'constructor'],
+        { env: { HARBOR_KB_NO_AUTO_SYNC: '1' } }
+      );
+      assert.strictEqual(warmProto.status, 0, warmProto.stderr);
+      const coldHits = JSON.parse(coldProto.stdout).results;
+      const warmHits = JSON.parse(warmProto.stdout).results;
+      ok(
+        coldHits[0]?.id === 'gateway/gotcha/js-prototype-constructor-guard' &&
+          warmHits[0]?.id === 'gateway/gotcha/js-prototype-constructor-guard' &&
+          Number.isFinite(warmHits[0].score),
+        'kb.js cold index build and warm cached search handle constructor/__proto__/toString/valueOf without prototype collision'
+      );
+
+      // (R3) Dynamic YAML indentation (4-space `loop:` inline & block-list `skills:`)
+      const wsYaml = path.join(tmpBase, 'rev-yaml-ws');
+      fs.mkdirSync(path.join(wsYaml, '.github', 'agents'), { recursive: true });
+      const fourInline = [
+        '---',
+        'name: ops-inline',
+        'description: Four-space loop mate without prior skills.',
+        'loop:',
+        '    schedule: "0 * * * *"',
+        '    task: Audit gateway queues.',
+        '---',
+        'Inspect queues carefully.',
+        '',
+      ].join('\n');
+      const fourBlock = [
+        '---',
+        'name: ops-block',
+        'description: Four-space loop mate with 8-space block skill list.',
+        'loop:',
+        '    schedule: "30 * * * *"',
+        '    skills:',
+        '        - harbor-memory',
+        '    task: Triage webhook backlog.',
+        '---',
+        'Check webhook backlog.',
+        '',
+      ].join('\n');
+      fs.writeFileSync(path.join(wsYaml, '.github', 'agents', 'ops-inline.agent.md'), fourInline);
+      fs.writeFileSync(path.join(wsYaml, '.github', 'agents', 'ops-block.agent.md'), fourBlock);
+      stubExternalSkills(wsYaml);
+      const yamlSnapBefore = snapshotTree(wsYaml);
+
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsYaml, '--no-gardener']).status, 0);
+      const parsedAgents = loadAllAgents(wsYaml);
+      const aInline = parsedAgents.get('ops-inline');
+      const aBlock = parsedAgents.get('ops-block');
+      const yamlErrors = validateTeam(parsedAgents, loadSkills(wsYaml)).filter(p => p.level === 'error');
+      assert.strictEqual(runNode([PLUG_JS, 'uninstall', '-w', wsYaml]).status, 0);
+      const yamlSnapAfter = snapshotTree(wsYaml);
+      ok(
+        aInline &&
+          aInline.schedule === '0 * * * *' &&
+          aInline.task === 'Audit gateway queues.' &&
+          JSON.stringify(aInline.skills) === JSON.stringify(['team-kb']) &&
+          aBlock &&
+          aBlock.schedule === '30 * * * *' &&
+          aBlock.task === 'Triage webhook backlog.' &&
+          JSON.stringify(aBlock.skills) === JSON.stringify(['harbor-memory', 'team-kb']) &&
+          yamlErrors.length === 0 &&
+          JSON.stringify(yamlSnapBefore) === JSON.stringify(yamlSnapAfter),
+        'plug.js preserves 4-space YAML loop indentation (inline & block skills) and restores byte-for-byte on uninstall'
+      );
+
+      // (R4) Default workspace without `.loop/policy.json` + `standard` policy without explicit `approveCommands`
+      const wsNoPol = path.join(tmpBase, 'rev-nopol-ws');
+      fs.mkdirSync(path.join(wsNoPol, '.github', 'agents'), { recursive: true });
+      fs.writeFileSync(path.join(wsNoPol, '.github', 'agents', 'worker.agent.md'), fourInline);
+      const noPolBefore = snapshotTree(wsNoPol);
+
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsNoPol, '--no-gardener']).status, 0);
+      const effDefaultPol = loadPolicy(wsNoPol, '.loop/policy.json', 'standard');
+      const pubGateDecision = decideCommand(
+        effDefaultPol,
+        'node .github/skills/team-kb-publish/scripts/publish.js .loop/outbox/kb/gateway/gotcha/x.md'
+      );
+      const gitPushDecision = decideCommand(effDefaultPol, 'git push origin main');
+      assert.strictEqual(runNode([PLUG_JS, 'uninstall', '-w', wsNoPol]).status, 0);
+      const noPolAfter = snapshotTree(wsNoPol);
+      ok(
+        pubGateDecision.decision === 'deny' &&
+          pubGateDecision.approval === true &&
+          gitPushDecision.decision === 'deny' &&
+          gitPushDecision.approval === true &&
+          !fs.existsSync(path.join(wsNoPol, '.loop')) &&
+          JSON.stringify(noPolBefore) === JSON.stringify(noPolAfter),
+        'workspace without .loop/policy.json gets publish.js approval gate + STANDARD_APPROVE defaults, and cleans up byte-for-byte on uninstall'
+      );
+
+      const wsImplicitStd = path.join(tmpBase, 'rev-implicit-std-ws');
+      fs.mkdirSync(path.join(wsImplicitStd, '.loop'), { recursive: true });
+      fs.mkdirSync(path.join(wsImplicitStd, '.github', 'agents'), { recursive: true });
+      const implicitPolRaw = '{\n  "profile": "standard"\n}\n';
+      fs.writeFileSync(path.join(wsImplicitStd, '.loop', 'policy.json'), implicitPolRaw);
+      assert.strictEqual(runNode([PLUG_JS, 'install', '-w', wsImplicitStd, '--no-gardener']).status, 0);
+      const effImplicitPol = loadPolicy(wsImplicitStd, '.loop/policy.json', 'standard');
+      const impPub = decideCommand(
+        effImplicitPol,
+        'node .github/skills/team-kb-publish/scripts/publish.js .loop/outbox/kb/gateway/gotcha/x.md'
+      );
+      const impKube = decideCommand(effImplicitPol, 'kubectl apply -f deploy.yaml');
+      assert.strictEqual(runNode([PLUG_JS, 'uninstall', '-w', wsImplicitStd]).status, 0);
+      ok(
+        impPub.decision === 'deny' &&
+          impPub.approval === true &&
+          impKube.decision === 'deny' &&
+          impKube.approval === true &&
+          fs.readFileSync(path.join(wsImplicitStd, '.loop', 'policy.json'), 'utf8') === implicitPolRaw,
+        'standard policy omitting approveCommands keeps built-in STANDARD_APPROVE rules alongside publish.js gate and restores exact JSON'
+      );
+
+      // (R5) Fail-closed publish baseline: never leak unmerged local feature-branch commits
+      const bareTrunk = path.join(tmpBase, 'rev-trunk-origin.git');
+      const seedTrunk = path.join(tmpBase, 'rev-trunk-seed');
+      const clonePub = path.join(tmpBase, 'rev-trunk-clone');
+      git(['init', '--bare', bareTrunk], tmpBase);
+      fs.cpSync(KB_ROOT, seedTrunk, { recursive: true });
+      git(['init', '-b', 'trunk'], seedTrunk);
+      git(['config', 'user.name', 'Seed'], seedTrunk);
+      git(['config', 'user.email', 'seed@example.com'], seedTrunk);
+      git(['add', '.'], seedTrunk);
+      git(['commit', '-m', 'seed trunk'], seedTrunk);
+      git(['remote', 'add', 'origin', bareTrunk], seedTrunk);
+      git(['push', '-u', 'origin', 'trunk'], seedTrunk);
+      git(['symbolic-ref', 'HEAD', 'refs/heads/trunk'], bareTrunk);
+
+      // Initialize clone via `git init + remote add` so local `refs/remotes/origin/HEAD` is NOT pre-populated!
+      fs.mkdirSync(clonePub, { recursive: true });
+      git(['init', '-b', 'trunk'], clonePub);
+      git(['config', 'user.name', 'Dev'], clonePub);
+      git(['config', 'user.email', 'dev@example.com'], clonePub);
+      git(['remote', 'add', 'origin', bareTrunk], clonePub);
+      git(['fetch', 'origin'], clonePub);
+      git(['checkout', '-B', 'trunk', 'origin/trunk'], clonePub);
+
+      // Switch engineer checkout to an unmerged feature branch with an unrelated file commit
+      git(['checkout', '-b', 'feat/unmerged-local-work'], clonePub);
+      fs.writeFileSync(path.join(clonePub, 'UNMERGED_LOCAL_SECRET_WORK.txt'), 'unmerged feature work\n');
+      git(['add', 'UNMERGED_LOCAL_SECRET_WORK.txt'], clonePub);
+      git(['commit', '-m', 'wip: unmerged local feature'], clonePub);
+
+      // Stage a clean KB draft
+      const draftStageWs = path.join(tmpBase, 'rev-pub-stage');
+      const draftStagePath = path.join(draftStageWs, '.loop', 'outbox', 'kb', 'gateway', 'gotcha', 'trunk-isolation-check.md');
+      fs.mkdirSync(path.dirname(draftStagePath), { recursive: true });
+      fs.writeFileSync(
+        draftStagePath,
+        [
+          '---',
+          'id: gateway/gotcha/trunk-isolation-check',
+          'title: "Ensure Publish Branches Strictly Off Remote Default Branch"',
+          'domain: gateway',
+          'kind: gotcha',
+          'summary: "publish.js resolves origin default branch via ls-remote symref and never branches off unmerged local HEAD."',
+          'triggers:',
+          '  - trunk isolation check',
+          '  - ls-remote symref origin default branch',
+          'sources:',
+          '  - harbor-gateway:cmd/gateway/main.go',
+          'verified_at: 2026-04-15',
+          'confidence: high',
+          '---',
+          '',
+          '## Verified Action',
+          'Always branch worktree from verified remote tracking ref.',
+          '',
+        ].join('\n')
+      );
+
+      const draftRelPath = '.loop/outbox/kb/gateway/gotcha/trunk-isolation-check.md';
+      // 5a) When `git fetch origin` fails, publish.js MUST fail closed instead of falling back to local HEAD
+      git(['remote', 'set-url', 'origin', path.join(tmpBase, 'non-existent-origin.git')], clonePub);
+      const failedFetchPub = runNode(
+        [PUBLISH_JS, '--kb-root', clonePub, '--no-pr', draftRelPath],
+        { cwd: draftStageWs }
+      );
+      ok(
+        failedFetchPub.status !== 0 && /Failed to fetch from origin/.test(failedFetchPub.stderr),
+        'publish.js fails closed when git fetch origin fails instead of falling back to unmerged local HEAD'
+      );
+
+      // 5b) Restore valid `origin` (with `trunk` default branch and NO local origin/HEAD symref) -> publishes cleanly without unmerged commit!
+      git(['remote', 'set-url', 'origin', bareTrunk], clonePub);
+      const cleanTrunkPub = runNode(
+        [PUBLISH_JS, '--kb-root', clonePub, '--no-pr', '--json', draftRelPath],
+        { cwd: draftStageWs }
+      );
+      assert.strictEqual(cleanTrunkPub.status, 0, cleanTrunkPub.stderr);
+      const pubMeta = JSON.parse(cleanTrunkPub.stdout);
+      const remoteFilesOnKbBranch = git(['ls-tree', '-r', '--name-only', `refs/heads/${pubMeta.branch}`], bareTrunk).split('\n');
+      ok(
+        pubMeta.base_ref === 'origin/trunk' &&
+          remoteFilesOnKbBranch.includes('kb/gateway/gotcha/trunk-isolation-check.md') &&
+          !remoteFilesOnKbBranch.includes('UNMERGED_LOCAL_SECRET_WORK.txt'),
+        'publish.js resolves non-main remote default branch (origin/trunk) and excludes unmerged local feature-branch commits'
+      );
+
+      // (R6) Default throttled auto-sync on `search` / `redlines` without `--sync` (plus `--no-sync` opt-out)
+      const autoConsumer = path.join(tmpBase, 'rev-autosync-consumer');
+      git(['clone', bareTrunk, autoConsumer], tmpBase);
+      // Warm initial cache + last_sync stamp on consumer
+      const initAutoSearch = runNode([KB_JS, '--kb-root', autoConsumer, '--json', 'search', 'trunk isolation check']);
+      assert.strictEqual(initAutoSearch.status, 0, initAutoSearch.stderr);
+      assert.ok(
+        !JSON.parse(initAutoSearch.stdout).results.some(r => r.id === 'gateway/gotcha/trunk-isolation-check')
+      );
+
+      // Merge the published KB branch into bare origin's `trunk`
+      const mergeWt = path.join(tmpBase, 'rev-autosync-merger');
+      git(['clone', bareTrunk, mergeWt], tmpBase);
+      git(['config', 'user.name', 'Reviewer'], mergeWt);
+      git(['config', 'user.email', 'rev@example.com'], mergeWt);
+      git(['merge', '--no-ff', `origin/${pubMeta.branch}`, '-m', 'Merge trunk-isolation-check'], mergeWt);
+      git(['push', 'origin', 'trunk'], mergeWt);
+
+      // Expire consumer's 10-minute `last_sync` TTL stamp to simulate elapsed session window
+      const consumerStats = JSON.parse(runNode([KB_JS, '--kb-root', autoConsumer, '--json', 'stats']).stdout);
+      const stampPath = path.join(path.dirname(consumerStats.index_file), 'last_sync');
+      const expiredTime = new Date(Date.now() - 605 * 1000);
+      fs.utimesSync(stampPath, expiredTime, expiredTime);
+
+      // With `--no-sync`, consumer does NOT pull remote changes even when TTL is expired
+      const skippedSyncRes = JSON.parse(
+        runNode([KB_JS, '--kb-root', autoConsumer, '--no-sync', '--json', 'search', 'trunk isolation check']).stdout
+      );
+      // Default `search` (WITHOUT `--sync`!) automatically pulls `origin`, rebuilds index, and finds the merged entry!
+      const defaultAutoSyncRes = JSON.parse(
+        runNode([KB_JS, '--kb-root', autoConsumer, '--json', 'search', 'trunk isolation check']).stdout
+      );
+      ok(
+        !skippedSyncRes.results.some(r => r.id === 'gateway/gotcha/trunk-isolation-check') &&
+          defaultAutoSyncRes.results.length > 0 &&
+          defaultAutoSyncRes.results[0].id === 'gateway/gotcha/trunk-isolation-check',
+        'default `kb.js search` (without --sync) auto-pulls merged teammate entries once TTL expires, while --no-sync opts out'
       );
     }
 

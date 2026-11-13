@@ -23,6 +23,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const KB_REPO_ROOT = __dirname;
@@ -30,6 +31,30 @@ const MARKER_START = '<!-- harbor-team-kb:start -->';
 const MARKER_END = '<!-- harbor-team-kb:end -->';
 const APPROVE_RULE = 'team-kb-publish/scripts/publish\\.js';
 const LEGACY_APPROVE_RULE = 'team-kb-publish/scripts/publish\\.py';
+
+/**
+ * Built-in `STANDARD_APPROVE` baseline from `loop-runner/src/policy.ts`.
+ * Needed whenever `.loop/policy.json` is absent (default workspace runs `standard` profile)
+ * or when a `standard` policy file omits `approveCommands` (because `loadPolicy` replaces
+ * `base.approveCommands` if `custom.approveCommands` is defined).
+ */
+const HTTP_WRITE_METHODS_RE =
+  '(' +
+  ['POST', 'PUT', 'PATCH', 'DELETE']
+    .map(w => [...w].map(c => `[${c}${c.toLowerCase()}]`).join(''))
+    .join('|') +
+  ')';
+
+const STANDARD_APPROVE_DEFAULTS = [
+  '\\bgit push\\b',
+  '\\bgit\\b(?:\\s+-\\S+(?:\\s+[^\\s-]\\S*)?)*\\s+push\\b',
+  '\\b(npm|pnpm|yarn) publish\\b',
+  '\\b(kubectl|helm|terraform)\\s+(apply|delete|destroy|upgrade|install)\\b',
+  '\\bdocker push\\b',
+  `\\b(curl|wget)\\b.*(\\s-X\\s*${HTTP_WRITE_METHODS_RE}|\\s--request[\\s=]+${HTTP_WRITE_METHODS_RE}|\\s(-d|--data[\\w-]*|-F|--form|-T|--upload-file|--json)\\b)`,
+  '\\b(ssh|scp|rsync|nc)\\b',
+  '\\brm\\s+.*(\\s)(/|~)',
+];
 
 const AGENT_SNIPPET = `${MARKER_START}
 ## Shared Team Knowledge (\`team-kb\`)
@@ -81,6 +106,202 @@ function isFile(target) {
   }
 }
 
+function sha256Bytes(buf) {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+function sha256File(filePath) {
+  return sha256Bytes(fs.readFileSync(filePath));
+}
+
+function sha256Tree(dirPath) {
+  const h = crypto.createHash('sha256');
+  function walk(cur, relPrefix) {
+    const entries = fs.readdirSync(cur, { withFileTypes: true }).sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+    );
+    for (const ent of entries) {
+      const rel = relPrefix ? `${relPrefix}/${ent.name}` : ent.name;
+      const full = path.join(cur, ent.name);
+      if (ent.isDirectory()) {
+        h.update(`D:${rel}\0`);
+        walk(full, rel);
+      } else if (ent.isSymbolicLink()) {
+        h.update(`L:${rel}:${fs.readlinkSync(full)}\0`);
+      } else if (ent.isFile()) {
+        h.update(`F:${rel}:`);
+        h.update(fs.readFileSync(full));
+        h.update('\0');
+      }
+    }
+  }
+  walk(dirPath, '');
+  return h.digest('hex');
+}
+
+function manifestsDir() {
+  return path.join(os.homedir(), '.cache', 'harbor-kb', 'manifests');
+}
+
+function wsManifestPath(ws) {
+  let canonical = path.resolve(ws);
+  try {
+    canonical = fs.realpathSync(ws);
+  } catch {}
+  const key = sha256Bytes(Buffer.from(canonical, 'utf8')).slice(0, 24);
+  return path.join(manifestsDir(), `ws-${key}.json`);
+}
+
+function copilotManifestPath() {
+  return path.join(manifestsDir(), 'copilot.json');
+}
+
+function loadManifest(manifestFile) {
+  if (!isFile(manifestFile)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function saveManifest(manifestFile, data) {
+  fs.mkdirSync(path.dirname(manifestFile), { recursive: true });
+  fs.writeFileSync(manifestFile, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+}
+
+function ensureDirTracked(dirPath, wsRoot, createdDirsSet) {
+  const absTarget = path.resolve(dirPath);
+  const absWs = path.resolve(wsRoot);
+  const rel = path.relative(absWs, absTarget);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    fs.mkdirSync(absTarget, { recursive: true });
+    return;
+  }
+  const parts = rel.split(path.sep).filter(Boolean);
+  let cur = absWs;
+  for (const part of parts) {
+    cur = path.join(cur, part);
+    if (!lstatExists(cur)) {
+      fs.mkdirSync(cur);
+      createdDirsSet.add(path.relative(absWs, cur).replace(/\\/g, '/'));
+    }
+  }
+}
+
+function inspectSkillTarget(srcDir, dstDir, manifestEntry) {
+  if (!lstatExists(dstDir)) {
+    return { exists: false, owned: false, unmodified: true };
+  }
+  const realSrc = fs.realpathSync(srcDir);
+  if (isSymlink(dstDir)) {
+    const rawLink = fs.readlinkSync(dstDir);
+    const resolvedLink = path.resolve(path.dirname(dstDir), rawLink);
+    let realDst = resolvedLink;
+    try {
+      realDst = fs.realpathSync(dstDir);
+    } catch {}
+    if (realDst === realSrc || resolvedLink === realSrc) {
+      return { exists: true, owned: true, unmodified: true, kind: 'symlink' };
+    }
+    const ownedByManifest = Boolean(manifestEntry && manifestEntry.owned);
+    return {
+      exists: true,
+      owned: ownedByManifest,
+      unmodified: false,
+      kind: 'symlink',
+      reason: `symlink points to ${rawLink}`,
+    };
+  }
+  if (isDir(dstDir)) {
+    const srcHash = sha256Tree(srcDir);
+    const dstHash = sha256Tree(dstDir);
+    if (manifestEntry && manifestEntry.owned === false) {
+      return {
+        exists: true,
+        owned: false,
+        unmodified: false,
+        kind: 'dir',
+        reason: 'pre-existing unmanaged skill directory',
+      };
+    }
+    if (dstHash === srcHash) {
+      return { exists: true, owned: true, unmodified: true, kind: 'dir', treeHash: dstHash };
+    }
+    if (manifestEntry && manifestEntry.owned) {
+      const unmodified = Boolean(manifestEntry.treeHash && dstHash === manifestEntry.treeHash);
+      return {
+        exists: true,
+        owned: true,
+        unmodified,
+        kind: 'dir',
+        treeHash: dstHash,
+        reason: unmodified ? undefined : 'installed skill directory has local modifications',
+      };
+    }
+    return {
+      exists: true,
+      owned: false,
+      unmodified: false,
+      kind: 'dir',
+      reason: 'pre-existing unmanaged skill directory',
+    };
+  }
+  return {
+    exists: true,
+    owned: false,
+    unmodified: false,
+    kind: 'file',
+    reason: 'pre-existing non-directory file at skill path',
+  };
+}
+
+function inspectFileTarget(tplPath, dstPath, manifestEntry) {
+  if (!lstatExists(dstPath)) {
+    return { exists: false, owned: false, unmodified: true };
+  }
+  if (!isFile(dstPath) || isSymlink(dstPath)) {
+    return {
+      exists: true,
+      owned: Boolean(manifestEntry && manifestEntry.owned),
+      unmodified: false,
+      reason: 'pre-existing symlink or non-regular file',
+    };
+  }
+  const tplSha = sha256File(tplPath);
+  const dstSha = sha256File(dstPath);
+  if (manifestEntry && manifestEntry.owned === false) {
+    return {
+      exists: true,
+      owned: false,
+      unmodified: false,
+      sha256: dstSha,
+      reason: 'pre-existing user file',
+    };
+  }
+  if (manifestEntry && manifestEntry.owned) {
+    const expected = manifestEntry.installedSha256 || tplSha;
+    const unmodified = dstSha === expected || dstSha === tplSha;
+    return {
+      exists: true,
+      owned: true,
+      unmodified,
+      sha256: dstSha,
+      reason: unmodified ? undefined : 'file was modified after install',
+    };
+  }
+  if (dstSha === tplSha) {
+    return { exists: true, owned: true, unmodified: true, sha256: dstSha };
+  }
+  return {
+    exists: true,
+    owned: false,
+    unmodified: false,
+    sha256: dstSha,
+    reason: 'pre-existing file with custom content',
+  };
+}
+
 function removeExistingLinkOrDir(target) {
   if (!lstatExists(target)) return;
   const lst = fs.lstatSync(target);
@@ -91,14 +312,19 @@ function removeExistingLinkOrDir(target) {
   }
 }
 
-function installSkillDir(srcDir, dstDir, mode) {
-  fs.mkdirSync(path.dirname(dstDir), { recursive: true });
+function installSkillDir(srcDir, dstDir, mode, wsRoot = null, createdDirsSet = null) {
+  if (wsRoot && createdDirsSet) {
+    ensureDirTracked(path.dirname(dstDir), wsRoot, createdDirsSet);
+  } else {
+    fs.mkdirSync(path.dirname(dstDir), { recursive: true });
+  }
   removeExistingLinkOrDir(dstDir);
   if (mode === 'symlink') {
     fs.symlinkSync(srcDir, dstDir, 'dir');
-  } else {
-    fs.cpSync(srcDir, dstDir, { recursive: true });
+    return { owned: true, mode: 'symlink' };
   }
+  fs.cpSync(srcDir, dstDir, { recursive: true });
+  return { owned: true, mode: 'copy', treeHash: sha256Tree(dstDir) };
 }
 
 function escapeRegExp(s) {
@@ -106,34 +332,74 @@ function escapeRegExp(s) {
 }
 
 function splitFrontmatter(raw) {
+  const nl = String(raw).includes('\r\n') ? '\r\n' : '\n';
   const text = String(raw).replace(/\r\n/g, '\n');
-  if (!text.startsWith('---\n')) return [null, text];
+  if (!text.startsWith('---\n')) return [null, text, nl];
   const end = text.indexOf('\n---\n', 4);
-  if (end === -1) return [null, text];
-  return [text.slice(4, end), text.slice(end + 5)];
+  if (end === -1) return [null, text, nl];
+  return [text.slice(4, end), text.slice(end + 5), nl];
+}
+
+function lineIndent(line) {
+  return line.length - line.trimStart().length;
+}
+
+function isBlankOrComment(line) {
+  const t = line.trim();
+  return t === '' || t.startsWith('#');
+}
+
+function unquoteYamlScalar(s) {
+  const t = s.trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+/**
+ * Locate the `loop:` map block and detect its exact child key indentation (`childIndent`),
+ * matching `loop-runner/src/frontmatter.ts` (`parseMap`).
+ */
+function findLoopBlock(lines) {
+  const loopIdx = lines.findIndex(l => /^\s*loop\s*:\s*(?:#.*)?$/.test(l));
+  if (loopIdx === -1) return null;
+  const loopIndent = lineIndent(lines[loopIdx]);
+  let childIndent = null;
+  let loopEnd = lines.length;
+  for (let i = loopIdx + 1; i < lines.length; i++) {
+    if (isBlankOrComment(lines[i])) continue;
+    const ind = lineIndent(lines[i]);
+    if (ind <= loopIndent) {
+      loopEnd = i;
+      break;
+    }
+    if (childIndent === null) {
+      childIndent = ind;
+    }
+  }
+  if (childIndent === null) {
+    childIndent = loopIndent + 2;
+  }
+  return { loopIdx, loopEnd, loopIndent, childIndent };
 }
 
 function addSkillToAgentText(raw, skillName = 'team-kb') {
-  const [fm, origBody] = splitFrontmatter(raw);
+  const [fm, origBody, nl] = splitFrontmatter(raw);
   if (fm === null) return [raw, false];
   let body = origBody;
   const lines = fm.split('\n');
-  const loopIdx = lines.findIndex(l => /^loop:\s*(#.*)?$/.test(l));
-  if (loopIdx === -1) return [raw, false];
+  const blk = findLoopBlock(lines);
+  if (!blk) return [raw, false];
 
   let changed = false;
-  let i = loopIdx + 1;
   let skillsLineIdx = null;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.trim() && !line.startsWith(' ') && !line.startsWith('\t') && !line.trimStart().startsWith('#')) {
-      break;
-    }
-    if (/^\s{2}skills\s*:/.test(line)) {
+  for (let i = blk.loopIdx + 1; i < blk.loopEnd; i++) {
+    if (isBlankOrComment(lines[i])) continue;
+    if (lineIndent(lines[i]) === blk.childIndent && /^skills\s*:(?:\s|$)/.test(lines[i].trim())) {
       skillsLineIdx = i;
       break;
     }
-    i++;
   }
 
   if (skillsLineIdx !== null) {
@@ -142,25 +408,43 @@ function addSkillToAgentText(raw, skillName = 'team-kb') {
     if (mInline) {
       const [, prefix, inner, suffix] = mInline;
       const items = inner.split(',').map(x => x.trim()).filter(Boolean);
-      if (!items.includes(skillName)) {
+      const unquoted = items.map(unquoteYamlScalar);
+      if (!unquoted.includes(skillName)) {
         items.push(skillName);
         lines[skillsLineIdx] = `${prefix}${items.join(', ')}${suffix}`;
         changed = true;
       }
-    } else {
-      let j = skillsLineIdx + 1;
+    } else if (/^skills\s*:\s*(?:#.*)?$/.test(line.trim())) {
+      let k = skillsLineIdx + 1;
+      while (k < blk.loopEnd && isBlankOrComment(lines[k])) k++;
+      let itemIndent = blk.childIndent + 2;
+      let lastItemIdx = skillsLineIdx;
       const existing = [];
-      while (j < lines.length && /^\s{4,}-\s+\S+/.test(lines[j])) {
-        existing.push(lines[j].replace(/^\s*-\s+/, '').trim());
-        j++;
+      if (k < blk.loopEnd && lineIndent(lines[k]) >= blk.childIndent && lines[k].trimStart().startsWith('- ')) {
+        itemIndent = lineIndent(lines[k]);
+        let j = k;
+        while (j < blk.loopEnd) {
+          if (isBlankOrComment(lines[j])) {
+            j++;
+            continue;
+          }
+          if (lineIndent(lines[j]) === itemIndent && lines[j].trimStart().startsWith('- ')) {
+            const rawVal = lines[j].trimStart().slice(2).replace(/\s+#.*$/, '').trim();
+            existing.push(unquoteYamlScalar(rawVal));
+            lastItemIdx = j;
+            j++;
+          } else {
+            break;
+          }
+        }
       }
       if (!existing.includes(skillName)) {
-        lines.splice(j, 0, `    - ${skillName}`);
+        lines.splice(lastItemIdx + 1, 0, `${' '.repeat(itemIndent)}- ${skillName}`);
         changed = true;
       }
     }
   } else {
-    lines.splice(loopIdx + 1, 0, `  skills: [${skillName}]`);
+    lines.splice(blk.loopIdx + 1, 0, `${' '.repeat(blk.childIndent)}skills: [${skillName}]`);
     changed = true;
   }
 
@@ -170,55 +454,79 @@ function addSkillToAgentText(raw, skillName = 'team-kb') {
   }
 
   if (!changed) return [raw, false];
-  return [`---\n${lines.join('\n')}\n---\n${body}`, true];
+  const out = `---\n${lines.join('\n')}\n---\n${body}`;
+  return [nl === '\r\n' ? out.replace(/\n/g, '\r\n') : out, true];
 }
 
 function removeSkillFromAgentText(raw, skillName = 'team-kb') {
-  const [fm, origBody] = splitFrontmatter(raw);
+  const [fm, origBody, nl] = splitFrontmatter(raw);
   if (fm === null) return [raw, false];
   let body = origBody;
   const lines = fm.split('\n');
+  const blk = findLoopBlock(lines);
   let changed = false;
 
-  const newLines = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const mInline = /^(\s*skills\s*:\s*\[)(.*?)(\]\s*(?:#.*)?)$/.exec(line);
-    if (mInline) {
-      const [, prefix, inner, suffix] = mInline;
-      const items = inner.split(',').map(x => x.trim()).filter(Boolean);
-      if (items.includes(skillName)) {
-        const filtered = items.filter(x => x !== skillName);
-        changed = true;
-        if (filtered.length) {
-          newLines.push(`${prefix}${filtered.join(', ')}${suffix}`);
-        }
-        i++;
+  if (blk) {
+    for (let i = blk.loopIdx + 1; i < blk.loopEnd; i++) {
+      if (isBlankOrComment(lines[i])) continue;
+      if (lineIndent(lines[i]) !== blk.childIndent || !/^skills\s*:(?:\s|$)/.test(lines[i].trim())) {
         continue;
       }
-    }
-    if (/^\s{2}skills\s*:\s*$/.test(line)) {
-      let j = i + 1;
-      const kept = [];
-      let hadTarget = false;
-      while (j < lines.length && /^\s{4,}-\s+\S+/.test(lines[j])) {
-        const val = lines[j].replace(/^\s*-\s+/, '').trim();
-        if (val === skillName) hadTarget = true;
-        else kept.push(lines[j]);
-        j++;
-      }
-      if (hadTarget) {
-        changed = true;
-        if (kept.length) {
-          newLines.push(line, ...kept);
+      const line = lines[i];
+      const mInline = /^(\s*skills\s*:\s*\[)(.*?)(\]\s*(?:#.*)?)$/.exec(line);
+      if (mInline) {
+        const [, prefix, inner, suffix] = mInline;
+        const items = inner.split(',').map(x => x.trim()).filter(Boolean);
+        if (items.some(x => unquoteYamlScalar(x) === skillName)) {
+          const filtered = items.filter(x => unquoteYamlScalar(x) !== skillName);
+          changed = true;
+          if (filtered.length) {
+            lines[i] = `${prefix}${filtered.join(', ')}${suffix}`;
+          } else {
+            lines.splice(i, 1);
+          }
         }
-        i = j;
-        continue;
+        break;
+      }
+      if (/^skills\s*:\s*(?:#.*)?$/.test(line.trim())) {
+        let k = i + 1;
+        while (k < blk.loopEnd && isBlankOrComment(lines[k])) k++;
+        if (k < blk.loopEnd && lineIndent(lines[k]) >= blk.childIndent && lines[k].trimStart().startsWith('- ')) {
+          const itemIndent = lineIndent(lines[k]);
+          let endList = k;
+          let lastItemIdx = k - 1;
+          const itemIdxs = [];
+          while (endList < blk.loopEnd) {
+            if (isBlankOrComment(lines[endList])) {
+              endList++;
+              continue;
+            }
+            if (lineIndent(lines[endList]) === itemIndent && lines[endList].trimStart().startsWith('- ')) {
+              itemIdxs.push(endList);
+              lastItemIdx = endList;
+              endList++;
+            } else {
+              break;
+            }
+          }
+          const matching = itemIdxs.filter(idx => {
+            const rawVal = lines[idx].trimStart().slice(2).replace(/\s+#.*$/, '').trim();
+            return unquoteYamlScalar(rawVal) === skillName;
+          });
+          if (matching.length) {
+            changed = true;
+            if (matching.length === itemIdxs.length) {
+              lines.splice(i, lastItemIdx - i + 1);
+            } else {
+              for (let m = matching.length - 1; m >= 0; m--) {
+                lines.splice(matching[m], 1);
+              }
+            }
+          }
+        }
+        break;
       }
     }
-    newLines.push(line);
-    i++;
   }
 
   if (body.includes(MARKER_START) && body.includes(MARKER_END)) {
@@ -228,33 +536,174 @@ function removeSkillFromAgentText(raw, skillName = 'team-kb') {
   }
 
   if (!changed) return [raw, false];
-  return [`---\n${newLines.join('\n')}\n---\n${body}`, true];
+  const out = `---\n${lines.join('\n')}\n---\n${body}`;
+  return [nl === '\r\n' ? out.replace(/\n/g, '\r\n') : out, true];
 }
 
-function patchStandardPolicy(workspace, install = true) {
-  const policyPath = path.join(workspace, '.loop', 'policy.json');
-  if (!isFile(policyPath)) return false;
-  let data;
-  try {
-    data = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
-  } catch {
+function extractReferencedPoliciesFromAgent(raw) {
+  const [fm] = splitFrontmatter(raw);
+  if (!fm) return [];
+  const lines = fm.split('\n');
+  const blk = findLoopBlock(lines);
+  if (!blk) return [];
+  const refs = [];
+  for (let i = blk.loopIdx + 1; i < blk.loopEnd; i++) {
+    if (isBlankOrComment(lines[i])) continue;
+    const m = /^\s*(?:-\s+)?policy\s*:\s*(.+?)\s*(?:#.*)?$/.exec(lines[i]);
+    if (m) {
+      const val = unquoteYamlScalar(m[1]);
+      if (val && !path.isAbsolute(val) && !val.split(/[\\/]/).includes('..')) {
+        refs.push(val.replace(/\\/g, '/'));
+      }
+    }
+  }
+  return refs;
+}
+
+function collectWorkspacePolicyRelPaths(ws, targetAgentFiles) {
+  const relSet = new Set(['.loop/policy.json']);
+  const policiesDir = path.join(ws, '.loop', 'policies');
+  if (isDir(policiesDir)) {
+    for (const fn of fs.readdirSync(policiesDir).sort()) {
+      if (fn.endsWith('.json')) {
+        relSet.add(`.loop/policies/${fn}`);
+      }
+    }
+  }
+  for (const af of targetAgentFiles) {
+    if (!isFile(af)) continue;
+    for (const ref of extractReferencedPoliciesFromAgent(fs.readFileSync(af, 'utf8'))) {
+      relSet.add(ref);
+    }
+  }
+  return [...relSet];
+}
+
+function isSynthesizedDefaultStandardPolicy(data) {
+  if (!data || typeof data !== 'object') return false;
+  const keys = Object.keys(data);
+  if (keys.length !== 2 || data.profile !== 'standard' || !Array.isArray(data.approveCommands)) {
     return false;
   }
-  if (data.profile !== 'standard') return false;
-  let approve = Array.isArray(data.approveCommands) ? [...data.approveCommands] : [];
-  if (install) {
-    approve = approve.filter(r => r !== LEGACY_APPROVE_RULE);
-    if (approve.includes(APPROVE_RULE)) return false;
-    approve.push(APPROVE_RULE);
-    data.approveCommands = approve;
-  } else {
-    const before = approve.length;
-    approve = approve.filter(r => r !== APPROVE_RULE && r !== LEGACY_APPROVE_RULE);
-    if (approve.length === before) return false;
-    data.approveCommands = approve;
+  const expected = [...STANDARD_APPROVE_DEFAULTS, APPROVE_RULE];
+  return (
+    data.approveCommands.length === expected.length &&
+    data.approveCommands.every((v, idx) => v === expected[idx])
+  );
+}
+
+function ensureApprovalGateInPolicy(ws, relPath, manifestPolicies, createdDirsSet) {
+  const absPath = path.join(ws, relPath);
+  const prevEntry = manifestPolicies[relPath] || null;
+
+  if (!lstatExists(absPath)) {
+    ensureDirTracked(path.dirname(absPath), ws, createdDirsSet);
+    const createdObj = {
+      profile: 'standard',
+      approveCommands: [...STANDARD_APPROVE_DEFAULTS, APPROVE_RULE],
+    };
+    const content = `${JSON.stringify(createdObj, null, 2)}\n`;
+    fs.writeFileSync(absPath, content, 'utf8');
+    manifestPolicies[relPath] = {
+      created: true,
+      installedSha256: sha256Bytes(Buffer.from(content, 'utf8')),
+    };
+    return `created ${relPath} (standard profile + publish.js approval gate)`;
   }
-  fs.writeFileSync(policyPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  return true;
+
+  if (!isFile(absPath)) return null;
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(absPath, 'utf8'));
+  } catch {
+    return null;
+  }
+
+  const profile = data.profile;
+  if (profile !== 'standard' && profile !== 'trusted') {
+    // Missing `profile` or `"profile": "strict"` runs in strict allowlist mode,
+    // which already denies `publish.js` because `team-kb-publish` is never in `loop.skills`.
+    return null;
+  }
+
+  const hadExplicitApprove =
+    prevEntry && typeof prevEntry.hadExplicitApprove === 'boolean'
+      ? prevEntry.hadExplicitApprove
+      : Array.isArray(data.approveCommands);
+
+  let approve = Array.isArray(data.approveCommands)
+    ? [...data.approveCommands]
+    : profile === 'standard'
+      ? [...STANDARD_APPROVE_DEFAULTS]
+      : [];
+
+  approve = approve.filter(r => r !== LEGACY_APPROVE_RULE);
+  const alreadyPresent = Array.isArray(data.approveCommands) && approve.includes(APPROVE_RULE);
+  if (!approve.includes(APPROVE_RULE)) {
+    approve.push(APPROVE_RULE);
+  }
+
+  if (!prevEntry) {
+    manifestPolicies[relPath] = {
+      created: false,
+      hadExplicitApprove,
+      profile,
+    };
+  }
+
+  if (alreadyPresent && data.approveCommands.length === approve.length) {
+    return null;
+  }
+  data.approveCommands = approve;
+  fs.writeFileSync(absPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  return `added publish.js approval gate to ${relPath} (${profile} profile)`;
+}
+
+function restorePolicyOnUninstall(ws, relPath, manifestEntry) {
+  const absPath = path.join(ws, relPath);
+  if (!isFile(absPath)) return null;
+
+  let rawBytes;
+  let data;
+  try {
+    rawBytes = fs.readFileSync(absPath);
+    data = JSON.parse(rawBytes.toString('utf8'));
+  } catch {
+    return null;
+  }
+
+  const curSha = sha256Bytes(rawBytes);
+  if (
+    (manifestEntry && manifestEntry.created && curSha === manifestEntry.installedSha256) ||
+    (!manifestEntry && isSynthesizedDefaultStandardPolicy(data))
+  ) {
+    fs.unlinkSync(absPath);
+    return `removed synthesized ${relPath}`;
+  }
+
+  if (data.profile !== 'standard' && data.profile !== 'trusted') return null;
+  if (!Array.isArray(data.approveCommands)) return null;
+
+  const filtered = data.approveCommands.filter(r => r !== APPROVE_RULE && r !== LEGACY_APPROVE_RULE);
+  if (filtered.length === data.approveCommands.length) return null;
+
+  if (manifestEntry && manifestEntry.created === false && manifestEntry.hadExplicitApprove === false) {
+    const matchesImplicitBaseline =
+      data.profile === 'standard'
+        ? filtered.length === STANDARD_APPROVE_DEFAULTS.length &&
+          filtered.every((v, i) => v === STANDARD_APPROVE_DEFAULTS[i])
+        : filtered.length === 0;
+    if (matchesImplicitBaseline) {
+      delete data.approveCommands;
+    } else {
+      data.approveCommands = filtered;
+    }
+  } else {
+    data.approveCommands = filtered;
+  }
+
+  fs.writeFileSync(absPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  return `removed publish.js rule from ${relPath}`;
 }
 
 function selectAgentFiles(agentsDir, spec) {
@@ -287,6 +736,7 @@ function cmdInstall(a) {
   if (mode === 'auto') {
     mode = process.platform === 'win32' ? 'copy' : 'symlink';
   }
+  const force = Boolean(a.force);
   const actions = [];
 
   let wsArg = a.workspace;
@@ -296,35 +746,109 @@ function cmdInstall(a) {
     useCopilot = true;
   }
 
-  if (wsArg) {
-    const ws = path.resolve(expandHome(wsArg));
-    if (!isDir(ws)) throw new PlugError(`Workspace directory does not exist: ${ws}`);
+  const ws = wsArg ? path.resolve(expandHome(wsArg)) : null;
+  if (ws && !isDir(ws)) {
+    throw new PlugError(`Workspace directory does not exist: ${ws}`);
+  }
+
+  const wsManifestFile = ws ? wsManifestPath(ws) : null;
+  const wsManifest = ws
+    ? loadManifest(wsManifestFile) || {
+        version: 1,
+        workspace: ws,
+        createdDirs: [],
+        skills: {},
+        files: {},
+        policies: {},
+      }
+    : null;
+
+  const copManifestFile = useCopilot ? copilotManifestPath() : null;
+  const copManifest = useCopilot
+    ? loadManifest(copManifestFile) || { version: 1, skills: {}, wroteDefaultRoot: false }
+    : null;
+
+  const agentsSpec = a.agents !== null ? a.agents : 'all';
+  const installGardener = a.noGardener ? false : Boolean(a.withGardener) || a.agents === null;
+
+  // Pre-flight collision checks BEFORE mutating any file on disk
+  if (ws) {
     const skillsBase = path.join(ws, '.github', 'skills');
     for (const sk of ['team-kb', 'team-kb-publish']) {
       const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(skillsBase, sk);
-      installSkillDir(src, dst, mode);
+      const st = inspectSkillTarget(src, dst, wsManifest.skills[sk]);
+      if (st.exists && (!st.owned || !st.unmodified) && !force) {
+        throw new PlugError(
+          `Refusing to overwrite existing skill target ${dst} (${st.reason}). Re-run with --force to replace.`
+        );
+      }
+    }
+    if (installGardener) {
+      const tplG = path.join(KB_REPO_ROOT, 'agents', 'kb-gardener.agent.md');
+      const dstG = path.join(ws, '.github', 'agents', 'kb-gardener.agent.md');
+      const stG = inspectFileTarget(tplG, dstG, wsManifest.files['.github/agents/kb-gardener.agent.md']);
+      if (stG.exists && (!stG.owned || !stG.unmodified) && !force) {
+        throw new PlugError(
+          `Refusing to overwrite ${dstG} (${stG.reason}). Pass --force to overwrite or --no-gardener to keep custom gardener.`
+        );
+      }
+    }
+    if (a.withHooks) {
+      const tplH = path.join(KB_REPO_ROOT, 'hooks', 'harbor-kb.hooks.json');
+      const dstH = path.join(ws, '.github', 'hooks', 'harbor-kb.json');
+      const stH = inspectFileTarget(tplH, dstH, wsManifest.files['.github/hooks/harbor-kb.json']);
+      if (stH.exists && (!stH.owned || !stH.unmodified) && !force) {
+        throw new PlugError(
+          `Refusing to overwrite ${dstH} (${stH.reason}). Re-run with --force to overwrite.`
+        );
+      }
+    }
+  }
+
+  if (useCopilot) {
+    const copilotSkills = path.join(os.homedir(), '.copilot', 'skills');
+    for (const sk of ['team-kb', 'team-kb-publish']) {
+      const src = path.join(KB_REPO_ROOT, 'skills', sk);
+      const dst = path.join(copilotSkills, sk);
+      const st = inspectSkillTarget(src, dst, copManifest.skills[sk]);
+      if (st.exists && (!st.owned || !st.unmodified) && !force) {
+        throw new PlugError(
+          `Refusing to overwrite existing Copilot skill ${dst} (${st.reason}). Re-run with --force to replace.`
+        );
+      }
+    }
+  }
+
+  if (ws) {
+    const createdDirsSet = new Set(Array.isArray(wsManifest.createdDirs) ? wsManifest.createdDirs : []);
+    const skillsBase = path.join(ws, '.github', 'skills');
+    for (const sk of ['team-kb', 'team-kb-publish']) {
+      const src = path.join(KB_REPO_ROOT, 'skills', sk);
+      const dst = path.join(skillsBase, sk);
+      wsManifest.skills[sk] = installSkillDir(src, dst, mode, ws, createdDirsSet);
       actions.push(`installed skill ${sk} (${mode}) -> ${dst}`);
     }
 
-    const ptrFile = path.join(ws, '.loop', 'outbox', 'kb', '.kb_root');
+    const ptrRel = '.loop/outbox/kb/.kb_root';
+    const ptrFile = path.join(ws, ptrRel);
     if (mode === 'copy') {
-      fs.mkdirSync(path.dirname(ptrFile), { recursive: true });
-      fs.writeFileSync(ptrFile, `${KB_REPO_ROOT}\n`, 'utf8');
+      ensureDirTracked(path.dirname(ptrFile), ws, createdDirsSet);
+      const content = `${KB_REPO_ROOT}\n`;
+      fs.writeFileSync(ptrFile, content, 'utf8');
+      wsManifest.files[ptrRel] = {
+        owned: true,
+        installedSha256: sha256Bytes(Buffer.from(content, 'utf8')),
+      };
       actions.push(`wrote KB root pointer -> ${ptrFile}`);
-    } else if (isFile(ptrFile)) {
+    } else if (isFile(ptrFile) && (!wsManifest.files[ptrRel] || wsManifest.files[ptrRel].owned !== false)) {
       fs.unlinkSync(ptrFile);
+      delete wsManifest.files[ptrRel];
     }
-
-    if (patchStandardPolicy(ws, true)) {
-      actions.push('added publish.js approval gate to .loop/policy.json (standard profile)');
-    }
-
-    const agentsSpec = a.agents !== null ? a.agents : 'all';
-    const installGardener = a.noGardener ? false : Boolean(a.withGardener) || a.agents === null;
 
     const agentsDir = path.join(ws, '.github', 'agents');
-    for (const af of selectAgentFiles(agentsDir, agentsSpec)) {
+    const selectedAgents = selectAgentFiles(agentsDir, agentsSpec);
+    for (const af of selectedAgents) {
       const raw = fs.readFileSync(af, 'utf8');
       const [updated, changed] = addSkillToAgentText(raw, 'team-kb');
       if (changed) {
@@ -333,31 +857,58 @@ function cmdInstall(a) {
       }
     }
 
-    if (installGardener) {
-      fs.mkdirSync(agentsDir, { recursive: true });
-      const dstG = path.join(agentsDir, 'kb-gardener.agent.md');
-      fs.copyFileSync(path.join(KB_REPO_ROOT, 'agents', 'kb-gardener.agent.md'), dstG);
-      actions.push(`installed weekly maintenance mate -> ${dstG}`);
+    for (const polRel of collectWorkspacePolicyRelPaths(ws, selectedAgents)) {
+      const act = ensureApprovalGateInPolicy(ws, polRel, wsManifest.policies, createdDirsSet);
+      if (act) actions.push(act);
     }
 
-    if (a.withHooks) {
-      const hooksDir = path.join(ws, '.github', 'hooks');
-      fs.mkdirSync(hooksDir, { recursive: true });
-      const dstH = path.join(hooksDir, 'harbor-kb.json');
-      fs.copyFileSync(path.join(KB_REPO_ROOT, 'hooks', 'harbor-kb.hooks.json'), dstH);
-      actions.push(`installed Copilot sessionStart redline hook -> ${dstH}`);
+    const gardenerRel = '.github/agents/kb-gardener.agent.md';
+    const dstG = path.join(ws, gardenerRel);
+    if (installGardener) {
+      const tplG = path.join(KB_REPO_ROOT, 'agents', 'kb-gardener.agent.md');
+      ensureDirTracked(agentsDir, ws, createdDirsSet);
+      fs.copyFileSync(tplG, dstG);
+      wsManifest.files[gardenerRel] = {
+        owned: true,
+        installedSha256: sha256File(dstG),
+      };
+      actions.push(`installed weekly maintenance mate -> ${dstG}`);
+    } else if (!wsManifest.files[gardenerRel] && lstatExists(dstG)) {
+      wsManifest.files[gardenerRel] = { owned: false };
     }
+
+    const hookRel = '.github/hooks/harbor-kb.json';
+    const dstH = path.join(ws, hookRel);
+    if (a.withHooks) {
+      const tplH = path.join(KB_REPO_ROOT, 'hooks', 'harbor-kb.hooks.json');
+      ensureDirTracked(path.dirname(dstH), ws, createdDirsSet);
+      fs.copyFileSync(tplH, dstH);
+      wsManifest.files[hookRel] = {
+        owned: true,
+        installedSha256: sha256File(dstH),
+      };
+      actions.push(`installed Copilot sessionStart redline hook -> ${dstH}`);
+    } else if (!wsManifest.files[hookRel] && lstatExists(dstH)) {
+      wsManifest.files[hookRel] = { owned: false };
+    }
+
+    wsManifest.createdDirs = [...createdDirsSet];
+    saveManifest(wsManifestFile, wsManifest);
   }
 
   if (useCopilot) {
     const copilotSkills = path.join(os.homedir(), '.copilot', 'skills');
     for (const sk of ['team-kb', 'team-kb-publish']) {
-      installSkillDir(path.join(KB_REPO_ROOT, 'skills', sk), path.join(copilotSkills, sk), mode);
+      const src = path.join(KB_REPO_ROOT, 'skills', sk);
+      const dst = path.join(copilotSkills, sk);
+      copManifest.skills[sk] = installSkillDir(src, dst, mode);
       actions.push(`installed Copilot user skill ${sk} (${mode})`);
     }
     const defaultPtr = path.join(os.homedir(), '.cache', 'harbor-kb', 'default_root');
     fs.mkdirSync(path.dirname(defaultPtr), { recursive: true });
     fs.writeFileSync(defaultPtr, `${KB_REPO_ROOT}\n`, 'utf8');
+    copManifest.wroteDefaultRoot = true;
+    saveManifest(copManifestFile, copManifest);
   }
 
   const kbJs = path.join(KB_REPO_ROOT, 'skills', 'team-kb', 'scripts', 'kb.js');
@@ -380,7 +931,10 @@ function cmdInstall(a) {
 }
 
 function cmdUninstall(a) {
+  const force = Boolean(a.force);
   const actions = [];
+  const skipped = [];
+
   let wsArg = a.workspace;
   let useCopilot = Boolean(a.copilot);
   if (!wsArg && !useCopilot) {
@@ -392,36 +946,77 @@ function cmdUninstall(a) {
 
   if (wsArg) {
     const ws = path.resolve(expandHome(wsArg));
+    const wsManifestFile = wsManifestPath(ws);
+    const wsManifest = loadManifest(wsManifestFile);
+    let keptOwnedEntries = false;
+
     for (const sk of ['team-kb', 'team-kb-publish']) {
+      const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(ws, '.github', 'skills', sk);
-      if (lstatExists(dst)) {
-        removeExistingLinkOrDir(dst);
-        actions.push(`removed skill ${sk} from ${ws}`);
+      if (!lstatExists(dst)) {
+        if (wsManifest && wsManifest.skills) delete wsManifest.skills[sk];
+        continue;
+      }
+      const mEntry = wsManifest && wsManifest.skills ? wsManifest.skills[sk] : null;
+      const st = inspectSkillTarget(src, dst, mEntry);
+      if (!st.owned) {
+        skipped.push(`preserved unmanaged skill ${dst}`);
+        continue;
+      }
+      if (!st.unmodified && !force) {
+        skipped.push(`preserved modified skill ${dst} (pass --force to remove)`);
+        keptOwnedEntries = true;
+        continue;
+      }
+      removeExistingLinkOrDir(dst);
+      if (wsManifest && wsManifest.skills) delete wsManifest.skills[sk];
+      actions.push(`removed skill ${sk} from ${ws}`);
+    }
+
+    const ptrRel = '.loop/outbox/kb/.kb_root';
+    const ptrFile = path.join(ws, ptrRel);
+    if (isFile(ptrFile)) {
+      const ptrEntry = wsManifest && wsManifest.files ? wsManifest.files[ptrRel] : null;
+      if (!ptrEntry || ptrEntry.owned !== false) {
+        fs.unlinkSync(ptrFile);
+        if (wsManifest && wsManifest.files) delete wsManifest.files[ptrRel];
+        actions.push('removed .kb_root pointer');
       }
     }
-    const ptrFile = path.join(ws, '.loop', 'outbox', 'kb', '.kb_root');
-    if (isFile(ptrFile)) {
-      fs.unlinkSync(ptrFile);
-      actions.push('removed .kb_root pointer');
-    }
 
-    const gardener = path.join(ws, '.github', 'agents', 'kb-gardener.agent.md');
-    if (isFile(gardener)) {
-      fs.unlinkSync(gardener);
-      actions.push('removed kb-gardener.agent.md');
-    }
-
-    const hookF = path.join(ws, '.github', 'hooks', 'harbor-kb.json');
-    if (isFile(hookF)) {
-      fs.unlinkSync(hookF);
-      actions.push('removed .github/hooks/harbor-kb.json');
+    const managedFiles = [
+      ['.github/agents/kb-gardener.agent.md', path.join(KB_REPO_ROOT, 'agents', 'kb-gardener.agent.md')],
+      ['.github/hooks/harbor-kb.json', path.join(KB_REPO_ROOT, 'hooks', 'harbor-kb.hooks.json')],
+    ];
+    for (const [rel, tplPath] of managedFiles) {
+      const dst = path.join(ws, rel);
+      if (!lstatExists(dst)) {
+        if (wsManifest && wsManifest.files) delete wsManifest.files[rel];
+        continue;
+      }
+      const mEntry = wsManifest && wsManifest.files ? wsManifest.files[rel] : null;
+      const st = inspectFileTarget(tplPath, dst, mEntry);
+      if (!st.owned) {
+        skipped.push(`preserved pre-existing ${rel}`);
+        continue;
+      }
+      if (!st.unmodified && !force) {
+        skipped.push(`preserved user-modified ${rel} (pass --force to remove)`);
+        keptOwnedEntries = true;
+        continue;
+      }
+      fs.unlinkSync(dst);
+      if (wsManifest && wsManifest.files) delete wsManifest.files[rel];
+      actions.push(`removed ${rel}`);
     }
 
     const agentsDir = path.join(ws, '.github', 'agents');
+    const agentFiles = [];
     if (isDir(agentsDir)) {
       for (const fn of fs.readdirSync(agentsDir).sort()) {
         if (!fn.endsWith('.agent.md')) continue;
         const af = path.join(agentsDir, fn);
+        agentFiles.push(af);
         const raw = fs.readFileSync(af, 'utf8');
         const [cleaned, changed] = removeSkillFromAgentText(raw, 'team-kb');
         if (changed) {
@@ -431,30 +1026,99 @@ function cmdUninstall(a) {
       }
     }
 
-    if (patchStandardPolicy(ws, false)) {
-      actions.push('removed publish.js rule from .loop/policy.json');
+    const policyPaths = new Set(collectWorkspacePolicyRelPaths(ws, agentFiles));
+    if (wsManifest && wsManifest.policies) {
+      for (const k of Object.keys(wsManifest.policies)) policyPaths.add(k);
+    }
+    for (const polRel of policyPaths) {
+      const mEntry = wsManifest && wsManifest.policies ? wsManifest.policies[polRel] : null;
+      const act = restorePolicyOnUninstall(ws, polRel, mEntry);
+      if (act) actions.push(act);
+      if (wsManifest && wsManifest.policies) delete wsManifest.policies[polRel];
+    }
+
+    if (wsManifest && Array.isArray(wsManifest.createdDirs)) {
+      const dirsDesc = [...wsManifest.createdDirs].sort(
+        (x, y) => y.split('/').length - x.split('/').length
+      );
+      for (const relDir of dirsDesc) {
+        const absDir = path.join(ws, relDir);
+        try {
+          if (isDir(absDir) && fs.readdirSync(absDir).length === 0) {
+            fs.rmdirSync(absDir);
+          }
+        } catch {}
+      }
+    }
+
+    if (wsManifestFile && isFile(wsManifestFile)) {
+      if (keptOwnedEntries && wsManifest) {
+        saveManifest(wsManifestFile, wsManifest);
+      } else {
+        try {
+          fs.unlinkSync(wsManifestFile);
+        } catch {}
+      }
     }
   }
 
   if (useCopilot) {
+    const copManifestFile = copilotManifestPath();
+    const copManifest = loadManifest(copManifestFile);
+    let keptCopilotEntries = false;
     const copilotSkills = path.join(os.homedir(), '.copilot', 'skills');
+
     for (const sk of ['team-kb', 'team-kb-publish']) {
+      const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(copilotSkills, sk);
-      if (lstatExists(dst)) {
-        removeExistingLinkOrDir(dst);
-        actions.push(`removed Copilot user skill ${sk}`);
+      if (!lstatExists(dst)) {
+        if (copManifest && copManifest.skills) delete copManifest.skills[sk];
+        continue;
+      }
+      const mEntry = copManifest && copManifest.skills ? copManifest.skills[sk] : null;
+      const st = inspectSkillTarget(src, dst, mEntry);
+      if (!st.owned) {
+        skipped.push(`preserved unmanaged Copilot skill ${dst}`);
+        continue;
+      }
+      if (!st.unmodified && !force) {
+        skipped.push(`preserved modified Copilot skill ${dst} (pass --force to remove)`);
+        keptCopilotEntries = true;
+        continue;
+      }
+      removeExistingLinkOrDir(dst);
+      if (copManifest && copManifest.skills) delete copManifest.skills[sk];
+      actions.push(`removed Copilot user skill ${sk}`);
+    }
+
+    const defaultPtr = path.join(os.homedir(), '.cache', 'harbor-kb', 'default_root');
+    if (isFile(defaultPtr) && (!copManifest || copManifest.wroteDefaultRoot !== false)) {
+      try {
+        const curPtr = fs.readFileSync(defaultPtr, 'utf8').trim();
+        if (!curPtr || path.resolve(curPtr) === path.resolve(KB_REPO_ROOT)) {
+          fs.unlinkSync(defaultPtr);
+        }
+      } catch {}
+    }
+
+    if (copManifestFile && isFile(copManifestFile)) {
+      if (keptCopilotEntries && copManifest) {
+        saveManifest(copManifestFile, copManifest);
+      } else {
+        try {
+          fs.unlinkSync(copManifestFile);
+        } catch {}
       }
     }
-    const defaultPtr = path.join(os.homedir(), '.cache', 'harbor-kb', 'default_root');
-    if (isFile(defaultPtr)) fs.unlinkSync(defaultPtr);
   }
 
   if (a.json) {
-    console.log(JSON.stringify({ status: 'uninstalled', actions }, null, 2));
-  } else if (!actions.length) {
+    console.log(JSON.stringify({ status: 'uninstalled', actions, skipped }, null, 2));
+  } else if (!actions.length && !skipped.length) {
     console.log('Nothing to uninstall.');
   } else {
     for (const act of actions) console.log(`✓ ${act}`);
+    for (const skp of skipped) console.warn(`! ${skp}`);
   }
 }
 
@@ -564,6 +1228,7 @@ function parseCliArgs(argv) {
     noGardener: false,
     withHooks: false,
     copilot: false,
+    force: false,
     json: false,
     help: false,
   };
@@ -578,6 +1243,8 @@ function parseCliArgs(argv) {
     '--no-gardener': 'noGardener',
     '--with-hooks': 'withHooks',
     '--copilot': 'copilot',
+    '--force': 'force',
+    '-f': 'force',
     '--json': 'json',
     '--help': 'help',
     '-h': 'help',
@@ -619,8 +1286,8 @@ function printHelp() {
       'Usage: node plug.js <install|uninstall|status> [options]',
       '',
       'Commands:',
-      '  install [-w <workspace>] [--copilot] [--agents all|none|a,b] [--no-gardener] [--with-hooks] [--mode auto|symlink|copy]',
-      '  uninstall [-w <workspace>] [--copilot]',
+      '  install [-w <workspace>] [--copilot] [--agents all|none|a,b] [--no-gardener] [--with-hooks] [--mode auto|symlink|copy] [--force]',
+      '  uninstall [-w <workspace>] [--copilot] [--force]',
       '  status [-w <workspace>]',
     ].join('\n')
   );
@@ -652,3 +1319,12 @@ if (require.main === module) {
     throw err;
   }
 }
+
+module.exports = {
+  PlugError,
+  APPROVE_RULE,
+  STANDARD_APPROVE_DEFAULTS,
+  addSkillToAgentText,
+  removeSkillFromAgentText,
+  main,
+};

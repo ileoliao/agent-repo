@@ -32,7 +32,7 @@ node harbor-team-kb/plug.js status -w /path/to/your-harbor-workspace
 node harbor-team-kb/plug.js uninstall -w /path/to/your-harbor-workspace --copilot
 ```
 
-拔除命令会清理 `.github/skills/team-kb*`、移除 `plug.js` 在 `.agent.md` 中注入的 `loop.skills` 项与提示块、移除可选 `kb-gardener.agent.md` 与 Hook，将工作区逐字节恢复至接入前状态。
+拔除命令基于外部归属清单（`~/.cache/harbor-kb/manifests/`）清理 `plug.js` 托管的 `.github/skills/team-kb*`、移除 `.agent.md` 中注入的 `loop.skills` 项与提示块、移除托管的 `kb-gardener.agent.md` / Hook / 合成策略，将工作区逐字节恢复至接入前状态；对接入前已有的用户同名文件或接入后手工改动的受管文件默认安全保留（传 `--force` 才强制覆盖/清理）。
 
 ### 3. 运行全链路验证套件
 
@@ -40,7 +40,7 @@ node harbor-team-kb/plug.js uninstall -w /path/to/your-harbor-workspace --copilo
 # 编译并运行 Harbor Mate 本体全部测试（含软链 Skill 加载测试）
 cd loop-runner && npm test
 
-# 运行知识库 10 大套件 58 项真实运行时插拔、独立 Copilot 仓库体验、分层召回率与 Token 基准测试
+# 运行知识库 11 大套件 69 项真实运行时插拔、独立 Copilot 仓库体验、分层召回率与 Token 基准测试
 node harbor-team-kb/tests/verify_pluggable.js
 ```
 
@@ -58,7 +58,7 @@ node harbor-team-kb/tests/verify_pluggable.js
 │  agents/kb-gardener.agent.md           # 可选每周零 Token 锚点漂移巡检 Mate              │
 │  plug.js                               # 一键热插拔 / 状态自检 / 无痕卸载 CLI            │
 └──────────────────────────▲─────────────────────────────────────────▲─────────────────────┘
-      读取时按需 git pull --ff-only (--sync)             人工点批后隔离 worktree push + gh pr create
+      读取时默认 10min TTL 节流 git pull --ff-only        人工点批后隔离 worktree 基于远端默认分支 push + PR
                            │                                         │
     ┌──────────────────────┴──────────────────────┐                  │
     ▼                                             ▼                  │
@@ -122,7 +122,7 @@ harbor-team-kb/
 │   └── release/{redline,runbook}/
 └── tests/
     ├── golden_queries.json                  # 48 条 7 维度分层检索评测集（英文词形/自然句/改写/中文/口语极限/邻近负样本）
-    └── verify_pluggable.js                  # 对接真实 loop-runner 编译产物与 tiktoken 的 58 项端到端验证
+    └── verify_pluggable.js                  # 对接真实 loop-runner 编译产物与 tiktoken 的 69 项端到端验证
 ```
 
 ### 知识条目最小示例（`kb/gateway/redline/rate-limit-shadow-mode-first.md`）
@@ -155,8 +155,8 @@ triggers:
 # 1. Push 路径：读取当前服务/领域必须遵守的红线（单行摘要）
 node .github/skills/team-kb/scripts/kb.js redlines --repo harbor-gateway
 
-# 2. Pull 路径：混合检索（支持 2 字中文词、camelCase、snake_case、错误码；--sync 按 TTL 拉取远端更新）
-node .github/skills/team-kb/scripts/kb.js search --sync "RateLimitConfig 限流 429"
+# 2. Pull 路径：混合检索（默认按 10 分钟 TTL 自动静默拉取远端更新；--sync 立即拉取，--no-sync 跳过同步）
+node .github/skills/team-kb/scripts/kb.js search "RateLimitConfig 限流 429"
 
 # 3. 按需精读全文（自动打印 REFERENCE ONLY 防注入横幅，并实时核查本地 repos/ 代码符号锚点是否漂移）
 node .github/skills/team-kb/scripts/kb.js get gateway/redline/rate-limit-shadow-mode-first
@@ -240,18 +240,19 @@ node .github/skills/team-kb-publish/scripts/publish.js .loop/outbox/kb/gateway/g
 
 ---
 
-## 八、全链路运行时验证套件汇总（`tests/verify_pluggable.js` — 10 大套件 58 项断言全绿）
+## 八、全链路运行时验证套件汇总（`tests/verify_pluggable.js` — 11 大套件 69 项断言全绿）
 
-基于真实编译的 Harbor Mate 运行时模块（`team.js`、`skillAuthoring.js`、`manage.js`、`policy.js`、`wake.js`、`tools.js`、`gates.js`、`runner.js`、`fold.js`）完成了 **10 大测试套件、58 项断言** 端到端验证：
+基于真实编译的 Harbor Mate 运行时模块（`team.js`、`skillAuthoring.js`、`manage.js`、`policy.js`、`wake.js`、`tools.js`、`gates.js`、`runner.js`、`fold.js`）完成了 **11 大测试套件、69 项断言** 端到端验证：
 
 1. **Harbor Mate 静态安全审计**：`lintSkill`、`designWarnings`、`validateTeam` 均为 **0 Errors, 0 Warnings**。
 2. **分层检索召回率与强负样本压测（`N=12` & `N=500`）**：32 条核心工程查询 **Recall@1 = 100%**，8 条领域邻近强负样本 **FPR = 0%**，口语极限查询经 1 步改写 **Recall@1 = 100%**。
 3. **草稿门禁校验**：拦截 `ghp_` 等凭据泄漏、拦截 `/Users/...` 本机路径泄漏、Jaccard 近重复告警。
 4. **24 进程冷缓存并发锁压测**：24 个并行子进程同时建库查询 **24/24 退出码 0**，零原子文件锁冲突与残留临时文件。
 5. **零拷贝热插拔与逐字节无痕卸载**：`symlink` 与 `copy` 双模式安装幂等，卸载后工作区 **100% 逐字节还原**。
-6. **最严只读策略（`techlead.json`）+ SHA-256 防篡改 + 双机 Git 同步**：`publish.js` 直接调用被策略硬拦截；审批后篡改 1 字节被 SHA-256 拒绝；合并后第二台克隆通过 `--sync` 自动拉取并在 Top-1 命中新词条。
+6. **最严只读策略（`techlead.json`）+ SHA-256 防篡改 + 双机 Git 同步**：`publish.js` 直接调用被策略硬拦截；审批后篡改 1 字节被 SHA-256 拒绝；合并后第二台克隆通过 `--sync` 立即拉取并在 Top-1 命中新词条。
 7. **`runItem` 无人值守闭环 + `kb-gardener` 零 Token 漂移唤醒**：`request_approval(wait: false)` 不阻塞主循环；源码符号重命名后精准唤醒巡检并在 `kb.js get` 实时标红告警。
 8. **实况冲突标记（`kb.js dispute`）**：一键生成带原因的争议修订草稿并在检索排序中自动降权。
 9. **端到端 Token 使用率与 `foldForRequest` 折叠验证**：实证 `O(1)` 上下文规模不变性与首行 `[team-kb REFERENCE]` 折叠保留能力。
 10. **独立 VS Code Copilot Chat 单仓直用与低认知负担体验闭环**：零参数 `plug.js install`、单参数 `-w` 全自动挂载、`redlines --auto` 自动按当前仓库过滤、单微服务仓实时代码锚点漂移核验、缓存暂存草稿保持业务仓 `git status` 100% 干净，以及无 `gh` 时的一键 GitHub PR Compare URL 解析。
+11. **安全与边界回归验证（6 类审查边界）**：安装/卸载归属清单防误删与冲突拒写、`constructor`/`__proto__`/`toString` 无原型链污染索引与检索、任意合法 YAML 缩进（如 4 空格）保留还原、无 `.loop/policy.json` 默认工作区及隐式 `standard` 策略审批门禁自动补齐、`publish.js` 远端 `fetch` 失败硬阻断与非 `main` 默认分支（如 `origin/trunk`）防夹带本地未合并提交、以及不传 `--sync` 时的默认节流自动同步与 `--no-sync` 离线跳过。
 

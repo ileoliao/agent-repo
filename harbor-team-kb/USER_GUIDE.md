@@ -131,8 +131,8 @@ node ~/work/harbor-team-kb/plug.js uninstall -w /path/to/your-mate-workspace --c
 # 自动按当前目录仓库名查红线
 node ~/.copilot/skills/team-kb/scripts/kb.js redlines --auto
 
-# 检索知识库（--sync 会在距上次同步超 10 分钟时自动静默 git pull）
-node ~/.copilot/skills/team-kb/scripts/kb.js search --sync "40P01 deadlock"
+# 检索知识库（默认每 10 分钟自动静默 git pull；传 --sync 强制立即同步，传 --no-sync 跳过同步）
+node ~/.copilot/skills/team-kb/scripts/kb.js search "40P01 deadlock"
 
 # 查看单篇详情（自动核对当前仓库代码符号是否漂移）
 node ~/.copilot/skills/team-kb/scripts/kb.js get storage/gotcha/pg-deadlock-lock-ordering

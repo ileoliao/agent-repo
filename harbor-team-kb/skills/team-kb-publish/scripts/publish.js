@@ -78,6 +78,7 @@ function runCmd(args, { cwd = undefined, check = true } = {}) {
     cwd,
     encoding: 'utf8',
     timeout: 60000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   });
   if (res.error && check) {
     throw new PublishError(`Command failed (${args.slice(0, 3).join(' ')}...): ${res.error.message}`);
@@ -164,7 +165,81 @@ function resolveDraftTarget(draftPath, kbMod) {
   return { targetFile, parsed, isCacheDraft };
 }
 
-function publishDraft(draftPath, kbRoot, { noPush = false, noPr = false, jsonOut = false } = {}) {
+function refExists(top, ref) {
+  return (
+    runCmd(['git', '-C', top, 'rev-parse', '--verify', `${ref}^{commit}`], { check: false }).status === 0
+  );
+}
+
+function detectOriginDefaultRef(top, { queryRemote = false } = {}) {
+  const sym = runCmd(['git', '-C', top, 'symbolic-ref', 'refs/remotes/origin/HEAD'], { check: false });
+  if (sym.status === 0 && (sym.stdout || '').trim()) {
+    const ref = sym.stdout.trim().replace(/^refs\/remotes\//, '');
+    if (refExists(top, ref)) return ref;
+  }
+  if (queryRemote) {
+    const lsRem = runCmd(['git', '-C', top, 'ls-remote', '--symref', 'origin', 'HEAD'], { check: false });
+    if (lsRem.status === 0 && lsRem.stdout) {
+      const m = /^ref:\s+refs\/heads\/(\S+)\s+HEAD$/m.exec(lsRem.stdout);
+      if (m) {
+        const ref = `origin/${m[1]}`;
+        if (refExists(top, ref)) return ref;
+      }
+    }
+  }
+  for (const cand of ['origin/main', 'origin/master']) {
+    if (refExists(top, cand)) return cand;
+  }
+  return null;
+}
+
+function resolvePublishBaseRef(top, { hasOrigin, noPush, base = null }) {
+  if (!noPush) {
+    if (!hasOrigin) {
+      throw new PublishError(
+        'No "origin" remote configured in KB repository; configure origin or pass --no-push for local dry-run.'
+      );
+    }
+    const fetchRes = runCmd(['git', '-C', top, 'fetch', 'origin', '--quiet'], { check: false });
+    if (fetchRes.status !== 0) {
+      const detail =
+        (fetchRes.stderr || '').trim() || (fetchRes.stdout || '').trim() || `exit ${fetchRes.status}`;
+      throw new PublishError(
+        `Failed to fetch from origin before publishing (${detail}); refusing to fall back to local HEAD to prevent leaking unmerged commits.`
+      );
+    }
+    if (base) {
+      if (!refExists(top, base)) {
+        throw new PublishError(`Specified --base ref "${base}" does not exist.`);
+      }
+      return base;
+    }
+    const remoteBase = detectOriginDefaultRef(top, { queryRemote: true });
+    if (!remoteBase) {
+      throw new PublishError(
+        'Cannot determine remote default branch on origin (neither origin/HEAD, origin/main, nor origin/master found); pass --base origin/<branch>.'
+      );
+    }
+    return remoteBase;
+  }
+
+  if (base) {
+    if (!refExists(top, base)) {
+      throw new PublishError(`Specified --base ref "${base}" does not exist.`);
+    }
+    return base;
+  }
+  if (hasOrigin) {
+    const cachedRemoteBase = detectOriginDefaultRef(top, { queryRemote: false });
+    if (cachedRemoteBase) return cachedRemoteBase;
+  }
+  if (!refExists(top, 'HEAD')) {
+    throw new PublishError('KB repository has no commits yet.');
+  }
+  return 'HEAD';
+}
+
+function publishDraft(draftPath, kbRoot, { noPush = false, noPr = false, base = null, jsonOut = false } = {}) {
   const kbMod = loadKbModule(kbRoot);
   const { targetFile, parsed, isCacheDraft } = resolveDraftTarget(draftPath, kbMod);
   const [domain, kind, slug, entryId] = parsed;
@@ -186,23 +261,7 @@ function publishDraft(draftPath, kbRoot, { noPush = false, noPr = false, jsonOut
     .split(/\s+/)
     .filter(Boolean);
   const hasOrigin = remotes.includes('origin');
-  let baseRef = 'HEAD';
-  if (hasOrigin && !noPush) {
-    const fetchRes = runCmd(['git', '-C', top, 'fetch', 'origin', '--quiet'], { check: false });
-    if (fetchRes.status === 0) {
-      const sym = runCmd(['git', '-C', top, 'symbolic-ref', 'refs/remotes/origin/HEAD'], { check: false });
-      if (sym.status === 0 && (sym.stdout || '').trim()) {
-        baseRef = sym.stdout.trim().replace(/^refs\/remotes\//, '');
-      } else {
-        for (const cand of ['origin/main', 'origin/master']) {
-          if (runCmd(['git', '-C', top, 'rev-parse', '--verify', cand], { check: false }).status === 0) {
-            baseRef = cand;
-            break;
-          }
-        }
-      }
-    }
-  }
+  const baseRef = resolvePublishBaseRef(top, { hasOrigin, noPush, base });
 
   const stamp = formatTimestampCompact();
   const branch = `kb/${domain}-${slug}-${stamp}`;
@@ -261,10 +320,11 @@ function publishDraft(draftPath, kbRoot, { noPush = false, noPr = false, jsonOut
             `- **Reviewed Draft SHA-256**: \`${sha256Hex.slice(0, 16)}…\``,
             '',
           ].join('\n');
-          const prRes = runCmd(
-            ['gh', 'pr', 'create', '--title', commitTitle, '--body', prBody, '--head', branch],
-            { cwd: wtDir, check: false }
-          );
+          const ghArgs = ['gh', 'pr', 'create', '--title', commitTitle, '--body', prBody, '--head', branch];
+          if (baseRef.startsWith('origin/')) {
+            ghArgs.push('--base', baseRef.slice('origin/'.length));
+          }
+          const prRes = runCmd(ghArgs, { cwd: wtDir, check: false });
           if (prRes.status === 0 && (prRes.stdout || '').trim()) {
             const lines = prRes.stdout.trim().split('\n');
             prUrl = lines[lines.length - 1];
@@ -285,6 +345,7 @@ function publishDraft(draftPath, kbRoot, { noPush = false, noPr = false, jsonOut
     status: 'published',
     id: entryId,
     target: `${prefix}kb/${domain}/${kind}/${slug}.md`,
+    base_ref: baseRef,
     branch,
     commit: commitSha,
     draft_sha256: sha256Hex,
@@ -307,6 +368,7 @@ function parseCliArgs(argv) {
   const opts = {
     draft: null,
     kbRoot: null,
+    base: null,
     noPush: false,
     noPr: false,
     json: false,
@@ -323,6 +385,11 @@ function parseCliArgs(argv) {
       if (!opts.kbRoot) throw new PublishError('Missing value for --kb-root');
     } else if (raw.startsWith('--kb-root=')) {
       opts.kbRoot = raw.slice('--kb-root='.length);
+    } else if (raw === '--base') {
+      opts.base = argv[++i];
+      if (!opts.base) throw new PublishError('Missing value for --base');
+    } else if (raw.startsWith('--base=')) {
+      opts.base = raw.slice('--base='.length);
     } else if (raw.startsWith('-')) {
       throw new PublishError(`Unknown option: ${raw}`);
     } else if (!opts.draft) {
@@ -338,7 +405,7 @@ function main(argv = process.argv.slice(2)) {
   const a = parseCliArgs(argv);
   if (a.help || !a.draft) {
     console.log(
-      'Usage: node publish.js [--kb-root <dir>] [--no-push] [--no-pr] [--json] <draft_path>'
+      'Usage: node publish.js [--kb-root <dir>] [--base <ref>] [--no-push] [--no-pr] [--json] <draft_path>'
     );
     return a.help ? 0 : 2;
   }
@@ -346,6 +413,7 @@ function main(argv = process.argv.slice(2)) {
   publishDraft(a.draft, kbRoot, {
     noPush: a.noPush,
     noPr: a.noPr,
+    base: a.base,
     jsonOut: a.json,
   });
   return 0;
@@ -366,6 +434,7 @@ if (require.main === module) {
 module.exports = {
   PublishError,
   resolveKbRoot,
+  resolvePublishBaseRef,
   parseGithubSlug,
   publishDraft,
 };
