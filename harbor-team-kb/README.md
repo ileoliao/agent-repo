@@ -6,6 +6,8 @@
 
 > **团队成员日常上手请直接阅读 -> [`USER_GUIDE.md`（2 分钟使用说明书：VS Code Copilot Chat 直用 & Harbor Mate 双场景）](./USER_GUIDE.md)**
 > *（无需记任何 CLI 参数或 YAML 字段，装好后全程用自然语言对话 + 30 秒审核。）*
+>
+> **v3 演进规格说明（需求准入治理 + 产品功能业务逻辑 `spec` + 跨仓代码/IaC 地图 `map` + `Jira Editor` 协同与防篡改质检） -> [`SPEC_V3.md`](./SPEC_V3.md)**
 
 ---
 
