@@ -1165,6 +1165,130 @@ function stubExternalSkills(wsRoot) {
         `at N=500 entries, full-KB stuffing overflows 128k window (${scaleComparison.n500.fullKbInPrompt.turn1Tokens} tok/turn), while team-kb cuts cumulative tokens by ${scaleComparison.n500.teamKbProgressive.savingsVsFullKbPct}% vs full-KB and ${scaleComparison.n500.teamKbProgressive.savingsVsSummariesPct}% vs summary-stuffing`
       );
     }
+
+    // =========================================================================
+    // 10. Standalone VS Code Copilot Chat & Low-Cognitive-Load UX Verification
+    // =========================================================================
+    console.log('\n10. Standalone VS Code Copilot Chat & zero-friction UX verification');
+    {
+      const uxDir = path.join(tmpBase, 'ux-suite');
+      const bareOriginUx = path.join(uxDir, 'kb-origin.git');
+      const kbCloneUx = path.join(uxDir, 'harbor-team-kb');
+      const serviceRepo = path.join(uxDir, 'harbor-gateway');
+      const quickWs = path.join(uxDir, 'quick-mate-ws');
+      fs.mkdirSync(uxDir, { recursive: true });
+
+      git(['init', '--bare', bareOriginUx], uxDir);
+      fs.cpSync(KB_ROOT, kbCloneUx, { recursive: true });
+      git(['init', '-b', 'main'], kbCloneUx);
+      git(['config', 'user.name', 'Test Engineer'], kbCloneUx);
+      git(['config', 'user.email', 'eng@example.com'], kbCloneUx);
+      git(['remote', 'add', 'origin', bareOriginUx], kbCloneUx);
+      git(['add', '.'], kbCloneUx);
+      git(['commit', '-m', 'seed kb'], kbCloneUx);
+      git(['push', '-u', 'origin', 'main'], kbCloneUx);
+
+      // Create an ordinary standalone microservice repo (`harbor-gateway`) with NO `.loop` or `.github/skills`
+      fs.mkdirSync(path.join(serviceRepo, 'pkg', 'ratelimit'), { recursive: true });
+      fs.writeFileSync(
+        path.join(serviceRepo, 'pkg', 'ratelimit', 'limiter.go'),
+        'package ratelimit\ntype RateLimitConfig struct { ShadowOnly bool }\n'
+      );
+      git(['init', '-b', 'main'], serviceRepo);
+      git(['config', 'user.name', 'Service Dev'], serviceRepo);
+      git(['config', 'user.email', 'dev@example.com'], serviceRepo);
+      git(['add', '.'], serviceRepo);
+      git(['commit', '-m', 'initial gateway'], serviceRepo);
+
+      // 1) Zero-flag `plug.py install` inside non-Mate directory -> installs Copilot skills cleanly
+      const zeroFlagInst = py([path.join(kbCloneUx, 'plug.py'), 'install', '--json'], { cwd: serviceRepo });
+      assert.strictEqual(zeroFlagInst.status, 0, zeroFlagInst.stderr);
+      const statusCopilot = JSON.parse(py([path.join(kbCloneUx, 'plug.py'), 'status', '--json'], { cwd: serviceRepo }).stdout);
+      ok(
+        statusCopilot.copilot_status.team_kb_installed && statusCopilot.copilot_status.publish_installed,
+        'zero-flag `plug.py install` installs Copilot user skills and `plug.py status` reports readiness'
+      );
+
+      // 2) Single-flag `plug.py install -w <ws>` wires all loop Mates + weekly gardener out of the box
+      fs.cpSync(EXAMPLE_WS, quickWs, { recursive: true });
+      stubExternalSkills(quickWs);
+      assert.strictEqual(py([path.join(kbCloneUx, 'plug.py'), 'install', '-w', quickWs]).status, 0);
+      const quickStatus = JSON.parse(py([path.join(kbCloneUx, 'plug.py'), 'status', '-w', quickWs, '--json']).stdout);
+      ok(
+        quickStatus.workspace_status.gardener_installed && quickStatus.workspace_status.wired_agents.length >= 3,
+        'one-flag `plug.py install -w <ws>` auto-wires all loop Mates and installs kb-gardener by default'
+      );
+
+      // 3) `kb.py redlines --auto` in standalone `harbor-gateway` auto-filters to gateway redlines
+      const copilotKbPy = path.join(process.env.HOME, '.copilot', 'skills', 'team-kb', 'scripts', 'kb.py');
+      const copilotPubPy = path.join(process.env.HOME, '.copilot', 'skills', 'team-kb-publish', 'scripts', 'publish.py');
+      const autoRed = JSON.parse(py([copilotKbPy, 'redlines', '--auto', '--json'], { cwd: serviceRepo }).stdout);
+      ok(
+        autoRed.count >= 1 && autoRed.redlines.every(r => r.domain === 'gateway'),
+        'kb.py redlines --auto inside standalone harbor-gateway repo returns only gateway redlines'
+      );
+
+      // 4) Dual-runtime sessionStart hook works in standalone service repo via ~/.copilot/skills fallback
+      const hookCfg = JSON.parse(fs.readFileSync(path.join(KB_ROOT, 'hooks', 'harbor-kb.hooks.json'), 'utf8'));
+      const hookRun = spawnSync('sh', ['-c', hookCfg.hooks.sessionStart[0].command], { cwd: serviceRepo, encoding: 'utf8' });
+      ok(
+        hookRun.status === 0 && /RateLimitConfig/.test(hookRun.stdout) && !/Postgres/i.test(hookRun.stdout),
+        'sessionStart hook works in standalone Copilot repos via ~/.copilot/skills and auto-filters by repo'
+      );
+
+      // 5) Single-repo live anchor drift check inside standalone microservice repo
+      const getClean = py([copilotKbPy, 'get', 'gateway/redline/rate-limit-shadow-mode-first'], { cwd: serviceRepo });
+      fs.writeFileSync(
+        path.join(serviceRepo, 'pkg', 'ratelimit', 'limiter.go'),
+        'package ratelimit\ntype AdaptiveQuotaRule struct { DryRun bool }\n'
+      );
+      const getDrifted = py([copilotKbPy, 'get', 'gateway/redline/rate-limit-shadow-mode-first'], { cwd: serviceRepo });
+      git(['checkout', '--', 'pkg/ratelimit/limiter.go'], serviceRepo);
+      ok(
+        !/WARNING \[ANCHOR DRIFT\]/.test(getClean.stdout) && /WARNING \[ANCHOR DRIFT\]/.test(getDrifted.stdout),
+        'kb.py get verifies live code symbols directly inside standalone single-repo checkouts'
+      );
+
+      // 6) Standalone `kb.py propose` stages draft in cache without leaving `.loop/` dirt in service repo
+      const propRes = py([
+        copilotKbPy, 'propose', '--force', '--json',
+        '--id', 'gateway/gotcha/http2-max-concurrent-streams-spike',
+        '--title', 'Gateway HTTP/2 MaxConcurrentStreams Exhaustion Under Slow Upstream Reads',
+        '--summary', 'Slow upstream body reads pin HTTP/2 streams on harbor-gateway until MaxConcurrentStreams (250) drops new RPCs.',
+        '--triggers', 'MaxConcurrentStreams,http2 stream limit,upstream slow read',
+        '--sources', 'harbor-gateway:pkg/ratelimit/limiter.go#RateLimitConfig',
+        '--body', '## Symptom\nHTTP/2 streams saturate at 250.\n\n## Root Cause\nUnbounded response body read.\n\n## Verified Action\nSet ReadBodyTimeout=10s.\n',
+      ], { cwd: serviceRepo });
+      assert.strictEqual(propRes.status, 0, propRes.stderr);
+      const propObj = JSON.parse(propRes.stdout);
+      const serviceGitDirty = git(['status', '--porcelain'], serviceRepo);
+      ok(
+        serviceGitDirty === '' && !fs.existsSync(path.join(serviceRepo, '.loop')) && fs.existsSync(propObj.draft),
+        'standalone Copilot `kb.py propose` stages draft in cache and leaves service repo git status 100% clean'
+      );
+
+      // 7) Standalone `publish.py` publishes cache draft, cleans cache file, and parses GitHub compare_url
+      const pubRes = py([copilotPubPy, '--no-pr', '--json', propObj.draft], { cwd: serviceRepo });
+      assert.strictEqual(pubRes.status, 0, pubRes.stderr);
+      const pubObj = JSON.parse(pubRes.stdout);
+      const slugCheck = py([
+        '-c',
+        `import importlib.util; spec=importlib.util.spec_from_file_location("p", ${JSON.stringify(copilotPubPy)}); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.parse_github_slug("git@github.com:acme/harbor-team-kb.git"))`,
+      ]);
+      ok(
+        pubObj.status === 'published' && pubObj.pushed && !fs.existsSync(propObj.draft) && slugCheck.stdout.trim() === 'acme/harbor-team-kb',
+        'standalone publish.py pushes cache draft cleanly, deletes staged cache file, and parses GitHub PR compare slug'
+      );
+
+      // 8) Zero-flag `plug.py uninstall` removes Copilot skills cleanly
+      assert.strictEqual(py([path.join(kbCloneUx, 'plug.py'), 'uninstall'], { cwd: serviceRepo }).status, 0);
+      const statusAfterUninstall = JSON.parse(py([path.join(kbCloneUx, 'plug.py'), 'status', '--json'], { cwd: serviceRepo }).stdout);
+      ok(
+        !statusAfterUninstall.copilot_status.team_kb_installed && !statusAfterUninstall.copilot_status.publish_installed,
+        'zero-flag `plug.py uninstall` cleanly removes Copilot skills and default_root pointer'
+      );
+    }
+
     console.log(`ALL ${passed} ASSERTIONS PASSED!`);
     console.log('Measured Benchmarks:', JSON.stringify(metrics));
     console.log('============================================================\n');

@@ -807,6 +807,48 @@ def rank_search(conn, query_text, today, domain=None, kind=None, limit=5, exclud
 
 # ---- Anchor Verification & Validation Helpers ----
 
+def detect_repo_names(workspace_root='.'):
+    """Infer repository name(s) from workspace_root or checked-out repos/ subdirectories."""
+    names = []
+    abs_ws = os.path.realpath(os.path.abspath(workspace_root))
+    base = os.path.basename(abs_ws).strip()
+    if base:
+        names.append(base)
+    git_marker = os.path.join(abs_ws, '.git')
+    if os.path.exists(git_marker):
+        try:
+            res = subprocess.run(
+                ['git', '-C', abs_ws, 'remote', 'get-url', 'origin'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                url = res.stdout.strip().rstrip('/')
+                if url.endswith('.git'):
+                    url = url[:-4]
+                slug = url.replace(':', '/').split('/')[-1].strip()
+                if slug and slug not in names:
+                    names.append(slug)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    repos_sub = os.path.join(abs_ws, 'repos')
+    if os.path.isdir(repos_sub):
+        try:
+            for d in sorted(os.listdir(repos_sub)):
+                if not d.startswith('.') and os.path.isdir(os.path.join(repos_sub, d)) and d not in names:
+                    names.append(d)
+        except OSError:
+            pass
+    return names
+
+
+def default_draft_path(domain, kind, slug):
+    """Use .loop/outbox/kb/ inside Harbor Mate workspaces; cache dir in standalone repos to avoid git dirt."""
+    if os.path.isdir(os.path.join('.', '.loop')):
+        return os.path.join(OUTBOX_KB, domain, kind, f'{slug}.md').replace('\\', '/')
+    base = os.environ.get('HARBOR_KB_CACHE_DIR', '').strip() or os.path.join(os.path.expanduser('~'), '.cache', 'harbor-kb')
+    return os.path.join(os.path.abspath(os.path.expanduser(base)), 'drafts', domain, kind, f'{slug}.md')
+
+
 def find_anchor_target(workspace_root, source_spec):
     """Check whether a source file or file#symbol exists in workspace_root.
 
@@ -819,13 +861,39 @@ def find_anchor_target(workspace_root, source_spec):
     rel = file_part.strip().replace('\\', '/')
     while rel.startswith('./'):
         rel = rel[2:]
+    repo_prefix = ''
+    rest_clean = ''
     if ':' in rel and not re.match(r'^[A-Za-z]:/', rel):
         repo_prefix, _, rest_path = rel.partition(':')
         rest_path = re.sub(r':\d+(?:-\d+)?$', '', rest_path)
         if repo_prefix and rest_path and '/' not in repo_prefix:
-            rel = f'{repo_prefix}/{rest_path.lstrip("/")}'
+            rest_clean = rest_path.lstrip('/')
+            rel = f'{repo_prefix}/{rest_clean}'
     if not rel or os.path.isabs(rel) or '..' in rel.split('/'):
         return 'skip', 'non-workspace anchor'
+
+    def _verify_file(target_abs, label):
+        if not os.path.isfile(target_abs):
+            return 'file_missing', f'{label} missing inside present repo'
+        if sep and symbol.strip():
+            try:
+                with open(target_abs, encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                if symbol.strip() not in content:
+                    return 'symbol_missing', f'symbol "{symbol.strip()}" not found in {label}'
+            except OSError as exc:
+                return 'file_missing', str(exc)
+        return 'ok', label
+
+    # Standalone single-repo checkout (e.g. VS Code opened directly in `harbor-gateway`)
+    if repo_prefix and rest_clean:
+        local_names = {n.lower() for n in detect_repo_names(workspace_root)}
+        ws_base = os.path.basename(os.path.realpath(os.path.abspath(workspace_root))).lower()
+        if repo_prefix.lower() == ws_base or (
+            repo_prefix.lower() in local_names and not os.path.isdir(os.path.join(workspace_root, 'repos', repo_prefix))
+            and not os.path.isdir(os.path.join(workspace_root, repo_prefix))
+        ):
+            return _verify_file(os.path.join(workspace_root, rest_clean), rest_clean)
 
     candidates = [rel]
     if not rel.startswith('repos/'):
@@ -836,24 +904,13 @@ def find_anchor_target(workspace_root, source_spec):
         if len(parts) >= 2:
             repo_dir = os.path.join(workspace_root, parts[0], parts[1]) if parts[0] == 'repos' and len(parts) >= 3 else os.path.join(workspace_root, parts[0])
             if os.path.isdir(repo_dir):
-                target_abs = os.path.join(workspace_root, cand)
-                if not os.path.isfile(target_abs):
-                    return 'file_missing', f'{cand} missing inside present repo'
-                if sep and symbol.strip():
-                    try:
-                        with open(target_abs, encoding='utf-8', errors='replace') as f:
-                            content = f.read()
-                        if symbol.strip() not in content:
-                            return 'symbol_missing', f'symbol "{symbol.strip()}" not found in {cand}'
-                    except OSError as exc:
-                        return 'file_missing', str(exc)
-                return 'ok', cand
+                return _verify_file(os.path.join(workspace_root, cand), cand)
     return 'skip', 'target repo not checked out in this workspace'
 
 
 def normalize_entry_id(raw_id):
     s = (raw_id or '').strip().replace('\\', '/')
-    for prefix in ('.loop/outbox/kb/', 'kb/'):
+    for prefix in ('.loop/outbox/kb/', 'drafts/', 'kb/'):
         if s.startswith(prefix):
             s = s[len(prefix):]
     if s.endswith('.md'):
@@ -882,7 +939,7 @@ def validate_entry_file(file_path, expected_id=None, conn=None, today=None):
     rel_norm = file_path.replace('\\', '/')
     inferred_id = expected_id
     if not inferred_id:
-        for marker in ('.loop/outbox/kb/', '/kb/', 'kb/'):
+        for marker in ('.loop/outbox/kb/', '/drafts/', 'drafts/', '/kb/', 'kb/'):
             idx = rel_norm.find(marker)
             if idx != -1:
                 tail = rel_norm[idx + len(marker):]
@@ -890,6 +947,12 @@ def validate_entry_file(file_path, expected_id=None, conn=None, today=None):
                 if parsed:
                     inferred_id = parsed[3]
                     break
+        if not inferred_id:
+            parts3 = [p for p in rel_norm.split('/') if p]
+            if len(parts3) >= 3:
+                parsed = parse_entry_id('/'.join(parts3[-3:]))
+                if parsed:
+                    inferred_id = parsed[3]
     if not inferred_id:
         errors.append(
             f'Path "{file_path}" must end with <domain>/<kind>/<slug>.md '
@@ -1036,25 +1099,36 @@ def cmd_redlines(a):
 
     repo_q = (a.repo or '').strip().lower()
     dom_q = (a.domain or '').strip().lower()
-    items = []
-    for entry_id, dom, title, summary, trig_json, src_json, expires, disputed in rows:
-        if is_expired_date(expires, today):
-            continue
-        if dom_q and dom.lower() != dom_q:
-            continue
-        triggers = json.loads(trig_json)
-        sources = json.loads(src_json)
-        if repo_q:
-            hay = ' '.join([dom, entry_id, *triggers, *sources]).lower()
-            if repo_q not in hay:
+    auto_repos = [n.lower() for n in detect_repo_names('.')] if getattr(a, 'auto', False) and not repo_q and not dom_q else []
+
+    def _collect(repo_terms):
+        matched = []
+        for entry_id, dom, title, summary, trig_json, src_json, expires, disputed in rows:
+            if is_expired_date(expires, today):
                 continue
-        items.append({
-            'id': entry_id,
-            'domain': dom,
-            'title': title,
-            'summary': summary,
-            'disputed': disputed or None,
-        })
+            if dom_q and dom.lower() != dom_q:
+                continue
+            triggers = json.loads(trig_json)
+            sources = json.loads(src_json)
+            if repo_terms:
+                hay = ' '.join([dom, entry_id, *triggers, *sources]).lower()
+                if not any(rt in hay for rt in repo_terms):
+                    continue
+            matched.append({
+                'id': entry_id,
+                'domain': dom,
+                'title': title,
+                'summary': summary,
+                'disputed': disputed or None,
+            })
+        return matched
+
+    if repo_q:
+        items = _collect([repo_q])
+    elif auto_repos:
+        items = _collect(auto_repos) or _collect([])
+    else:
+        items = _collect([])
     items = items[:max(1, min(a.limit, 15))]
 
     if a.json:
@@ -1086,7 +1160,7 @@ def cmd_propose(a):
     if not body:
         raise KbError('Provide --body or --body-file with the Markdown content.')
 
-    draft_rel = os.path.join(OUTBOX_KB, domain, kind, f'{slug}.md').replace('\\', '/')
+    draft_rel = default_draft_path(domain, kind, slug)
     if os.path.exists(draft_rel) and not a.force:
         raise KbError(f'Draft already exists at {draft_rel}; pass --force to overwrite.')
 
@@ -1119,6 +1193,11 @@ def cmd_propose(a):
     print(f'Drafted valid KB proposal: {draft_rel}')
     for w in warnings:
         print(f'WARNING: {w}')
+    pub_script = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'team-kb-publish', 'scripts', 'publish.py')
+    if draft_rel.startswith('.loop/outbox/kb/'):
+        print(f'Next (Harbor Mate): queue request_approval(wait: false) with publish.py {draft_rel}')
+    else:
+        print(f'Next (Copilot / CLI): review draft, then run: python3 "{pub_script}" "{draft_rel}"')
 
 
 def cmd_dispute(a):
@@ -1137,7 +1216,7 @@ def cmd_dispute(a):
         expires=e['expires'] or None,
         disputed=f'{today}: {reason}',
     )
-    draft_rel = os.path.join(OUTBOX_KB, domain, kind, f'{slug}.md').replace('\\', '/')
+    draft_rel = default_draft_path(domain, kind, slug)
     os.makedirs(os.path.dirname(draft_rel), exist_ok=True)
     with open(draft_rel, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -1145,6 +1224,9 @@ def cmd_dispute(a):
         print(json.dumps({'status': 'dispute_drafted', 'id': entry_id, 'draft': draft_rel}, ensure_ascii=False, indent=2))
     else:
         print(f'Drafted dispute update: {draft_rel}')
+        pub_script = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'team-kb-publish', 'scripts', 'publish.py')
+        if not draft_rel.startswith('.loop/outbox/kb/'):
+            print(f'Next (Copilot / CLI): python3 "{pub_script}" "{draft_rel}"')
 
 
 def cmd_validate(a):
@@ -1311,6 +1393,7 @@ def build_parser():
     p = sub.add_parser('redlines', parents=[common], help='List active one-line redline guardrails (Push path)')
     p.add_argument('--repo', help='Filter redlines matching a repository or service name')
     p.add_argument('--domain', help='Filter redlines by domain')
+    p.add_argument('--auto', action='store_true', help='Auto-filter by current repo/workspace name if matched, else show all')
     p.add_argument('--limit', type=int, default=10, help='Max guardrails (default 10)')
 
     p = sub.add_parser('propose', parents=[common], help='Write and validate a draft KB entry under .loop/outbox/kb/')

@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -78,22 +79,47 @@ def run_cmd(args, cwd=None, check=True):
     return res
 
 
-def publish_draft(draft_path, kb_root, no_push=False, no_pr=False, json_out=False):
-    if os.path.isabs(draft_path) or '..' in draft_path.replace('\\', '/').split('/'):
-        raise PublishError('Draft path must be workspace-relative without .. (under .loop/outbox/kb/).')
-    norm = draft_path.replace('\\', '/').strip()
-    while norm.startswith('./'):
-        norm = norm[2:]
-    if not norm.startswith('.loop/outbox/kb/'):
-        raise PublishError('Draft path must live under .loop/outbox/kb/<domain>/<kind>/<slug>.md.')
-    if not os.path.isfile(norm):
-        raise PublishError(f'Draft file not found: {norm}')
+def parse_github_slug(origin_url):
+    m = re.search(r'github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$', (origin_url or '').strip())
+    return m.group(1) if m else None
 
-    kb_mod = load_kb_module(kb_root)
-    rel_tail = norm[len('.loop/outbox/kb/'):]
+
+def resolve_draft_target(draft_path, kb_mod):
+    raw_norm = draft_path.replace('\\', '/').strip()
+    if '..' in raw_norm.split('/'):
+        raise PublishError('Draft path must not contain .. path traversal.')
+    expanded = os.path.expanduser(raw_norm)
+    is_cache_draft = False
+
+    if not os.path.isabs(expanded):
+        norm = expanded
+        while norm.startswith('./'):
+            norm = norm[2:]
+        if not norm.startswith('.loop/outbox/kb/'):
+            raise PublishError('Relative draft path must live under .loop/outbox/kb/<domain>/<kind>/<slug>.md.')
+        rel_tail = norm[len('.loop/outbox/kb/'):]
+        target_file = norm
+    else:
+        cache_base = os.environ.get('HARBOR_KB_CACHE_DIR', '').strip() or os.path.join(os.path.expanduser('~'), '.cache', 'harbor-kb')
+        drafts_root = os.path.realpath(os.path.join(os.path.abspath(os.path.expanduser(cache_base)), 'drafts'))
+        real_draft = os.path.realpath(expanded)
+        if not real_draft.startswith(drafts_root + os.sep):
+            raise PublishError(f'Absolute draft path must live inside {drafts_root}/<domain>/<kind>/<slug>.md.')
+        rel_tail = os.path.relpath(real_draft, drafts_root).replace('\\', '/')
+        target_file = real_draft
+        is_cache_draft = True
+
+    if not os.path.isfile(target_file):
+        raise PublishError(f'Draft file not found: {draft_path}')
     parsed = kb_mod.parse_entry_id(rel_tail)
     if not parsed:
-        raise PublishError(f'Invalid draft path {norm}; expected .loop/outbox/kb/<domain>/<kind>/<slug>.md.')
+        raise PublishError(f'Invalid draft path {draft_path}; expected <domain>/<kind>/<slug>.md.')
+    return target_file, parsed, is_cache_draft
+
+
+def publish_draft(draft_path, kb_root, no_push=False, no_pr=False, json_out=False):
+    kb_mod = load_kb_module(kb_root)
+    norm, parsed, is_cache_draft = resolve_draft_target(draft_path, kb_mod)
     domain, kind, slug, entry_id = parsed
 
     errors, warnings = kb_mod.validate_entry_file(norm, expected_id=entry_id)
@@ -157,11 +183,15 @@ def publish_draft(draft_path, kb_root, no_push=False, no_pr=False, json_out=Fals
 
             pushed = False
             pr_url = None
+            compare_url = None
             if has_origin and not no_push:
                 run_cmd(['git', '-C', wt_dir, 'push', '-u', 'origin', branch])
                 pushed = True
                 origin_url = run_cmd(['git', '-C', wt_dir, 'remote', 'get-url', 'origin'], check=False).stdout.strip()
-                if not no_pr and 'github.com' in origin_url and shutil.which('gh'):
+                gh_slug = parse_github_slug(origin_url)
+                if gh_slug:
+                    compare_url = f'https://github.com/{gh_slug}/compare/{branch}?expand=1'
+                if not no_pr and gh_slug and shutil.which('gh'):
                     pr_body = (
                         f'## Summary\n\n'
                         f'- **ID**: `{entry_id}`\n'
@@ -178,6 +208,12 @@ def publish_draft(draft_path, kb_root, no_push=False, no_pr=False, json_out=Fals
         finally:
             run_cmd(['git', '-C', top, 'worktree', 'remove', '--force', wt_dir], check=False)
 
+    if is_cache_draft:
+        try:
+            os.remove(norm)
+        except OSError:
+            pass
+
     result = {
         'status': 'published',
         'id': entry_id,
@@ -187,6 +223,7 @@ def publish_draft(draft_path, kb_root, no_push=False, no_pr=False, json_out=Fals
         'draft_sha256': sha256_hex,
         'pushed': pushed,
         'pr_url': pr_url,
+        'compare_url': compare_url,
         'warnings': warnings,
     }
     if json_out:
@@ -195,6 +232,8 @@ def publish_draft(draft_path, kb_root, no_push=False, no_pr=False, json_out=Fals
         print(f'Published {entry_id} on branch {branch} ({commit_sha}), pushed={pushed}')
         if pr_url:
             print(f'PR: {pr_url}')
+        elif compare_url:
+            print(f'Open PR: {compare_url}')
     return result
 
 

@@ -4,17 +4,17 @@
 Zero external dependencies (Python 3 stdlib only).
 
 Examples:
-  # Plug into a Harbor Mate workspace (symlink skills + wire agents + optional weekly gardener)
-  python3 plug.py install --workspace /path/to/mate-workspace --agents techlead,sentinel --with-gardener
+  # Copilot Chat only (zero flags: installs into ~/.copilot/skills/)
+  python3 plug.py install
 
-  # Plug into VS Code Copilot personal skills (~/.copilot/skills/team-kb)
-  python3 plug.py install --copilot
+  # Harbor Mate workspace (wires all loop Mates + weekly kb-gardener automatically)
+  python3 plug.py install -w /path/to/mate-workspace
 
-  # Check health & wiring
-  python3 plug.py status --workspace /path/to/mate-workspace
+  # Check health & wiring across Copilot + Harbor Mate
+  python3 plug.py status
 
   # Cleanly unplug without leaving residue
-  python3 plug.py uninstall --workspace /path/to/mate-workspace
+  python3 plug.py uninstall -w /path/to/mate-workspace --copilot
 """
 import argparse
 import json
@@ -203,6 +203,8 @@ def select_agent_files(agents_dir, spec):
     if not spec or not os.path.isdir(agents_dir):
         return []
     wanted = [x.strip() for x in spec.split(',') if x.strip()]
+    if wanted == ['none']:
+        return []
     all_files = sorted(f for f in os.listdir(agents_dir) if f.endswith('.agent.md'))
     if wanted == ['all']:
         return [os.path.join(agents_dir, f) for f in all_files if f != 'kb-gardener.agent.md']
@@ -216,14 +218,31 @@ def select_agent_files(agents_dir, spec):
     return selected
 
 
+def looks_like_mate_workspace(path):
+    return (
+        os.path.abspath(path) != KB_REPO_ROOT
+        and (
+            os.path.isdir(os.path.join(path, '.loop'))
+            or os.path.isdir(os.path.join(path, '.github', 'agents'))
+        )
+    )
+
+
 def cmd_install(a):
     mode = a.mode
     if mode == 'auto':
         mode = 'copy' if os.name == 'nt' else 'symlink'
     actions = []
 
-    if a.workspace:
-        ws = os.path.abspath(os.path.expanduser(a.workspace))
+    ws_arg = a.workspace
+    use_copilot = bool(a.copilot)
+    if not ws_arg and not use_copilot:
+        if looks_like_mate_workspace(os.getcwd()):
+            ws_arg = os.getcwd()
+        use_copilot = True
+
+    if ws_arg:
+        ws = os.path.abspath(os.path.expanduser(ws_arg))
         if not os.path.isdir(ws):
             raise PlugError(f'Workspace directory does not exist: {ws}')
         skills_base = os.path.join(ws, '.github', 'skills')
@@ -245,8 +264,11 @@ def cmd_install(a):
         if patch_standard_policy(ws, install=True):
             actions.append('added publish.py approval gate to .loop/policy.json (standard profile)')
 
+        agents_spec = a.agents if a.agents is not None else 'all'
+        install_gardener = False if getattr(a, 'no_gardener', False) else (bool(a.with_gardener) or a.agents is None)
+
         agents_dir = os.path.join(ws, '.github', 'agents')
-        for af in select_agent_files(agents_dir, a.agents):
+        for af in select_agent_files(agents_dir, agents_spec):
             with open(af, encoding='utf-8') as f:
                 raw = f.read()
             updated, changed = add_skill_to_agent_text(raw, 'team-kb')
@@ -255,7 +277,7 @@ def cmd_install(a):
                     f.write(updated)
                 actions.append(f'wired team-kb into {os.path.basename(af)}')
 
-        if a.with_gardener:
+        if install_gardener:
             os.makedirs(agents_dir, exist_ok=True)
             dst_g = os.path.join(agents_dir, 'kb-gardener.agent.md')
             shutil.copyfile(os.path.join(KB_REPO_ROOT, 'agents', 'kb-gardener.agent.md'), dst_g)
@@ -268,7 +290,7 @@ def cmd_install(a):
             shutil.copyfile(os.path.join(KB_REPO_ROOT, 'hooks', 'harbor-kb.hooks.json'), dst_h)
             actions.append(f'installed Copilot sessionStart redline hook -> {dst_h}')
 
-    if a.copilot:
+    if use_copilot:
         copilot_skills = os.path.join(os.path.expanduser('~'), '.copilot', 'skills')
         for sk in ('team-kb', 'team-kb-publish'):
             install_skill_dir(os.path.join(KB_REPO_ROOT, 'skills', sk), os.path.join(copilot_skills, sk), mode)
@@ -278,9 +300,6 @@ def cmd_install(a):
         with open(default_ptr, 'w', encoding='utf-8') as f:
             f.write(KB_REPO_ROOT + '\n')
 
-    if not a.workspace and not a.copilot:
-        raise PlugError('Specify --workspace <path> and/or --copilot.')
-
     kb_py = os.path.join(KB_REPO_ROOT, 'skills', 'team-kb', 'scripts', 'kb.py')
     subprocess.run([sys.executable, kb_py, '--kb-root', KB_REPO_ROOT, 'stats'], check=True, stdout=subprocess.PIPE)
 
@@ -289,12 +308,21 @@ def cmd_install(a):
     else:
         for act in actions:
             print(f'✓ {act}')
+        if use_copilot:
+            print('  Tip (VS Code Copilot): ensure "chat.useAgentSkills": true is enabled in VS Code Settings.')
 
 
 def cmd_uninstall(a):
     actions = []
-    if a.workspace:
-        ws = os.path.abspath(os.path.expanduser(a.workspace))
+    ws_arg = a.workspace
+    use_copilot = bool(a.copilot)
+    if not ws_arg and not use_copilot:
+        if os.path.lexists(os.path.join(os.getcwd(), '.github', 'skills', 'team-kb')):
+            ws_arg = os.getcwd()
+        use_copilot = True
+
+    if ws_arg:
+        ws = os.path.abspath(os.path.expanduser(ws_arg))
         for sk in ('team-kb', 'team-kb-publish'):
             dst = os.path.join(ws, '.github', 'skills', sk)
             if os.path.lexists(dst):
@@ -332,20 +360,22 @@ def cmd_uninstall(a):
         if patch_standard_policy(ws, install=False):
             actions.append('removed publish.py rule from .loop/policy.json')
 
-    if a.copilot:
+    if use_copilot:
         copilot_skills = os.path.join(os.path.expanduser('~'), '.copilot', 'skills')
         for sk in ('team-kb', 'team-kb-publish'):
             dst = os.path.join(copilot_skills, sk)
             if os.path.lexists(dst):
                 remove_existing_link_or_dir(dst)
                 actions.append(f'removed Copilot user skill {sk}')
-
-    if not a.workspace and not a.copilot:
-        raise PlugError('Specify --workspace <path> and/or --copilot.')
+        default_ptr = os.path.join(os.path.expanduser('~'), '.cache', 'harbor-kb', 'default_root')
+        if os.path.isfile(default_ptr):
+            os.remove(default_ptr)
 
     if a.json:
         print(json.dumps({'status': 'uninstalled', 'actions': actions}, indent=2))
     else:
+        if not actions:
+            print('Nothing to uninstall.')
         for act in actions:
             print(f'✓ {act}')
 
@@ -362,12 +392,29 @@ def check_fts5():
 
 
 def cmd_status(a):
-    checks = {'fts5_supported': check_fts5(), 'kb_root': KB_REPO_ROOT}
+    copilot_sk = os.path.join(os.path.expanduser('~'), '.copilot', 'skills', 'team-kb')
+    copilot_pub = os.path.join(os.path.expanduser('~'), '.copilot', 'skills', 'team-kb-publish')
+    copilot_installed = os.path.isdir(copilot_sk) and os.path.isfile(os.path.join(copilot_sk, 'SKILL.md'))
+    copilot_mode = 'symlink' if os.path.islink(copilot_sk) else ('copy' if os.path.isdir(copilot_sk) else 'absent')
+
+    checks = {
+        'fts5_supported': check_fts5(),
+        'kb_root': KB_REPO_ROOT,
+        'copilot_status': {
+            'team_kb_installed': copilot_installed,
+            'team_kb_mode': copilot_mode,
+            'publish_installed': os.path.isdir(copilot_pub) and os.path.isfile(os.path.join(copilot_pub, 'SKILL.md')),
+        },
+    }
     kb_py_default = os.path.join(KB_REPO_ROOT, 'skills', 'team-kb', 'scripts', 'kb.py')
     ws_checks = None
 
-    if a.workspace:
-        ws = os.path.abspath(os.path.expanduser(a.workspace))
+    ws_arg = a.workspace
+    if not ws_arg and looks_like_mate_workspace(os.getcwd()):
+        ws_arg = os.getcwd()
+
+    if ws_arg:
+        ws = os.path.abspath(os.path.expanduser(ws_arg))
         sk_dir = os.path.join(ws, '.github', 'skills', 'team-kb')
         pub_dir = os.path.join(ws, '.github', 'skills', 'team-kb-publish')
         wired_agents = []
@@ -413,8 +460,10 @@ def cmd_status(a):
     if a.json:
         print(json.dumps(checks, ensure_ascii=False, indent=2))
     else:
+        total_entries = (ws_checks or {}).get('stats', checks.get('stats', {})).get('total_entries', '?')
         print(f'FTS5 supported: {checks["fts5_supported"]}')
-        print(f'KB root:        {KB_REPO_ROOT}')
+        print(f'KB root:        {KB_REPO_ROOT} ({total_entries} entries)')
+        print(f'Copilot skills: {copilot_mode} (publish={checks["copilot_status"]["publish_installed"]})')
         if ws_checks:
             print(f'Workspace:      {ws_checks["workspace"]}')
             print(f'Skill status:   team-kb={ws_checks["team_kb_mode"]}, publish={ws_checks["publish_installed"]}')
@@ -432,13 +481,14 @@ def main():
     ap.add_argument('--json', action='store_true', default=False, help='Output JSON')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
-    p = sub.add_parser('install', parents=[common], help='Install team-kb into a Harbor Mate workspace and/or Copilot')
-    p.add_argument('--workspace', '-w', help='Path to Harbor Mate workspace')
+    p = sub.add_parser('install', parents=[common], help='Install team-kb into Copilot and/or a Harbor Mate workspace')
+    p.add_argument('--workspace', '-w', help='Path to Harbor Mate workspace (wires all loop Mates + weekly gardener by default)')
     p.add_argument('--mode', choices=('auto', 'symlink', 'copy'), default='auto', help='Install mode (default: symlink on POSIX, copy on Windows)')
-    p.add_argument('--agents', help='Comma-separated mate names to wire (e.g. sentinel,techlead or all)')
+    p.add_argument('--agents', help='Comma-separated mate names to wire (default: all when -w is set; pass "none" to skip)')
     p.add_argument('--with-gardener', action='store_true', help='Install weekly kb-gardener.agent.md mate')
+    p.add_argument('--no-gardener', action='store_true', help='Skip installing kb-gardener.agent.md when -w is set')
     p.add_argument('--with-hooks', action='store_true', help='Install .github/hooks/harbor-kb.json sessionStart hook')
-    p.add_argument('--copilot', action='store_true', help='Also install into ~/.copilot/skills/')
+    p.add_argument('--copilot', action='store_true', help='Install into ~/.copilot/skills/ (default when -w is omitted)')
 
     p = sub.add_parser('uninstall', parents=[common], help='Cleanly unplug team-kb from a workspace and/or Copilot')
     p.add_argument('--workspace', '-w', help='Path to Harbor Mate workspace')

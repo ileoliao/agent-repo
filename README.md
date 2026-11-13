@@ -11,6 +11,6 @@
 
 - [harbor-extensions](harbor-extensions/README.md)：内部系统的统一受治理访问层原型（网关原样透传 + 按能力绑定 AD 组授权 + 沙箱扩展门户 + CLI/agent 同一通道），平台不存业务数据；含 outage 团队服务接入的参考实现，FastAPI + React，85 个测试含浏览器端到端。
 - [airflow-run-migrator](airflow-run-migrator/README.md)：纯 REST API 把 Airflow 2.x 失败的 DAG run（任务状态 + 全部 XCom）迁到 Airflow 3.x 并续跑；严格类型校验，歧义值靠类型提示文件，已在 2.9.2 → 3.3.2 端到端实测。
-- [harbor-team-kb](harbor-team-kb/README.md)：面向 10–20 人团队的 Harbor Mate 可插拔共享知识库实现与验证套件（无 MCP 约束下的路径即 ID Markdown + 零依赖 SQLite Porter FTS5/IDF 英文主场景与代码/中文混合检索 Skill + SHA-256 审批隔离发布 + 一键插拔 `plug.py`，含 48 条分层召回评测、`tiktoken` Token 窗口基准与 50 项端到端运行时实测）。
+- [harbor-team-kb](harbor-team-kb/README.md)（[2 分钟使用说明书](harbor-team-kb/USER_GUIDE.md)）：面向 10–20 人团队的 Harbor Mate 与 VS Code Copilot 可插拔共享知识库（无 MCP 约束下的路径即 ID Markdown + 零依赖 SQLite Porter FTS5/IDF 混合检索 + 单仓/多仓锚点漂移核验 + SHA-256 审批隔离发布 + 一键插拔 `plug.py`，含 48 条分层召回评测、`tiktoken` Token 窗口基准与 58 项端到端运行时实测）。
 
 > 测试：这是一段随便写的说明文字，用于验证 PR 流程。

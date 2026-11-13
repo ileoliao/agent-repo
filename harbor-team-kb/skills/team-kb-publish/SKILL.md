@@ -10,10 +10,14 @@ Do **not** add `team-kb-publish` to unattended agents' `loop.skills`. Unattended
 ## Command
 
 ```sh
+# Harbor Mate (after SHA-256 request_approval):
 python3 .github/skills/team-kb-publish/scripts/publish.py .loop/outbox/kb/<domain>/<kind>/<slug>.md
+
+# Standalone Copilot Chat / CLI (after reviewing staged draft):
+python3 ~/.copilot/skills/team-kb-publish/scripts/publish.py ~/.cache/harbor-kb/drafts/<domain>/<kind>/<slug>.md
 ```
 
 When executed after approval, `publish.py`:
-1. Re-validates `.loop/outbox/kb/<domain>/<kind>/<slug>.md` (schema, secrets, local user paths).
+1. Re-validates the draft (schema, secrets, local user paths).
 2. Creates a clean temporary `git worktree` on branch `kb/<domain>-<slug>-<timestamp>` without touching any dirty local checkout.
-3. Writes `kb/<domain>/<kind>/<slug>.md`, commits, pushes the branch to `origin` when configured, and opens a GitHub pull request via `gh pr create` when connected to GitHub.
+3. Writes `kb/<domain>/<kind>/<slug>.md`, commits, pushes the branch to `origin` when configured, and opens a GitHub pull request via `gh pr create` (or prints a one-click GitHub PR compare URL when `gh` is not configured).

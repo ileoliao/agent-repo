@@ -4,31 +4,32 @@
 
 支持通过单行命令**无侵入热插拔（Plug & Unplug）**到任意 [Harbor Mate (`loop-runner`)](../loop-runner/README.md) 工作区与日常 VS Code Copilot Chat，零第三方 Python/Node 依赖。
 
+> **团队成员日常上手请直接阅读 -> [`USER_GUIDE.md`（2 分钟使用说明书：VS Code Copilot Chat 直用 & Harbor Mate 双场景）](./USER_GUIDE.md)**
+> *（无需记任何 CLI 参数或 YAML 字段，装好后全程用自然语言对话 + 30 秒审核。）*
+
 ---
 
 ## 一、快速插拔指南（Quickstart）
 
-### 1. 一键接入 Harbor Mate 工作区与个人 Copilot
+### 1. 一行命令接入个人 Copilot Chat 与 Harbor Mate 工作区
 
 ```sh
-# 1) 插入 Harbor Mate 工作区（默认软链零拷贝，自动为指定 Mate 挂载 team-kb，可选挂载每周巡检员与 Hook）
-python3 harbor-team-kb/plug.py install \
-  --workspace /path/to/your-harbor-workspace \
-  --agents sentinel,techlead \
-  --with-gardener \
-  --with-hooks
+# 方式 A：只接入本机日常 VS Code Copilot Chat (~/.copilot/skills/)
+python3 harbor-team-kb/plug.py install
 
-# 2) （可选）同时接入本机日常 VS Code Copilot Chat (~/.copilot/skills/)
-python3 harbor-team-kb/plug.py install --copilot
+# 方式 B：同时接入 Harbor Mate 工作区（默认自动挂载所有 Mate + 每周一零 Token 巡检 kb-gardener）与本机 Copilot
+python3 harbor-team-kb/plug.py install -w /path/to/your-harbor-workspace --copilot
 
-# 3) 检查插拔健康度、SQLite FTS5 支持与检索探针
-python3 harbor-team-kb/plug.py status --workspace /path/to/your-harbor-workspace
+# 随时自检（同时检查 SQLite FTS5、Copilot 技能状态、Harbor Mate 挂载与检索探针）
+python3 harbor-team-kb/plug.py status -w /path/to/your-harbor-workspace
 ```
+
+> 进阶定制：只想给特定 Mate 挂载可传 `--agents sentinel,techlead`；不装每周巡检可传 `--no-gardener`；希望开新会话自动注入当前仓库红线可传 `--with-hooks`。
 
 ### 2. 一键无痕拔除（Byte-Exact Unplug）
 
 ```sh
-python3 harbor-team-kb/plug.py uninstall --workspace /path/to/your-harbor-workspace --copilot
+python3 harbor-team-kb/plug.py uninstall -w /path/to/your-harbor-workspace --copilot
 ```
 
 拔除命令会清理 `.github/skills/team-kb*`、移除 `plug.py` 在 `.agent.md` 中注入的 `loop.skills` 项与提示块、移除可选 `kb-gardener.agent.md` 与 Hook，将工作区逐字节恢复至接入前状态。
@@ -39,7 +40,7 @@ python3 harbor-team-kb/plug.py uninstall --workspace /path/to/your-harbor-worksp
 # 编译并运行 Harbor Mate 本体全部测试（含软链 Skill 加载测试）
 cd loop-runner && npm test
 
-# 运行知识库 9 大套件 50 项真实运行时插拔、分层召回率与 Token 使用率基准测试
+# 运行知识库 10 大套件 58 项真实运行时插拔、独立 Copilot 仓库体验、分层召回率与 Token 基准测试
 node harbor-team-kb/tests/verify_pluggable.js
 ```
 
@@ -100,19 +101,20 @@ node harbor-team-kb/tests/verify_pluggable.js
 
 ```text
 harbor-team-kb/
+├── USER_GUIDE.md                            # 2 分钟团队上手说明书（Copilot Chat 直用 & Harbor Mate 双场景）
 ├── plug.py                                  # 一键插拔 / 状态检查 / 无痕卸载管理器
 ├── CODEOWNERS                               # 按 /kb/<domain>/ 与 /skills/ 分级审核模板
 ├── skills/
-│   ├── team-kb/                             # 挂载至 Mate loop.skills 的检索/校验 Skill (< 4KB)
+│   ├── team-kb/                             # 挂载至 Mate loop.skills 与 Copilot 的双环境自适应 Skill (< 2.5KB)
 │   │   ├── SKILL.md
-│   │   └── scripts/kb.py                    # 零依赖 Python 3 CLI (Porter FTS5 + IDF 重排 + 代码拆词 + CJK 兜底)
-│   └── team-kb-publish/                     # 仅经 request_approval 执行的发布器 Skill
+│   │   └── scripts/kb.py                    # 零依赖 Python 3 CLI (Porter FTS5 + IDF 重排 + 单仓/多仓锚点核验)
+│   └── team-kb-publish/                     # 经 request_approval 或终端确认执行的发布器 Skill
 │       ├── SKILL.md
-│       └── scripts/publish.py               # 隔离 git worktree 分支推送与 PR 创建
+│       └── scripts/publish.py               # 隔离 git worktree 分支推送与 PR 创建（含一键 Compare URL 兜底）
 ├── agents/
 │   └── kb-gardener.agent.md                 # 可选每周一零 Token 锚点漂移巡检 Mate
 ├── hooks/
-│   └── harbor-kb.hooks.json                 # 可选 Copilot sessionStart 红线自动注入钩子
+│   └── harbor-kb.hooks.json                 # 可选双环境兼容 sessionStart 当前仓库红线自动注入钩子
 ├── kb/                                      # 12 条英文主语料种子知识（兼容少量中文触发词）
 │   ├── gateway/{redline,gotcha,postmortem}/
 │   ├── observability/{redline,gotcha,runbook,adr}/
@@ -120,7 +122,7 @@ harbor-team-kb/
 │   └── release/{redline,runbook}/
 └── tests/
     ├── golden_queries.json                  # 48 条 7 维度分层检索评测集（英文词形/自然句/改写/中文/口语极限/邻近负样本）
-    └── verify_pluggable.js                  # 对接真实 loop-runner 编译产物与 tiktoken 的 50 项端到端验证
+    └── verify_pluggable.js                  # 对接真实 loop-runner 编译产物与 tiktoken 的 58 项端到端验证
 ```
 
 ### 知识条目最小示例（`kb/gateway/redline/rate-limit-shadow-mode-first.md`）
@@ -214,8 +216,8 @@ python3 .github/skills/team-kb-publish/scripts/publish.py .loop/outbox/kb/gatewa
 | 组件 | 实测字符数 | 实测 Token (`o200k_base`) | 占 `128k` 窗口比例 | 说明 |
 |---|---:|---:|---:|---|
 | 未挂载 KB 的原始 `techlead` Prompt | 9,604 | **2,313** | 1.81% | Harbor Mate 基础角色 + 原有 Skills |
-| 挂载 `team-kb` 后的常驻静态增量 | +2,623 | **+691** | **+0.54%** | `SKILL.md` (`615` tok, `< 4096` 字符不截断) + 角色简短指引 (`76` tok)，且 **87.1% 位于静态前缀可命中 Prompt Cache** |
-| `kb.py redlines --repo harbor-gateway` | 354 | **79** | 0.06% | 按目标仓库精准过滤红线（全量 4 域红线也仅 `316` tok） |
+| 挂载 `team-kb` 后的常驻静态增量 | +2,515 | **+715** | **+0.56%** | 双环境自适应 `SKILL.md` (`639` tok, `< 4096` 字符不截断) + 角色简短指引 (`76` tok)，且 **87.2% 位于静态前缀可命中 Prompt Cache** |
+| `kb.py redlines --auto` / `--repo` | 354 | **79** | 0.06% | 自动识别当前仓库过滤红线（全量 4 域红线也仅 `316` tok） |
 | `kb.py search`（Top-5 紧凑命中列表） | 1,098 | **293** | 0.23% | `N = 12` 与 `N = 500` 输出均为 **293 tok**（严格 `O(1)`） |
 | `kb.py get <id>`（按需拉取 1 篇完整词条） | 1,587 | **397** | 0.31% | 含 `[team-kb REFERENCE]` 首行标识与防注入横幅 |
 | 超长词条经 `foldForRequest` 折叠后 | 129 | **47** | 0.04% | 旧轮次 `>2000` 字符输出自动折叠为 1 行，保留 `REFERENCE`、ID 与标题 |
@@ -226,21 +228,21 @@ python3 .github/skills/team-kb-publish/scripts/publish.py .loop/outbox/kb/gatewa
 | 词条规模 | 方案 | 首轮输入 Token | 第 5 轮峰值 Token（占 `128k`） | 5 轮累计输入 Token | 相比 `team-kb` 节省率 |
 |---|---|---:|---:|---:|---|
 | **无知识库基线** | `No KB` | 2,313 | 2,529 (1.98%) | 12,117 | 基线（无历史经验） |
-| **`N = 12`**（起步期） | 全量塞入 Prompt | 6,340 | 6,556 (5.12%) | 32,252 | `team-kb` 省 **46.5%** |
-| | 全量摘要塞入 Prompt | 3,511 | 4,084 (3.19%) | 19,547 | `team-kb` 省 **11.8%** |
-| | **`team-kb` 渐进披露** | **3,004** | **3,893 (3.04%)** | **17,249**（KB 净增仅 `5,132`） | — |
-| **`N = 100`**（成长期） | 全量塞入 Prompt | 31,267 | 31,483 (24.60%) | 156,887 | `team-kb` 省 **89.0%** |
-| | 全量摘要塞入 Prompt | 10,441 | 11,014 (8.60%) | 54,197 | `team-kb` 省 **68.2%** |
-| | **`team-kb` 渐进披露** | **3,004** | **3,893 (3.04%)** | **17,249** | — |
+| **`N = 12`**（起步期） | 全量塞入 Prompt | 6,340 | 6,556 (5.12%) | 32,252 | `team-kb` 省 **46.1%** |
+| | 全量摘要塞入 Prompt | 3,511 | 4,084 (3.19%) | 19,547 | `team-kb` 省 **11.1%** |
+| | **`team-kb` 渐进披露** | **3,028** | **3,917 (3.06%)** | **17,369**（KB 净增仅 `5,252`） | — |
+| **`N = 100`**（成长期） | 全量塞入 Prompt | 31,267 | 31,483 (24.60%) | 156,887 | `team-kb` 省 **88.9%** |
+| | 全量摘要塞入 Prompt | 10,441 | 11,014 (8.60%) | 54,197 | `team-kb` 省 **68.0%** |
+| | **`team-kb` 渐进披露** | **3,028** | **3,917 (3.06%)** | **17,369** | — |
 | **`N = 500`**（成熟期） | 全量塞入 Prompt | **144,567（首轮即爆窗）** | **144,783 (113.11%)** | 723,387 | `team-kb` 省 **97.6%** |
-| | 全量摘要塞入 Prompt | 41,941 | 42,514 (33.21%) | 211,697 | `team-kb` 省 **91.9%** |
-| | **`team-kb` 渐进披露** | **3,004** | **3,893 (3.04%)** | **17,249** | **`O(1)` 恒定开销** |
+| | 全量摘要塞入 Prompt | 41,941 | 42,514 (33.21%) | 211,697 | `team-kb` 省 **91.8%** |
+| | **`team-kb` 渐进披露** | **3,028** | **3,917 (3.06%)** | **17,369** | **`O(1)` 恒定开销** |
 
 ---
 
-## 八、全链路运行时验证套件汇总（`tests/verify_pluggable.js` — 9 大套件 50 项断言全绿）
+## 八、全链路运行时验证套件汇总（`tests/verify_pluggable.js` — 10 大套件 58 项断言全绿）
 
-基于真实编译的 Harbor Mate 运行时模块（`team.js`、`skillAuthoring.js`、`manage.js`、`policy.js`、`wake.js`、`tools.js`、`gates.js`、`runner.js`、`fold.js`）完成了 **9 大测试套件、50 项断言** 端到端验证：
+基于真实编译的 Harbor Mate 运行时模块（`team.js`、`skillAuthoring.js`、`manage.js`、`policy.js`、`wake.js`、`tools.js`、`gates.js`、`runner.js`、`fold.js`）完成了 **10 大测试套件、58 项断言** 端到端验证：
 
 1. **Harbor Mate 静态安全审计**：`lintSkill`、`designWarnings`、`validateTeam` 均为 **0 Errors, 0 Warnings**。
 2. **分层检索召回率与强负样本压测（`N=12` & `N=500`）**：32 条核心工程查询 **Recall@1 = 100%**，8 条领域邻近强负样本 **FPR = 0%**，口语极限查询经 1 步改写 **Recall@1 = 100%**。
@@ -251,4 +253,5 @@ python3 .github/skills/team-kb-publish/scripts/publish.py .loop/outbox/kb/gatewa
 7. **`runItem` 无人值守闭环 + `kb-gardener` 零 Token 漂移唤醒**：`request_approval(wait: false)` 不阻塞主循环；源码符号重命名后精准唤醒巡检并在 `kb.py get` 实时标红告警。
 8. **实况冲突标记（`kb.py dispute`）**：一键生成带原因的争议修订草稿并在检索排序中自动降权。
 9. **端到端 Token 使用率与 `foldForRequest` 折叠验证**：实证 `O(1)` 上下文规模不变性与首行 `[team-kb REFERENCE]` 折叠保留能力。
+10. **独立 VS Code Copilot Chat 单仓直用与低认知负担体验闭环**：零参数 `plug.py install`、单参数 `-w` 全自动挂载、`redlines --auto` 自动按当前仓库过滤、单微服务仓实时代码锚点漂移核验、缓存暂存草稿保持业务仓 `git status` 100% 干净，以及无 `gh` 时的一键 GitHub PR Compare URL 解析。
 
