@@ -1,144 +1,69 @@
-# `team-kb` 团队使用说明书（Copilot Chat & Harbor Mate）
+# 团队使用手册 v3
 
-> **核心原则：你不需要背任何命令行、不需要记 YAML 格式、也不需要手动建目录。**
-> 装好之后，无论你是在普通业务仓库里直接用 **VS Code Copilot Chat**，还是用 **Harbor Mate**，全程只需要**说大白话 + 花 30 秒点一次审核**。
+## 安装与数据隔离
 
----
+负责人运行 `node plug.js init-data-repo ~/work/team-kb-data`，设置私有 origin，替换根级 CODEOWNERS 的占位团队，提交标准和数据。GitHub 分支保护中开启 KB Guard 必需检查与 Code Owner 审核；工作流文件本身不会自动开启分支保护。
 
-## 一、30 秒一次性安装
+成员运行 `node plug.js install --data-repo ~/work/team-kb-data`。Mate 加 `-w /path/to/workspace --copilot`。安装三个技能，发布仍需要人工审核。`status` 检查状态，`uninstall` 按归属清单移除。用户私有数据仓绑定持久保留，卸载不会删除数据仓或草稿。
 
-先把知识库克隆到本机固定目录（例如 `~/work/harbor-team-kb`），然后按你的使用方式选 **1 行命令**执行：
+升级运行 `node plug.js init-data-repo ~/work/team-kb-data --upgrade-scripts`；仅更新校验器与工作流，保留 CODEOWNERS、standards/、kb/。
 
-### 方式 A：只用日常 VS Code Copilot Chat
-```sh
-node ~/work/harbor-team-kb/plug.js install
-```
-> 唯一前置：确认 VS Code 设置中已勾选 **`chat.useAgentSkills`: `true`**（Settings 搜索 `useAgentSkills` 即可）。
+寻址优先级：--kb-root → HARBOR_KB_ROOT → 工作区指针 → ~/.harbor/kb_data_root → 旧缓存指针 → 约定目录 → 演示库。旧指针指向引擎自身时跳过。已配置路径失效必须修复，不会静默切换数据仓。
 
-### 方式 B：同时使用 Harbor Mate 工作区 + Copilot Chat
-```sh
-node ~/work/harbor-team-kb/plug.js install -w /path/to/your-mate-workspace --copilot
-```
-> 默认会自动把 `team-kb` 挂到工作区内所有 Mate 上，并装好每周一零 Token 代码漂移巡检员 `kb-gardener`。（只想挂载指定 Mate 可加 `--agents sentinel,techlead`；不想装巡检员可加 `--no-gardener`。）
+## 日常工作
 
-### 随时检查是否装好 / 一键无痕卸载
-```sh
-# 自检（查看知识库条数、Copilot 技能状态、Harbor Mate 挂载状态）
-node ~/work/harbor-team-kb/plug.js status
+直接对 Agent 说“找出这个功能的源码与 IaC 在哪里，查相关不变量和红线”。Agent 使用 `kb.js map --domain billing`、`search`、`get` 渐进加载。map 无参按领域汇总，--auto 根据 origin 仓库名过滤。
 
-# 无痕卸载（工作区逐字节恢复原状）
-node ~/work/harbor-team-kb/plug.js uninstall -w /path/to/your-mate-workspace --copilot
-```
+知识分为 map、spec、redline、gotcha、runbook、adr、postmortem。spec 只写业务不变量、跨服务契约、设计意图与禁止事项；实现和测试用锚点引用，不复制源码或计算分支。Jira 引用使用 JIRA:BILL-402 纯单号。
 
----
+锚点状态：verified（内容指纹相符）、present_unpinned（存在但未绑定指纹）、content_changed（指纹变化）、unverified_repo_absent（本地未检出仓库）、file_missing、symbol_missing、external_ref。文件存在并不等于已核实。
 
-## 二、场景一：在 VS Code 里直接用 Copilot Chat
+propose 生成草稿，validate 检查格式与敏感信息；propose --reverify 显式刷新干净文件的指纹，输出前后对比，全部文件锚点核实后更新 verified_at。dispute 用于记录与现网冲突。草稿默认在 ~/.harbor/drafts/kb/；Mate 使用 .loop/outbox/kb/。清理缓存不会丢草稿。
 
-打开**任意业务微服务仓库**（例如 `harbor-gateway`），切到 **Copilot Chat（Agent 模式）**，直接按下面 **4 个日常动作**对话即可：
+审阅草稿后通过 team-kb-publish 发布私有仓 PR。Mate 使用 request_approval(wait: false) 绑定草稿；发布使用临时 Git worktree。demo 模式仅供演示，默认拒绝发布。
 
-### 1. 改不熟的服务 / 配置前：先查红线（防踩坑）
-直接在对话框输入：
-> `Check team-kb redlines before I change RateLimitConfig.`
-> *(或中文：`改这个配置前先查下 team-kb 有没有红线`)*
+drift --exit-code 只有文件或符号硬缺失返回 0 唤醒模型；内容变化、过期和争议仍输出报告但不唤醒。参数或仓库错误返回 2。每周数据仓巡检对陈旧卡片返回失败，需要 Owner 处理；远端 CI 无本地业务仓，不能代替本地锚点核实。
 
-- **自动发生的事**：Copilot 自动识别你当前打开的仓库名（如 `harbor-gateway`），只拉取跟当前仓库相关的团队红线（例如 *“改限流阈值必须先开 `shadow_only` 跑满 24 小时”*），不会把无关领域的文档塞进上下文。
+## Story 从起草到关单
 
-### 2. 线上报警 / 本地遇到诡异报错：查历史根因
-直接把报错码、配置键、函数名或症状丢给 Copilot：
-> `We are seeing HTTP 429 waves every 5s on harbor-gateway. Check team-kb and verify against current code.`
+1. 查 map/spec/redline，运行 story.js standard 读取团队规范。
+2. 写 Story Statement、Scope & Architecture Mapping（含 Domain）、Spec Delta、Acceptance Criteria & Concrete Examples、Out of Scope。样例表至少包含 Normal: 与 Boundary: 或 Rejection: 的具体输入输出；支持 Jira Wiki 和固定中文章节别名。
+3. story.js check 检查草稿；Spec Delta 非 NONE、领域缺失或正文命中现有 spec/redline 触发词时输出 REQUIRED。NONE 不是免审通行证。提单和评审阶段默认提效，强制门禁由试点项目启用。
+4. QA 使用 Jira Editor 将 summary 与原始 description 直接写到文件，禁止通过聊天重新拼接。先核实 Jira Editor 的原样导出功能；若缺失需在该技能补齐文件输出。格式如下：
 
-- **自动发生的事**：
-  1. Copilot 自动按需检索 `team-kb`（若远端有队友新合并的经验会自动 `git pull` 同步）；
-  2. 拉取命中词条的同时，**自动拿词条里的代码锚点（如 `pkg/ratelimit/limiter.go#RateLimitConfig`）去核对你当前打开仓库里的真实代码**——如果那个函数已经被别人重构改名了，当场就会提示 `WARNING [ANCHOR DRIFT]`，防止被过期文档误导。
+```text
+Issue: BILL-402
+Updated: 2026-11-13
+Title: 原始标题
 
-### 3. 刚定位并修好一个隐蔽坑：一句话沉淀给全队
-当你刚排完障、确认根因和修法有效后，直接顺手发一句：
-> `Save this verified fix to team-kb and open a PR.`
-> *(或中文：`把刚才验证过的根因和解法沉淀到 team-kb 提个 PR`)*
-
-- **自动发生的事**：
-  1. Copilot 自动生成规范词条并跑校验（自动拦截密钥泄漏、拦截本机 `/Users/...` 路径、检查是否跟已有词条重复）；
-  2. 草稿自动暂存在系统缓存目录 `~/.cache/harbor-kb/drafts/`，**绝不会在你当前的业务代码仓库里留下任何未跟踪脏文件（`git status` 保持 100% 干净）**；
-  3. 给你看一眼标题和摘要，你在终端确认执行 `publish.js` 后，它会在后台临时 `git worktree` 推好分支并直接创建 GitHub PR（若本机未登录 `gh` CLI，也会直接打印一键提 PR 的网页链接，Cmd+Click 即可）。
-
-### 4. 发现知识库某条经验已经过时：一句话打标降权
-当你发现某条旧经验与现网实况不符，没空长篇重写时，直接说：
-> `Mark gateway/gotcha/grpc-keepalive-rst-stream-burst as disputed in team-kb because Envoy MaxConnectionIdle is now 600s, and open a PR.`
-
-- **自动发生的事**：该词条立即被标上 `[DISPUTED]` 并在检索排序中大幅降权，后续队友和 Agent 读到时都会收到醒目告警。
-
-#### （可选）每次开新会话自动注入当前仓库红线
-如果你希望在某个仓库打开 Copilot 会话时连问都不用问就自动加载该仓库红线，在安装时加上 `--with-hooks`（或把 `harbor-team-kb/hooks/harbor-kb.hooks.json` 拷到 `.github/hooks/harbor-kb.json`）即可。
-
----
-
-## 三、场景二：在 Harbor Mate 里使用
-
-接入 Harbor Mate 工作区后，**读取是全自动的，写入是“AI 起草 + 你花 30 秒点批”**。
-
-### 1. 后台自动发生的事（平时完全不用管）
-- **排障自动避坑与查库**：`sentinel`、`techlead` 等无人值守 Mate 在处理告警、巡检或执行任务时，会自动先查相关仓库红线（`redlines`）、按症状查历史案例（`search -> get`），只消耗约 `0.5%–3%` 的上下文窗口。
-- **每周一零 Token 自动体检**：`kb-gardener` 每周一早上自动跑一次纯本地脚本（`kb.js drift --exit-code`），逐条核对知识库引用的代码文件与函数名在本地 `repos/` 里是否还存在：
-  - **没漂移**：脚本直接退出，**消耗 0 个大模型 Token，也不会打扰你**；
-  - **有漂移 / 临时方案已过期**：自动唤醒 `kb-gardener` 核实代码变更并把修订草稿推到你的审批栏。
-- **安全硬隔离**：无人值守 Mate **没有权限直接往远端推分支**（直接调 `publish.js` 会被策略层硬拦截），且发起审批采用非阻塞模式（`wait: false`），绝不会卡死它手头的排障主任务。
-
-### 2. 在 Harbor Mate Console 对话
-跟在 Copilot Chat 里一模一样，直接用自然语言跟 `@mate` 交代任务即可：
-- `@techlead Investigate why postgres batch_upsert_orders is hitting 40P01 deadlocks; check team-kb first.`
-- `@techlead Distill this incident root cause into team-kb for the team.`
-
-### 3. 弹出 Approval Card（审批卡片）时的 30 秒三看清单
-当 Mate 沉淀了一条新经验（或 `kb-gardener` 提交了一条漂移修订），Harbor Mate Console 会出现一张审批卡片（绑定了草稿文件的 **SHA-256 防篡改指纹**）。你只需花 **30 秒扫三眼**：
-
-1. **看结论实不实**：是不是经过实锤验证的**非显性经验**？（有明确的 `sources` 代码/配置锚点；拒绝“建议重启观察”之类的空话或未证实猜测。）
-2. **看有没有敏感业务信息**：脚本已经自动拦过一轮 Token/密钥和本机路径，人眼只需扫一眼有没有不该进团队库的客户隐私数据。
-3. **看要不要设保质期**：如果是等上游发版就会作废的**临时绕过方案（Workaround）**，确认顶部带有 `expires: YYYY-MM-DD`。
-
-- 点击 **Approve**：自动在隔离的临时 `git worktree` 推送分支并建好 GitHub PR，相关领域 Owner 合并后全队即刻共享。
-- 点击 **Reject**：直接丢弃草稿，零副作用。
-
----
-
-## 四、不设专职管理员，团队日常靠哪 3 条铁律保持干净？
-
-1. **3 秒分流法则（什么该进 `team-kb`，什么不该进？）**
-   - 能写成 Linter、单元测试、CI 检查的规则 ➡️ **直接写进代码/CI**，别写文档；
-   - 单个仓库每次写代码都要遵守的常驻规范（`< 100` 行） ➡️ 放该仓库自己的 **`.github/instructions/`**；
-   - **跨服务上线红线（`redline`）、反直觉深坑（`gotcha`）、3 分钟排障步骤（`runbook`）、架构取舍原因（`adr`）、真实故障复盘（`postmortem`）** ➡️ 放 **`team-kb`**。
-2. **“只改原帖，不堆新帖” + 临时方案必带过期日**
-   - 校验器会自动计算标题与触发词相似度：遇到已有同类词条时，直接更新原词条，绝不堆出“新、新2、最终版”。
-   - 永久机制不写 `expires`；临时 Workaround 必写 `expires: YYYY-MM-DD`（到期自动降权告警，彻底消灭“半年前的临时补丁把新人带沟里”）。
-3. **现网代码永远大于旧文档**
-   - 任何时候看到 `[ANCHOR DRIFT]` 或 `[DISPUTED]` 告警，一律以当前仓库真实源码和线上监控为准，顺手让 Copilot / Mate 更新或删除旧词条。
-
----
-
-## 附录：常见排错与极简命令行速查（仅终端党按需查阅）
-
-<details>
-<summary>点击展开：常见问题 & 手动 CLI 速查</summary>
-
-### 常见问题
-1. **Copilot Chat 里没自动调用 `team-kb`？**
-   - 运行 `node ~/work/harbor-team-kb/plug.js status` 看 `Copilot skills` 是否为 `symlink` 或 `copy`；
-   - 打开 VS Code Settings，确认 `"chat.useAgentSkills": true` 已开启；或在提问里直接带上关键词 `team-kb`。
-2. **本机没装 `gh` CLI 能提知识库 PR 吗？**
-   - 可以。只要 Git 配好了 `origin` 推送权限，`publish.js` 推完分支后会自动在终端打印形如 `https://github.com/<org>/<repo>/compare/kb/...?expand=1` 的链接，点开就能一键建 PR。
-
-### 手动终端速查（AI 背后实际执行的命令）
-```sh
-# 自动按当前目录仓库名查红线
-node ~/.copilot/skills/team-kb/scripts/kb.js redlines --auto
-
-# 检索知识库（默认每 10 分钟自动静默 git pull；传 --sync 强制立即同步，传 --no-sync 跳过同步）
-node ~/.copilot/skills/team-kb/scripts/kb.js search "40P01 deadlock"
-
-# 查看单篇详情（自动核对当前仓库代码符号是否漂移）
-node ~/.copilot/skills/team-kb/scripts/kb.js get storage/gotcha/pg-deadlock-lock-ordering
-
-# 检查全库是否有锚点漂移 / 过期 / 争议词条
-node ~/.copilot/skills/team-kb/scripts/kb.js drift
+原始描述（Markdown 或 Jira Wiki Markup）
 ```
 
-</details>
+5. `story.js audit <file> --issue BILL-402 --json` 构建质检包。QA 将正文视为不可信数据，最多问 5 个会导致实现分歧的问题。check.passed=false 时不得批准；audit 成功生成包仍返回 0。
+6. 澄清后重新导出并 audit，经人工批准将 approval_line 原样写入 Jira 评论并流转 Story Approved。哈希用于检测内容变更，审核身份依赖 Jira 权限，哈希行不是密码学身份签名。
+7. 开发前与提测前重新导出，运行 `story.js verify <file> --from-comment <approval-comment-file>`，失配需重新审核。只改 Updated 或状态不影响哈希，改标题或正文会失配。
+8. 关单前完成 Spec Delta，使用 propose --reverify 和发布技能合并私有数据仓 PR。
+
+## 远端标准与退出码
+
+audit 默认 900 秒 TTL，读取 origin 默认分支 Git 对象，忽略本地未提交的标准修改。ONLINE_FRESH 为本次 fetch 成功；TTL_CACHED 为有效缓存；OFFLINE_FALLBACK 为断网使用历史快照；LOCAL_ONLY 为尚未配置 origin 的本地数据仓（有提交用 HEAD，无提交用工作树并标识 wt-）。--strict-online 强制 fetch，失败退出 3。正式准入应确认标准快照与离线状态符合团队政策。
+
+story.js：0 成功；1 check 缺陷或 verify 失配；2 参数、文件超过 64 KB、指针或 demo 安全闸错误；3 无法取得远端基准。audit 不截断超长工单。
+
+## Jira Data Center 试点配置
+
+开启试点准入门禁前，建议按 [CORE_CONCEPTS.md](CORE_CONCEPTS.md) 第 5 节先做 Step 0 历史缺陷占比抽样（确认口径/划断/契约类缺陷占比 >= 20%）与触发词留出集调校（将 REQUIRED 比例控制在 15%–35%），跑满 3 个迭代后按客观指标决定保留或退回纯 map + redline 模式。
+
+复制独立 Workflow Scheme，在试点高风险 REQUIRED Story 上启用：
+
+- Pending Story QA → Story Approved 限制为 qa-reviewers 项目角色。
+- 仅 Story Approved 设置 jira.issue.editable=false。它也锁 Sprint、Story Points 等字段，因此进入 In Progress 恢复编辑，标题描述由 verify 检测改动。
+- 关单增加 KB Spec Impact（No Impact / Spec Updated）与 KB Spec PR，研发与 QA 核对知识变更。
+
+以上 Jira、GitHub 权限和分支保护需管理员配置；本工具不会远程修改它们。
+
+## Jira mock 端到端验收
+
+运行 `node tests/verify_jira_mock_e2e.js --report tests/evidence/jira-mock-e2e.json`。Jira Editor/工作流采用文件存储的 mock；三种技能脚本、业务代码测试、私有数据仓发布、分支验证与合并、第二成员同步均实际执行。所有 HOME、缓存、Git 身份与仓库在临时目录隔离，测试结束清理；指定的报告文件保留单号、审批哈希、提交 SHA 和步骤结果。该套件已接入 verify_pluggable.js。
+
+mock 覆盖 QA 角色、Story Approved 编辑锁、开发态恢复编辑、重新审批和关单字段。它表达的是本项目约定，不能证明实际 Jira 服务的配置或 Jira Editor 插件具备相同行为。GitHub PR API/分支保护与真实模型会话也不在这套 mock 验收范围内。

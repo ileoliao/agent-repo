@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Can RateLimitConfig enforce 429 immediately?",
+    "expected": "gateway/redline/rate-limit-shadow-mode-first"
+  },
+  {
+    "query": "pgbouncer prepared statement pooling mode failure",
+    "expected": "storage/gotcha/pgbouncer-transaction-pooling-prepared-stmt"
+  },
+  {
+    "query": "otel memory_limiter batch processor ordering",
+    "expected": "observability/redline/otel-memory-limiter-before-batch"
+  },
+  {
+    "query": "Index concurrently transaction block prohibited",
+    "expected": "storage/redline/postgres-index-concurrently-without-tx"
+  },
+  {
+    "query": "backup tenant isolation restore invariant",
+    "expected": "storage/spec/data-topology"
+  },
+  {
+    "query": "database backup locations demo-storage",
+    "expected": "storage/map/data-topology"
+  },
+  {
+    "query": "demo-gateway repository navigation",
+    "expected": "gateway/map/service-topology"
+  },
+  {
+    "query": "rejected request invariant demo-gateway",
+    "expected": "gateway/spec/service-topology"
+  }
+]

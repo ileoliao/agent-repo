@@ -1,0 +1,200 @@
+{
+  "jira": "mock",
+  "git": "real local repositories and bare origin",
+  "checks": [
+    {
+      "name": "initialize private data origin and install copied skills for two members",
+      "passed": true
+    },
+    {
+      "name": "read the same standard through Copilot and Mate paths and find the cross-repository map",
+      "passed": true
+    },
+    {
+      "name": "route a real draft and create a mock Jira issue; NONE cannot bypass a matching invariant",
+      "passed": true
+    },
+    {
+      "name": "a low-risk NONE story follows the standard route and still requires closing impact fields",
+      "passed": true
+    },
+    {
+      "name": "Jira Editor mock exports original Wiki bytes directly and audit uses the remote standard",
+      "passed": true
+    },
+    {
+      "name": "clarification invalidates the earlier approval hash and QA must export and audit again",
+      "passed": true
+    },
+    {
+      "name": "mock Jira blocks unauthorized approval, workflow bypass and edits while approved",
+      "passed": true
+    },
+    {
+      "name": "status and planning-field edits preserve approval, while title and description edits fail verification",
+      "passed": true
+    },
+    {
+      "name": "real code and tests change; dirty re-verification fails and a clean commit refreshes both fingerprints",
+      "passed": true
+    },
+    {
+      "name": "publish reviewed bytes to the private local origin without modifying active data or source checkouts",
+      "passed": true
+    },
+    {
+      "name": "review and validate the actual topic branch, merge it, then close the Jira issue with the merged reference",
+      "passed": true
+    },
+    {
+      "name": "a second member syncs the merged spec and source, finds the new knowledge and verifies all file anchors",
+      "passed": true
+    },
+    {
+      "name": "cache deletion preserves drafts and private binding; a missing configured data repository fails closed",
+      "passed": true
+    }
+  ],
+  "limitations": [
+    "No real Jira Editor/API or Jira server configuration is exercised.",
+    "No live Copilot/model session or GitHub branch protection/PR API is exercised.",
+    "QA semantic judgment and human review actions are represented by fixture actors."
+  ],
+  "passed": true,
+  "issue": {
+    "key": "BILL-1",
+    "status": "Closed",
+    "story_sha256": "e2000aa3a2b2f0b8f36e45c5b074c579c391737ffd89a18f7ac94aef5ba74def",
+    "standards_sha": "105163b1222a",
+    "approvals": 2
+  },
+  "gitEvidence": {
+    "sourceCommit": "1ee4e84651357a32fb6e1e8e8ef38a70f7de8979",
+    "publishedBranch": "kb/billing-atomic-seat-grants-20261113-235649",
+    "reviewedDraftSha256": "382e373bfd3506185624453d9d83b0158d96aca731fc48a20f1c8dd8cc49d83d",
+    "mergedCommit": "bf31b90795e72042b18a984289a07c4a5b84ea15",
+    "secondMemberHead": "bf31b90795e72042b18a984289a07c4a5b84ea15"
+  },
+  "jiraEvents": [
+    {
+      "action": "create",
+      "actor": "pm",
+      "issue": "BILL-1",
+      "status": "Pending Story QA"
+    },
+    {
+      "action": "create",
+      "actor": "pm",
+      "issue": "BILL-2",
+      "status": "Ready"
+    },
+    {
+      "action": "transition",
+      "actor": "developer",
+      "issue": "BILL-2",
+      "status": "In Progress"
+    },
+    {
+      "action": "update",
+      "actor": "developer",
+      "issue": "BILL-2",
+      "status": "In Progress"
+    },
+    {
+      "action": "transition",
+      "actor": "developer",
+      "issue": "BILL-2",
+      "status": "Closed"
+    },
+    {
+      "action": "update",
+      "actor": "pm",
+      "issue": "BILL-1",
+      "status": "Pending Story QA"
+    },
+    {
+      "action": "comment",
+      "actor": "qa-reviewer",
+      "issue": "BILL-1",
+      "status": "Pending Story QA"
+    },
+    {
+      "action": "transition",
+      "actor": "qa-reviewer",
+      "issue": "BILL-1",
+      "status": "Story Approved"
+    },
+    {
+      "action": "comment",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "Story Approved"
+    },
+    {
+      "action": "transition",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "In Progress"
+    },
+    {
+      "action": "update",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "In Progress"
+    },
+    {
+      "action": "update",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "In Progress"
+    },
+    {
+      "action": "update",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "In Progress"
+    },
+    {
+      "action": "transition",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "Pending Story QA"
+    },
+    {
+      "action": "comment",
+      "actor": "qa-reviewer",
+      "issue": "BILL-1",
+      "status": "Pending Story QA"
+    },
+    {
+      "action": "transition",
+      "actor": "qa-reviewer",
+      "issue": "BILL-1",
+      "status": "Story Approved"
+    },
+    {
+      "action": "transition",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "In Progress"
+    },
+    {
+      "action": "update",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "In Progress"
+    },
+    {
+      "action": "update",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "In Progress"
+    },
+    {
+      "action": "transition",
+      "actor": "developer",
+      "issue": "BILL-1",
+      "status": "Closed"
+    }
+  ]
+}

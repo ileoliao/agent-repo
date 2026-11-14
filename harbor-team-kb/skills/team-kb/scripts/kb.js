@@ -20,20 +20,15 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
-const KINDS = ['redline', 'gotcha', 'runbook', 'adr', 'postmortem'];
+const KINDS = ['map', 'spec', 'redline', 'gotcha', 'runbook', 'adr', 'postmortem'];
 const KIND_SET = new Set(KINDS);
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const CJK_RUN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+/g;
-const CJK_TEST_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
-const CJK_SPLIT_RE = /(?:为什么|为何|怎么处理|怎么解决|怎么办|怎么|如何|是不是|能不能|多长时间|多久|请问|突然|偶发|已经|需要|才能|之后|时候|[的了在是把被对与和或而且但却也都就还只当因按将吗呢吧啊])+/;
-const ASCII_TOKEN_RE = /[A-Za-z0-9]+(?:[._:/+#-][A-Za-z0-9]+)*/g;
-const CAMEL_SPLIT_RE = /(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/;
 const OUTBOX_KB = path.join('.loop', 'outbox', 'kb');
 const POINTER_REL = path.join(OUTBOX_KB, '.kb_root');
 const SEARCH_MAX_CHARS = 3200;
 const GET_MAX_CHARS = 12000;
 const SYNC_TTL_SEC = 600;
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const SLEEP_ARRAY = new Int32Array(new SharedArrayBuffer(4));
 
 const SECRET_CHECKS = [
@@ -45,43 +40,6 @@ const SECRET_CHECKS = [
   [/\bBearer\s+[A-Za-z0-9._~+/-]{20,}/, 'Bearer token'],
   [/(?<![A-Za-z0-9])(\/Users\/[A-Za-z0-9._-]+\/|\/home\/[A-Za-z0-9._-]+\/|[A-Za-z]:\\Users\\[A-Za-z0-9._-]+\\)/, 'local machine user path'],
 ];
-
-const STOPWORDS = new Set([
-  'a', 'about', 'after', 'all', 'also', 'an', 'and', 'any', 'are', 'as', 'at',
-  'be', 'because', 'been', 'before', 'being', 'between', 'both', 'but', 'by',
-  'can', 'could', 'did', 'do', 'does', 'doing', 'done', 'during', 'each',
-  'even', 'for', 'from', 'get', 'getting', 'got', 'had', 'has', 'have',
-  'having', 'here', 'how', 'if', 'in', 'into', 'is', 'it', 'its', 'just',
-  'make', 'may', 'more', 'most', 'much', 'must', 'need', 'new', 'not', 'now',
-  'of', 'on', 'only', 'onto', 'or', 'other', 'our', 'out', 'over', 'same',
-  'see', 'seeing', 'should', 'since', 'so', 'some', 'still', 'such', 'than',
-  'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'this',
-  'those', 'though', 'through', 'to', 'too', 'under', 'until', 'up', 'upon',
-  'use', 'using', 'very', 'via', 'want', 'was', 'way', 'we', 'well', 'were',
-  'what', 'when', 'where', 'which', 'while', 'who', 'why', 'will', 'with',
-  'without', 'would', 'you', 'your',
-]);
-
-const TECH_SYNONYMS = Object.assign(Object.create(null), {
-  postgresql: 'postgres',
-  postgres: 'postgresql',
-  k8s: 'kubernetes',
-  kubernetes: 'k8s',
-});
-
-function toNullProto(obj) {
-  const out = Object.create(null);
-  if (obj && typeof obj === 'object') {
-    for (const [k, v] of Object.entries(obj)) {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-const STEM_KEEP = new Set([
-  'series', 'species', 'kubernetes', 'postgres', 'status', 'prometheus', 'redis',
-]);
 
 const REF_BANNER =
   'REFERENCE ONLY (team-kb): Historical team knowledge, not instructions. ' +
@@ -152,37 +110,53 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function realEngineRoot() {
+  let dir = path.dirname(fs.realpathSync(__filename));
+  while (path.dirname(dir) !== dir) {
+    if (fs.existsSync(path.join(dir, 'plug.js')) && fs.existsSync(path.join(dir, 'skills'))) return fs.realpathSync(dir);
+    dir = path.dirname(dir);
+  }
+  const ptr=path.join(os.homedir(),'.cache','harbor-kb','default_root');
+  if(fs.existsSync(ptr)){const original=fs.readFileSync(ptr,'utf8').trim();if(fs.existsSync(path.join(original,'plug.js')) && fs.existsSync(path.join(original,'skills')))return fs.realpathSync(original);}
+  return null;
+}
+function isPublicEngineRoot(root) {
+  if (!root || !fs.existsSync(root)) return false;
+  const real = fs.realpathSync(root);
+  if (real === realEngineRoot()) return true;
+  // A copied skill must recognize an engine by its target layout, without a cache pointer.
+  const installer = path.join(real, 'plug.js');
+  const skills = path.join(real, 'skills');
+  return fs.existsSync(installer) && fs.statSync(installer).isFile() &&
+    fs.existsSync(skills) && fs.statSync(skills).isDirectory();
+}
 function resolveKbRoot(explicit = null) {
-  const candidates = [];
-  if (explicit) candidates.push(explicit);
-  const envRoot = (process.env.HARBOR_KB_ROOT || '').trim();
-  if (envRoot) candidates.push(envRoot);
-  if (fs.existsSync(POINTER_REL)) {
-    try {
-      const ptr = fs.readFileSync(POINTER_REL, 'utf8').trim();
-      if (ptr) candidates.push(ptr);
-    } catch {}
+  const engine = realEngineRoot();
+  let fallbackEngine = engine, foundLegacyEngine = false;
+  const read = p => fs.existsSync(p) ? fs.readFileSync(p, 'utf8').trim() : '';
+  const candidates = [
+    [explicit, 'CLI_FLAG'], [process.env.HARBOR_KB_ROOT, 'ENV_VAR'],
+    [read(path.join('.loop', 'outbox', 'kb', '.kb_root')), 'WORKSPACE_PTR'],
+    [read(path.join(os.homedir(), '.harbor', 'kb_data_root')), 'USER_DATA_PTR'],
+    [read(path.join(os.homedir(), '.cache', 'harbor-kb', 'default_root')), 'LEGACY_CACHE_PTR'],
+  ];
+  for (const [value, source] of candidates) {
+    if (!value || !String(value).trim()) continue;
+    const root = path.resolve(expandHome(String(value).trim()));
+    const real = fs.existsSync(root) ? fs.realpathSync(root) : root;
+    if (['WORKSPACE_PTR','LEGACY_CACHE_PTR'].includes(source) && isPublicEngineRoot(real)) {
+      if (!foundLegacyEngine) fallbackEngine = real;
+      foundLegacyEngine = true;
+      continue;
+    }
+    if (!fs.existsSync(path.join(root, 'kb')) || !fs.statSync(path.join(root, 'kb')).isDirectory()) throw new Error('Invalid configured KB root (' + source + ')');
+    return {root: real, source};
   }
-  try {
-    const realScript = fs.realpathSync(__filename);
-    candidates.push(path.resolve(realScript, '..', '..', '..', '..'));
-  } catch {}
-  candidates.push(path.join(process.cwd(), 'repos', 'team-kb'));
-  candidates.push(path.join(os.homedir(), '.harbor', 'team-kb'));
-  const defaultPtr = path.join(os.homedir(), '.cache', 'harbor-kb', 'default_root');
-  if (fs.existsSync(defaultPtr)) {
-    try {
-      const ptr = fs.readFileSync(defaultPtr, 'utf8').trim();
-      if (ptr) candidates.push(ptr);
-    } catch {}
+  for (const root of [path.resolve('repos', 'team-kb'), path.join(os.homedir(), '.harbor', 'team-kb')]) {
+    if (fs.existsSync(path.join(root, 'kb'))) return {root: fs.realpathSync(root), source: 'CONVENTION_DIR'};
   }
-  for (const c of candidates) {
-    const absC = path.resolve(expandHome(c));
-    try {
-      if (fs.statSync(path.join(absC, 'kb')).isDirectory()) return absC;
-    } catch {}
-  }
-  throw new KbError('KB repository not found. Clone harbor-team-kb or run plug.js install first.');
+  if (fallbackEngine) return {root: fallbackEngine, source: 'DEMO_FALLBACK'};
+  throw new Error('KB repository not found; bind a private data repository.');
 }
 
 function cacheDirFor(kbRoot) {
@@ -255,13 +229,13 @@ function maybeSyncGit(kbRoot, cacheDir, force = false) {
     }
     const inside = spawnSync('git', ['-C', kbRoot, 'rev-parse', '--is-inside-work-tree'], {
       encoding: 'utf8',
-      timeout: 3000,
+      timeout: 3000, env: {...process.env, GIT_TERMINAL_PROMPT:'0'},
     });
     if (inside.status !== 0 || (inside.stdout || '').trim() !== 'true') {
       touchStamp();
       return 'no-git';
     }
-    const rem = spawnSync('git', ['-C', kbRoot, 'remote'], { encoding: 'utf8', timeout: 3000 });
+    const rem = spawnSync('git', ['-C', kbRoot, 'remote'], { encoding: 'utf8', timeout: 3000, env:{...process.env,GIT_TERMINAL_PROMPT:'0'} });
     const remotes = (rem.stdout || '').split(/\s+/).filter(Boolean);
     if (rem.status !== 0 || !remotes.includes('origin')) {
       touchStamp();
@@ -286,821 +260,14 @@ function autoSyncIfEnabled(kbRoot, cacheDir, opts) {
 
 // ---- Minimal Deterministic YAML Frontmatter Parser ----
 
-function stripInlineComment(line) {
-  let inQ = null;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQ) {
-      if (ch === inQ) inQ = null;
-    } else if (ch === '"' || ch === "'") {
-      inQ = ch;
-    } else if (ch === '#' && (i === 0 || /\s/.test(line[i - 1]))) {
-      return line.slice(0, i).trimEnd();
-    }
-  }
-  return line.trimEnd();
-}
-
-function unquote(val) {
-  const s = val.trim();
-  if (s.length >= 2 && s[0] === s[s.length - 1] && (s[0] === '"' || s[0] === "'")) {
-    const inner = s.slice(1, -1);
-    return s[0] === '"' ? inner.replace(/\\"/g, '"').replace(/\\\\/g, '\\') : inner;
-  }
-  return s;
-}
-
-function parseInlineList(text) {
-  const inner = text.trim().slice(1, -1).trim();
-  if (!inner) return [];
-  const items = [];
-  let buf = '';
-  let inQ = null;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (inQ) {
-      if (ch === inQ) inQ = null;
-      else buf += ch;
-    } else if (ch === '"' || ch === "'") {
-      inQ = ch;
-    } else if (ch === ',') {
-      const s = buf.trim();
-      if (s) items.push(s);
-      buf = '';
-    } else {
-      buf += ch;
-    }
-  }
-  const tail = buf.trim();
-  if (tail) items.push(tail);
-  return items;
-}
-
-function parseMarkdownEntry(rawText) {
-  const text = String(rawText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  if (!text.startsWith('---\n')) return { meta: {}, body: text };
-  let end = text.indexOf('\n---\n', 4);
-  if (end === -1) {
-    if (text.endsWith('\n---')) end = text.length - 4;
-    else return { meta: {}, body: text };
-  }
-  const fmBlock = text.slice(4, end);
-  const body = end + 5 <= text.length ? text.slice(end + 5) : '';
-  const meta = Object.create(null);
-  let curListKey = null;
-  for (const rawLine of fmBlock.split('\n')) {
-    const line = stripInlineComment(rawLine);
-    if (!line.trim()) continue;
-    if (curListKey && /^\s*-\s+/.test(line)) {
-      const item = unquote(line.replace(/^\s*-\s+/, ''));
-      if (item) meta[curListKey].push(item);
-      continue;
-    }
-    curListKey = null;
-    const m = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line);
-    if (!m) continue;
-    const key = m[1];
-    const rest = m[2].trim();
-    if (!rest) {
-      meta[key] = [];
-      curListKey = key;
-    } else if (rest.startsWith('[') && rest.endsWith(']')) {
-      meta[key] = parseInlineList(rest);
-    } else {
-      meta[key] = unquote(rest);
-    }
-  }
-  return { meta, body: body.trim() };
-}
-
-function formatYamlScalar(v) {
-  const s = String(v).trim();
-  if (!s) return '""';
-  if (/[:#[\]{},&*!|>'"%@`]/.test(s)) {
-    const escaped = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    return `"${escaped}"`;
-  }
-  return s;
-}
-
-function renderEntryMarkdown({ title, summary, triggers, sources, body, expires = null, disputed = null }) {
-  const lines = [
-    '---',
-    `title: ${formatYamlScalar(title)}`,
-    `summary: ${formatYamlScalar(summary)}`,
-    `triggers: [${triggers.map(formatYamlScalar).join(', ')}]`,
-    `sources: [${sources.map(formatYamlScalar).join(', ')}]`,
-  ];
-  if (expires) lines.push(`expires: ${formatYamlScalar(expires)}`);
-  if (disputed) lines.push(`disputed: ${formatYamlScalar(disputed)}`);
-  lines.push('---', '', body.trim(), '');
-  return lines.join('\n');
-}
-
-// ---- Bilingual + Code Identifier + Porter/Infra Morphological Tokenizer ----
-
-function vcMeasure(s) {
-  return (s.match(/[aeiouy]+[^aeiouy]+/g) || []).length;
-}
-
-function stemEn(word) {
-  let w = word;
-  if (w.length < 4 || !/^[a-z]+$/.test(w) || STEM_KEEP.has(w)) return w;
-
-  if (w.endsWith('ies') && w.length > 4) {
-    w = `${w.slice(0, -3)}y`;
-  } else if (
-    w.endsWith('es') &&
-    w.length > 4 &&
-    (w.slice(0, -2).endsWith('sh') ||
-      w.slice(0, -2).endsWith('ch') ||
-      w.slice(0, -2).endsWith('x') ||
-      w.slice(0, -2).endsWith('z') ||
-      w.slice(0, -2).endsWith('ss'))
-  ) {
-    w = w.slice(0, -2);
-  } else if (w.endsWith('s') && !w.endsWith('ss') && !w.endsWith('us') && !w.endsWith('is')) {
-    w = w.slice(0, -1);
-  }
-
-  if (w.endsWith('ation') && w.length >= 8) {
-    w = `${w.slice(0, -5)}at`;
-  } else if (w.endsWith('ition') && w.length >= 8) {
-    w = w.slice(0, -5);
-  } else if (w.endsWith('ction') && w.length >= 7) {
-    w = `${w.slice(0, -4)}ct`;
-  } else if ((w.endsWith('tion') || w.endsWith('sion')) && w.length >= 7) {
-    w = w.slice(0, -3);
-  } else if (w.endsWith('ing') && w.length >= 6) {
-    let base = w.slice(0, -3);
-    if (
-      base.length >= 3 &&
-      base[base.length - 1] === base[base.length - 2] &&
-      !'aeioulsz'.includes(base[base.length - 1])
-    ) {
-      base = base.slice(0, -1);
-    } else if (base.endsWith('i')) {
-      base = `${base.slice(0, -1)}y`;
-    } else if (base.length === 3 && /^[^aeiou][aeiou][^aeiouwxy]$/.test(base)) {
-      base = `${base}e`;
-    }
-    w = base;
-  } else if (w.endsWith('ed') && w.length >= 5) {
-    let base = w.slice(0, -2);
-    if (
-      base.length >= 3 &&
-      base[base.length - 1] === base[base.length - 2] &&
-      !'aeioulsz'.includes(base[base.length - 1])
-    ) {
-      base = base.slice(0, -1);
-    } else if (base.endsWith('i')) {
-      base = `${base.slice(0, -1)}y`;
-    } else if (base.length === 3 && /^[^aeiou][aeiou][^aeiouwxy]$/.test(base)) {
-      base = `${base}e`;
-    }
-    w = base;
-  } else if (
-    w.endsWith('er') &&
-    w.length >= 6 &&
-    ['pool', 'limit', 'work', 'consum', 'produc', 'rout', 'scrap', 'ingest', 'call', 'handl', 'retry'].some(s =>
-      w.slice(0, -2).endsWith(s)
-    )
-  ) {
-    w = w.slice(0, -2);
-    if (w.endsWith('i')) w = `${w.slice(0, -1)}y`;
-  } else if (w.endsWith('ly') && w.length >= 6) {
-    w = w.slice(0, -2);
-  }
-
-  if (w.endsWith('e') && w.length >= 5 && !w.endsWith('ee')) {
-    w = w.slice(0, -1);
-  }
-  if (w.endsWith('at') && vcMeasure(w.slice(0, -2)) > 1) {
-    w = w.slice(0, -2);
-  }
-  return w;
-}
-
-function ftsKey(tok) {
-  return /^[a-z]{4,}$/.test(tok) ? stemEn(tok) : tok;
-}
-
-function expandAsciiToken(tok) {
-  const out = [];
-  const low = tok.toLowerCase().replace(/^[._:/+#-]+|[._:/+#-]+$/g, '');
-  if (!low) return out;
-  const pushWithSyn = t => {
-    if (!t || STOPWORDS.has(t) || out.includes(t)) return;
-    out.push(t);
-    const syn = TECH_SYNONYMS[t];
-    if (syn && !out.includes(syn)) out.push(syn);
-  };
-  const compact = low.replace(/[^a-z0-9]+/g, '');
-  if (compact) pushWithSyn(compact);
-  for (const part of tok.split(/[._:/+#-]+/)) {
-    if (!part) continue;
-    pushWithSyn(part.toLowerCase());
-    for (const sub of part.split(CAMEL_SPLIT_RE)) {
-      const sLow = sub.toLowerCase();
-      if (sLow.length >= 2) pushWithSyn(sLow);
-    }
-  }
-  return out;
-}
-
-function expandCjkRun(run) {
-  if (run.length === 1) return [run];
-  const out = [];
-  for (let i = 0; i < run.length - 1; i++) {
-    out.push(run.slice(i, i + 2));
-  }
-  return out;
-}
-
-function segmentTokens(text) {
-  if (!text) return [];
-  const tokens = [];
-  for (const m of String(text).matchAll(ASCII_TOKEN_RE)) {
-    tokens.push(...expandAsciiToken(m[0]));
-  }
-  for (const m of String(text).matchAll(CJK_RUN_RE)) {
-    tokens.push(...expandCjkRun(m[0]));
-  }
-  return tokens;
-}
-
-function segmentForIndex(text) {
-  return segmentTokens(text).join(' ');
-}
-
-function enrichWithStems(tokens) {
-  const out = new Set(tokens);
-  for (const t of tokens) {
-    if (/^[a-z]{4,}$/.test(t)) {
-      out.add(`~${stemEn(t)}`);
-    }
-  }
-  return out;
-}
-
-function parseQueryClauses(queryText) {
-  const clauses = [];
-  for (const chunk of String(queryText || '').split(/\s+/).filter(Boolean)) {
-    for (const m of chunk.matchAll(ASCII_TOKEN_RE)) {
-      const toks = expandAsciiToken(m[0]);
-      if (toks.length) {
-        const stems = toks
-          .filter(t => /^[a-z]{4,}$/.test(t))
-          .map(t => `~${stemEn(t)}`)
-          .filter(s => !toks.includes(s));
-        clauses.push({
-          kind: 'ascii',
-          orig: m[0],
-          raw: m[0].toLowerCase(),
-          fts_tokens: toks,
-          match_tokens: [...toks, ...stems],
-        });
-      }
-    }
-    for (const m of chunk.matchAll(CJK_RUN_RE)) {
-      const rawRun = m[0];
-      let subRuns = rawRun.split(CJK_SPLIT_RE).filter(Boolean);
-      if (!subRuns.length) subRuns = [rawRun];
-      for (const sr of subRuns) {
-        const bigrams = expandCjkRun(sr);
-        if (sr.length <= 3) {
-          clauses.push({ kind: 'cjk', raw: sr, fts_tokens: bigrams, match_tokens: bigrams });
-        } else {
-          for (const bg of bigrams) {
-            clauses.push({ kind: 'cjk_bg', raw: bg, fts_tokens: [bg], match_tokens: [bg] });
-          }
-        }
-      }
-    }
-  }
-  return clauses;
-}
-
-// ---- Entry Discovery & Disposable Derived JSON BM25 Index ----
-
-function parseEntryId(relFromKb) {
-  const parts = String(relFromKb).replace(/\\/g, '/').split('/');
-  if (parts.length !== 3 || !parts[2].endsWith('.md')) return null;
-  const [domain, kind, file] = parts;
-  const slug = file.slice(0, -3);
-  if (!SLUG_RE.test(domain) || !KIND_SET.has(kind) || !SLUG_RE.test(slug)) return null;
-  return [domain, kind, slug, `${domain}/${kind}/${slug}`];
-}
-
-function iterKbFiles(kbRoot) {
-  const kbDir = path.join(kbRoot, 'kb');
-  if (!fs.existsSync(kbDir)) return [];
-  const found = [];
-  function walk(dir) {
-    const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
-    for (const ent of entries) {
-      if (ent.name.startsWith('.')) continue;
-      const absP = path.join(dir, ent.name);
-      if (ent.isDirectory()) {
-        walk(absP);
-      } else if (ent.isFile() && ent.name.endsWith('.md')) {
-        const relKb = path.relative(kbDir, absP).replace(/\\/g, '/');
-        const parsed = parseEntryId(relKb);
-        if (parsed) {
-          found.push([absP, relKb, parsed[0], parsed[1], parsed[2], parsed[3]]);
-        }
-      }
-    }
-  }
-  walk(kbDir);
-  return found;
-}
-
-function corpusFingerprint(files) {
-  let maxMtime = 0n;
-  let totalSize = 0;
-  for (const [absP] of files) {
-    const st = fs.statSync(absP, { bigint: true });
-    if (st.mtimeNs > maxMtime) maxMtime = st.mtimeNs;
-    totalSize += Number(st.size);
-  }
-  return `v${SCHEMA_VERSION}:${files.length}:${totalSize}:${maxMtime.toString()}`;
-}
-
-function loadEntryFromFile(absP, domain, kind, slug, entryId) {
-  const raw = fs.readFileSync(absP, 'utf8');
-  const { meta, body } = parseMarkdownEntry(raw);
-  const triggers = Array.isArray(meta.triggers) ? meta.triggers : [];
-  const sources = Array.isArray(meta.sources) ? meta.sources : [];
-  return {
-    id: entryId,
-    domain,
-    kind,
-    slug,
-    path: `kb/${entryId}.md`,
-    title: String(meta.title || '').trim(),
-    summary: String(meta.summary || '').trim(),
-    triggers: triggers.map(x => String(x).trim()).filter(Boolean),
-    sources: sources.map(x => String(x).trim()).filter(Boolean),
-    expires: String(meta.expires || '').trim(),
-    disputed: String(meta.disputed || '').trim(),
-    body,
-  };
-}
-
-function hydrateIndex(raw) {
-  raw.token_df = toNullProto(raw.token_df);
-  raw.bm25_df = toNullProto(raw.bm25_df);
-  raw.postings = toNullProto(raw.postings);
-  if (Array.isArray(raw.docs)) {
-    for (const d of raw.docs) {
-      if (d && typeof d === 'object') {
-        d.tf = toNullProto(d.tf);
-      }
-    }
-  }
-  return raw;
-}
-
-function readCachedIndex(indexPath, expectedFp) {
-  if (!fs.existsSync(indexPath)) return null;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
-    if (parsed && parsed.fingerprint === expectedFp) return hydrateIndex(parsed);
-  } catch {}
-  return null;
-}
-
-function ensureIndex(kbRoot) {
-  const cacheDir = cacheDirFor(kbRoot);
-  const indexPath = path.join(cacheDir, 'index.json');
-  const files = iterKbFiles(kbRoot);
-  const fp = corpusFingerprint(files);
-
-  const warm = readCachedIndex(indexPath, fp);
-  if (warm) return { index: warm, indexPath, rebuilt: false };
-
-  return withFileLock(path.join(cacheDir, 'index.lock'), true, () => {
-    const afterLock = readCachedIndex(indexPath, fp);
-    if (afterLock) return { index: afterLock, indexPath, rebuilt: false };
-
-    const tokenDf = Object.create(null);
-    const bm25Df = Object.create(null);
-    const postings = Object.create(null);
-    const docs = [];
-    let totalDl = 0;
-
-    const FIELD_WEIGHTS = [
-      ['title', 6.0],
-      ['triggers', 8.0],
-      ['summary', 4.0],
-      ['sources', 3.0],
-      ['body', 1.0],
-    ];
-
-    files.forEach(([absP, , domain, kind, slug, entryId], docIdx) => {
-      const e = loadEntryFromFile(absP, domain, kind, slug, entryId);
-      const fieldToks = {
-        title: segmentTokens(`${domain} ${slug} ${e.title}`),
-        triggers: segmentTokens(e.triggers.join(' ')),
-        summary: segmentTokens(e.summary),
-        sources: segmentTokens(e.sources.join(' ')),
-        body: segmentTokens(e.body),
-      };
-
-      const tf = Object.create(null);
-      let dl = 0;
-      const allBase = [];
-      for (const [fName, weight] of FIELD_WEIGHTS) {
-        const arr = fieldToks[fName];
-        dl += arr.length;
-        for (const t of arr) {
-          allBase.push(t);
-          const k = ftsKey(t);
-          tf[k] = (tf[k] || 0) + weight;
-        }
-      }
-      totalDl += dl;
-
-      for (const k of Object.keys(tf)) {
-        bm25Df[k] = (bm25Df[k] || 0) + 1;
-        if (!postings[k]) postings[k] = [];
-        postings[k].push(docIdx);
-      }
-
-      const tokenSet = Array.from(enrichWithStems(allBase)).sort();
-      for (const tok of tokenSet) {
-        tokenDf[tok] = (tokenDf[tok] || 0) + 1;
-      }
-
-      docs.push({
-        id: e.id,
-        domain: e.domain,
-        kind: e.kind,
-        slug: e.slug,
-        path: e.path,
-        title: e.title,
-        summary: e.summary,
-        triggers: e.triggers,
-        sources: e.sources,
-        expires: e.expires,
-        disputed: e.disputed,
-        dl,
-        tf,
-        tokens: tokenSet,
-      });
-    });
-
-    const built = {
-      fingerprint: fp,
-      doc_count: docs.length,
-      avgdl: docs.length ? totalDl / docs.length : 1,
-      token_df: tokenDf,
-      bm25_df: bm25Df,
-      postings,
-      docs,
-    };
-
-    const nonce = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
-    const tmpPath = path.join(cacheDir, `index.${nonce}.tmp.json`);
-    fs.writeFileSync(tmpPath, JSON.stringify(built), 'utf8');
-    fs.renameSync(tmpPath, indexPath);
-    return { index: built, indexPath, rebuilt: true };
-  });
-}
-
-function computeIdf(totalDocs, df) {
-  const n = Math.max(1, totalDocs);
-  const d = Math.min(Math.max(0, df), n);
-  return Math.log(1.0 + (n - d + 0.5) / (d + 0.5));
-}
-
-function rankSearch(index, queryText, todayStr, { domain = null, kind = null, limit = 5, excludeId = null } = {}) {
-  const clauses = parseQueryClauses(queryText);
-  if (!clauses.length) return [];
-
-  const uniqueFtsKeys = [];
-  for (const cl of clauses) {
-    for (const t of cl.fts_tokens) {
-      const k = ftsKey(t);
-      if (!uniqueFtsKeys.includes(k)) uniqueFtsKeys.push(k);
-    }
-  }
-  if (!uniqueFtsKeys.length) return [];
-
-  const totalDocs = Math.max(1, index.doc_count || 1);
-  const rareIdf = Math.max(1.0, computeIdf(totalDocs, 1));
-  const dfMap = index.token_df || Object.create(null);
-  const bm25DfMap = index.bm25_df || Object.create(null);
-  const postingsMap = index.postings || Object.create(null);
-  const hasCjkQuery = clauses.some(cl => cl.kind === 'cjk' || cl.kind === 'cjk_bg');
-
-  const clauseWeights = clauses.map(cl => {
-    const primary = cl.match_tokens[0];
-    const stemAlt = /^[a-z]{4,}$/.test(primary) ? `~${stemEn(primary)}` : primary;
-    let bestDf = Object.prototype.hasOwnProperty.call(dfMap, primary) ? dfMap[primary] : undefined;
-    if (bestDf === undefined && Object.prototype.hasOwnProperty.call(dfMap, stemAlt)) {
-      bestDf = dfMap[stemAlt];
-    }
-    let w;
-    if (bestDf === undefined) {
-      const orig = cl.orig || '';
-      const isTechSym =
-        /[0-9_.:/-]/.test(orig) ||
-        (orig.length >= 2 && orig === orig.toUpperCase() && /[A-Z]/.test(orig)) ||
-        CAMEL_SPLIT_RE.test(orig);
-      w = isTechSym ? rareIdf : 0.72 * rareIdf;
-    } else {
-      w = Math.max(0.35, computeIdf(totalDocs, bestDf));
-    }
-    if (cl.kind === 'cjk_bg') w *= 0.65;
-    return w;
-  });
-  const totalWeight = clauseWeights.reduce((a, b) => a + b, 0) || 1.0;
-
-  const candidateIdxs = new Set();
-  for (const key of uniqueFtsKeys) {
-    const list = Object.prototype.hasOwnProperty.call(postingsMap, key) ? postingsMap[key] : null;
-    if (Array.isArray(list)) {
-      for (const idx of list) candidateIdxs.add(idx);
-    }
-  }
-
-  const k1 = 1.2;
-  const b = 0.75;
-  const avgdl = Math.max(1, index.avgdl || 1);
-  const candidates = [];
-
-  for (const idx of candidateIdxs) {
-    const doc = index.docs[idx];
-    if (!doc) continue;
-    if (domain && doc.domain !== domain) continue;
-    if (kind && doc.kind !== kind) continue;
-    if (excludeId && doc.id === excludeId) continue;
-
-    const normDl = 1 - b + b * (doc.dl / avgdl);
-    let rawBm25Pos = 0;
-    const docTf = doc.tf || Object.create(null);
-    for (const key of uniqueFtsKeys) {
-      const wf = Object.prototype.hasOwnProperty.call(docTf, key) ? docTf[key] : 0;
-      if (!wf) continue;
-      const dfVal = Object.prototype.hasOwnProperty.call(bm25DfMap, key) ? bm25DfMap[key] : 1;
-      const idf = computeIdf(totalDocs, dfVal || 1);
-      rawBm25Pos += idf * ((wf * (k1 + 1)) / (wf + k1 * normDl)) * 0.95;
-    }
-    candidates.push({ doc, rawBm25Pos });
-  }
-
-  candidates.sort((a, b2) => b2.rawBm25Pos - a.rawBm25Pos);
-  const topCandidates = candidates.slice(0, 60);
-
-  const scored = [];
-  const qLow = String(queryText).toLowerCase();
-
-  for (const { doc, rawBm25Pos } of topCandidates) {
-    const docTokens = new Set(doc.tokens);
-    let matchedWeight = 0;
-    let matchedClauses = 0;
-    let maxMatchedIdf = 0;
-
-    for (let i = 0; i < clauses.length; i++) {
-      const cl = clauses[i];
-      const w = clauseWeights[i];
-      const mt = cl.match_tokens;
-      const primary = mt[0];
-      const stemAlt = /^[a-z]{4,}$/.test(primary) ? `~${stemEn(primary)}` : null;
-      let hitStrength = 0;
-
-      if (cl.kind === 'ascii') {
-        if (docTokens.has(primary)) {
-          hitStrength = 1.0;
-        } else if (stemAlt && docTokens.has(stemAlt)) {
-          hitStrength = 0.92;
-        } else {
-          let subHits = 0;
-          for (let j = 1; j < mt.length; j++) {
-            if (docTokens.has(mt[j])) subHits++;
-          }
-          if (subHits > 0) {
-            hitStrength = 0.65 * (subHits / Math.max(1, mt.length - 1));
-          }
-        }
-      } else if (cl.kind === 'cjk_bg') {
-        if (docTokens.has(primary)) hitStrength = 1.0;
-      } else {
-        let hits = 0;
-        for (const t of mt) {
-          if (docTokens.has(t)) hits++;
-        }
-        if (hits > 0) {
-          const ratio = hits / mt.length;
-          hitStrength = ratio >= 0.5 ? 1.0 : 0.65 * ratio;
-        }
-      }
-
-      if (hitStrength > 0) {
-        matchedWeight += w * hitStrength;
-        matchedClauses += hitStrength;
-        if (w > maxMatchedIdf) maxMatchedIdf = w;
-      }
-    }
-
-    const idfCoverage = matchedWeight / totalWeight;
-    let trigBoost = 0;
-    let cjkTrigHit = false;
-    let strongTrigHit = false;
-
-    for (const tr of doc.triggers) {
-      const trLow = tr.toLowerCase().trim();
-      if (!trLow) continue;
-      if (CJK_TEST_RE.test(trLow)) {
-        if (qLow.includes(trLow)) {
-          trigBoost += 4.5;
-          cjkTrigHit = true;
-        }
-      } else {
-        const re = new RegExp(`(?<![a-z0-9])${escapeRegExp(trLow)}(?![a-z0-9])`);
-        if (re.test(qLow)) {
-          trigBoost += 4.5;
-          if (trLow.length >= 8 || trLow.includes(' ') || trLow.includes('_') || CAMEL_SPLIT_RE.test(tr)) {
-            strongTrigHit = true;
-          }
-        }
-      }
-    }
-
-    const nClauses = clauses.length;
-    if (nClauses === 1) {
-      if (matchedClauses < 0.5 || (maxMatchedIdf < 0.35 * rareIdf && trigBoost === 0)) continue;
-    } else if (hasCjkQuery && cjkTrigHit) {
-      // Allow direct CJK trigger match
-    } else if (nClauses <= 3) {
-      const minCov = strongTrigHit ? 0.26 : 0.34;
-      if (idfCoverage < minCov) continue;
-    } else {
-      const minCov = strongTrigHit ? 0.24 : 0.33;
-      if (matchedClauses < 1.8 || idfCoverage < minCov || maxMatchedIdf < 0.40 * rareIdf) continue;
-    }
-
-    const normWeight = matchedWeight / rareIdf;
-    const base = Math.max(0.1, rawBm25Pos);
-    const kindBoost = doc.kind === 'redline' ? 1.2 : 0.0;
-    const expired = isExpiredDate(doc.expires, todayStr);
-    const penalty = (expired ? 4.5 : 0.0) + (doc.disputed ? 2.8 : 0.0);
-    const finalScore = Number(
-      (
-        base * (0.45 + 1.55 * Math.pow(idfCoverage, 1.3)) +
-        0.8 * normWeight +
-        trigBoost +
-        kindBoost -
-        penalty
-      ).toFixed(3)
-    );
-    if (finalScore <= 0.45) continue;
-
-    const flags = [];
-    if (doc.kind === 'redline') flags.push('REDLINE');
-    if (expired) flags.push(`EXPIRED:${doc.expires}`);
-    if (doc.disputed) flags.push('DISPUTED');
-
-    scored.push({
-      id: doc.id,
-      domain: doc.domain,
-      kind: doc.kind,
-      path: doc.path,
-      title: doc.title,
-      summary: doc.summary,
-      triggers: doc.triggers,
-      sources: doc.sources,
-      expires: doc.expires || null,
-      disputed: doc.disputed || null,
-      flags,
-      coverage: Number(idfCoverage.toFixed(2)),
-      score: finalScore,
-    });
-  }
-
-  scored.sort((a, b2) => (b2.score !== a.score ? b2.score - a.score : a.id.localeCompare(b2.id)));
-  return scored.slice(0, Math.max(1, Math.min(limit, 20)));
-}
-
-// ---- Anchor Verification & Validation Helpers ----
-
-function detectRepoNames(workspaceRoot = '.') {
-  const names = [];
-  const absWs = fs.realpathSync(path.resolve(workspaceRoot));
-  const base = path.basename(absWs).trim();
-  if (base) names.push(base);
-  if (fs.existsSync(path.join(absWs, '.git'))) {
-    const res = spawnSync('git', ['-C', absWs, 'remote', 'get-url', 'origin'], {
-      encoding: 'utf8',
-      timeout: 3000,
-    });
-    if (res.status === 0 && (res.stdout || '').trim()) {
-      let url = res.stdout.trim().replace(/\/+$/, '');
-      if (url.endsWith('.git')) url = url.slice(0, -4);
-      const parts = url.replace(/:/g, '/').split('/');
-      const slug = (parts[parts.length - 1] || '').trim();
-      if (slug && !names.includes(slug)) names.push(slug);
-    }
-  }
-  const reposSub = path.join(absWs, 'repos');
-  if (fs.existsSync(reposSub)) {
-    try {
-      for (const d of fs.readdirSync(reposSub).sort()) {
-        if (!d.startsWith('.') && fs.statSync(path.join(reposSub, d)).isDirectory() && !names.includes(d)) {
-          names.push(d);
-        }
-      }
-    } catch {}
-  }
-  return names;
-}
+const { parseEntryId, iterKbFiles, loadEntryFromFile, ensureIndex, rankSearch, detectRepoNames, anchorInfo, findAnchorTarget, stripInlineComment, unquote, parseInlineList, parseMarkdownEntry, formatYamlScalar, renderEntryMarkdown, vcMeasure, stemEn, ftsKey, expandAsciiToken, expandCjkRun, segmentTokens, segmentForIndex, enrichWithStems, parseQueryClauses } = require('./kb_index.js');
 
 function defaultDraftPath(domain, kind, slug) {
   const loopDir = path.join('.', '.loop');
   if (fs.existsSync(loopDir) && fs.statSync(loopDir).isDirectory()) {
     return path.join(OUTBOX_KB, domain, kind, `${slug}.md`).replace(/\\/g, '/');
   }
-  const base = (process.env.HARBOR_KB_CACHE_DIR || '').trim() || path.join(os.homedir(), '.cache', 'harbor-kb');
-  return path.join(path.resolve(expandHome(base)), 'drafts', domain, kind, `${slug}.md`);
-}
-
-function findAnchorTarget(workspaceRoot, sourceSpec) {
-  const raw = String(sourceSpec || '').trim();
-  if (!raw || raw.includes('://')) return ['skip', 'external URL or empty'];
-  const hashIdx = raw.indexOf('#');
-  const filePart = hashIdx === -1 ? raw : raw.slice(0, hashIdx);
-  const hasSep = hashIdx !== -1;
-  const symbol = hashIdx === -1 ? '' : raw.slice(hashIdx + 1);
-
-  let rel = filePart.trim().replace(/\\/g, '/');
-  while (rel.startsWith('./')) rel = rel.slice(2);
-  let repoPrefix = '';
-  let restClean = '';
-  if (rel.includes(':') && !/^[A-Za-z]:\//.test(rel)) {
-    const colonIdx = rel.indexOf(':');
-    repoPrefix = rel.slice(0, colonIdx);
-    const restPath = rel.slice(colonIdx + 1).replace(/:\d+(?:-\d+)?$/, '');
-    if (repoPrefix && restPath && !repoPrefix.includes('/')) {
-      restClean = restPath.replace(/^\/+/, '');
-      rel = `${repoPrefix}/${restClean}`;
-    }
-  }
-  if (!rel || path.isAbsolute(rel) || rel.split('/').includes('..')) {
-    return ['skip', 'non-workspace anchor'];
-  }
-
-  const verifyFile = (targetAbs, label) => {
-    try {
-      if (!fs.statSync(targetAbs).isFile()) {
-        return ['file_missing', `${label} missing inside present repo`];
-      }
-    } catch {
-      return ['file_missing', `${label} missing inside present repo`];
-    }
-    if (hasSep && symbol.trim()) {
-      try {
-        const content = fs.readFileSync(targetAbs, 'utf8');
-        if (!content.includes(symbol.trim())) {
-          return ['symbol_missing', `symbol "${symbol.trim()}" not found in ${label}`];
-        }
-      } catch (err) {
-        return ['file_missing', String(err.message || err)];
-      }
-    }
-    return ['ok', label];
-  };
-
-  if (repoPrefix && restClean) {
-    const localNames = new Set(detectRepoNames(workspaceRoot).map(n => n.toLowerCase()));
-    const wsBase = path.basename(fs.realpathSync(path.resolve(workspaceRoot))).toLowerCase();
-    const pLow = repoPrefix.toLowerCase();
-    const hasSubRepos =
-      fs.existsSync(path.join(workspaceRoot, 'repos', repoPrefix)) ||
-      fs.existsSync(path.join(workspaceRoot, repoPrefix));
-    if (pLow === wsBase || (localNames.has(pLow) && !hasSubRepos)) {
-      return verifyFile(path.join(workspaceRoot, restClean), restClean);
-    }
-  }
-
-  const candidates = [rel];
-  if (!rel.startsWith('repos/')) candidates.push(`repos/${rel}`);
-  for (const cand of candidates) {
-    const parts = cand.split('/');
-    if (parts.length >= 2) {
-      const repoDir =
-        parts[0] === 'repos' && parts.length >= 3
-          ? path.join(workspaceRoot, parts[0], parts[1])
-          : path.join(workspaceRoot, parts[0]);
-      try {
-        if (fs.statSync(repoDir).isDirectory()) {
-          return verifyFile(path.join(workspaceRoot, cand), cand);
-        }
-      } catch {}
-    }
-  }
-  return ['skip', 'target repo not checked out in this workspace'];
+  return path.join(os.homedir(), '.harbor', 'drafts', 'kb', domain, kind, `${slug}.md`);
 }
 
 function normalizeEntryId(rawId) {
@@ -1181,6 +348,7 @@ function validateEntryFile(filePath, { expectedId = null, index = null, todayStr
   const triggers = meta.triggers;
   const sources = meta.sources;
   const expires = String(meta.expires || '').trim();
+  if(meta.verified_at&&!isValidIsoDate(String(meta.verified_at)))errors.push('Invalid verified_at date');
 
   if (title.length < 6 || title.length > 140) {
     errors.push('Frontmatter `title` is required (6..140 chars).');
@@ -1236,8 +404,21 @@ function siblingPublishScript() {
   return path.resolve(__dirname, '..', '..', 'team-kb-publish', 'scripts', 'publish.js');
 }
 
+function cmdMap(a) {
+  const {root} = resolveKbRoot(a.kbRoot);
+  autoSyncIfEnabled(root, cacheDirFor(root), a);
+  const repos = a.auto ? detectRepoNames(a.workspaceRoot).slice(0,1) : a.repo ? [a.repo] : null;
+  const entries = iterKbFiles(root).map(([p,,d,k,slug,id])=>loadEntryFromFile(p,d,k,slug,id)).filter(e=>['map','spec','redline'].includes(e.kind) && (!a.domain || e.domain===a.domain) && (!repos || e.sources.some(s=>repos.some(r=>s.startsWith(r+':')))));
+  const domains = [...new Set(entries.map(e=>e.domain))].sort().map(domain=>{
+    const cards=entries.filter(e=>e.domain===domain);
+    return {domain, repos:[...new Set(cards.flatMap(e=>e.sources.filter(s=>!s.includes('://') && !s.startsWith('JIRA:')).map(s=>s.split(':')[0])))].sort(), counts:Object.fromEntries(['map','spec','redline'].map(k=>[k,cards.filter(e=>e.kind===k).length])), entries:cards.map(e=>e.id)};
+  });
+  if(a.json) console.log(JSON.stringify({domains}));
+  else console.log(domains.map(d=>d.domain+': '+d.repos.join(', ')+' '+JSON.stringify(d.counts)).join('\n').slice(0,3000));
+}
+
 function cmdSearch(a) {
-  const kbRoot = resolveKbRoot(a.kbRoot);
+  const { root: kbRoot, source: kbSource } = resolveKbRoot(a.kbRoot);
   const cacheDir = cacheDirFor(kbRoot);
   autoSyncIfEnabled(kbRoot, cacheDir, a);
   const queryText = (a.query || (a.rest || []).join(' ')).trim();
@@ -1272,7 +453,7 @@ function cmdSearch(a) {
 }
 
 function cmdGet(a) {
-  const kbRoot = resolveKbRoot(a.kbRoot);
+  const { root: kbRoot, source: kbSource } = resolveKbRoot(a.kbRoot);
   const cacheDir = cacheDirFor(kbRoot);
   autoSyncIfEnabled(kbRoot, cacheDir, a);
   const idArg = a.rest[0];
@@ -1304,6 +485,8 @@ function cmdGet(a) {
     lines.push(`WARNING [DISPUTED]: ${e.disputed}`);
   }
   for (const c of anchorChecks) {
+    if (c.status === 'content_changed') lines.push(`NOTICE [CONTENT CHANGED SINCE VERIFIED]: ${c.source}`);
+    if (c.status === 'unverified_repo_absent') lines.push(`NOTE [UNVERIFIED ANCHORS]: ${c.source}`);
     if (c.status === 'file_missing' || c.status === 'symbol_missing') {
       lines.push(`WARNING [ANCHOR DRIFT]: ${c.source} -> ${c.detail}`);
     }
@@ -1314,7 +497,7 @@ function cmdGet(a) {
 }
 
 function cmdRedlines(a) {
-  const kbRoot = resolveKbRoot(a.kbRoot);
+  const { root: kbRoot, source: kbSource } = resolveKbRoot(a.kbRoot);
   const cacheDir = cacheDirFor(kbRoot);
   autoSyncIfEnabled(kbRoot, cacheDir, a);
   const todayStr = parseIsoDateStr(a.now);
@@ -1375,13 +558,42 @@ function cmdRedlines(a) {
 }
 
 function cmdPropose(a) {
-  const kbRoot = resolveKbRoot(a.kbRoot);
+  if(a.rest[0]){
+    const file=a.rest[0];if(!fs.existsSync(file))throw new KbError('Draft file not found');
+    const parsed=parseMarkdownEntry(fs.readFileSync(file,'utf8'));
+    if(!Array.isArray(parsed.meta.triggers)||!Array.isArray(parsed.meta.sources))throw new KbError('Invalid draft metadata');
+    const id=parseEntryId(file.replace(/\\/g,'/').split('/').slice(-3).join('/'));
+    if(!id)throw new KbError('Draft path must end with domain/kind/slug.md');
+    Object.assign(a,{id:id[3],title:parsed.meta.title,summary:parsed.meta.summary,triggers:parsed.meta.triggers.join(','),sources:parsed.meta.sources.join(','),body:parsed.body,expires:parsed.meta.expires});
+  }
+  const { root: kbRoot, source: kbSource } = resolveKbRoot(a.kbRoot);
   if (!a.id || !a.title || !a.summary || !a.triggers || !a.sources) {
     throw new KbError('propose requires --id, --title, --summary, --triggers, and --sources.');
   }
   const [domain, kind, slug, entryId] = normalizeEntryId(a.id);
   const triggers = a.triggers.split(',').map(s => s.trim()).filter(Boolean);
-  const sources = a.sources.split(',').map(s => s.trim()).filter(Boolean);
+  let sources = a.sources.split(',').map(s => s.trim()).filter(Boolean);
+  const existing = path.join(kbRoot,'kb',entryId+'.md');
+  const previousFile = fs.existsSync(existing) ? existing : a.rest[0];
+  const old = previousFile ? parseMarkdownEntry(fs.readFileSync(previousFile,'utf8')).meta : {};
+  const changes=[];
+  sources = sources.map(src=>{
+    const base=src.replace(/@[a-f0-9]{8}$/,'');
+    const previous=(old.sources||[]).find(x=>x.replace(/@[a-f0-9]{8}$/,'')===base);
+    if(previous && !a.reverify) return previous;
+    const info=anchorInfo(a.workspaceRoot,base);
+    if (!info.fingerprint) return src;
+    const dirty=spawnSync('git',['-C',path.dirname(info.target),'status','--porcelain','--',info.target],{encoding:'utf8',timeout:8000,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
+    if(dirty.status!==0 || dirty.stdout.trim()) {
+      if(a.reverify) throw new KbError('Cannot reverify an uncommitted anchor');
+      return src;
+    }
+    const next=base+'@'+info.fingerprint;
+    changes.push({old:previous||src,new:next});
+    return next;
+  });
+  let verifiedAt=old.verified_at;
+  if(a.reverify && sources.some(x=>anchorInfo(a.workspaceRoot,x).fingerprint) && sources.every(x=>['verified','external_ref','present_unpinned'].includes(anchorInfo(a.workspaceRoot,x).status)) && sources.filter(x=>anchorInfo(a.workspaceRoot,x).fingerprint).every(x=>anchorInfo(a.workspaceRoot,x).status==='verified')) verifiedAt=parseIsoDateStr(a.now);
   let body = a.body;
   if (a.bodyFile) {
     if (path.isAbsolute(a.bodyFile) || a.bodyFile.replace(/\\/g, '/').split('/').includes('..')) {
@@ -1394,12 +606,13 @@ function cmdPropose(a) {
   }
   if (!body) throw new KbError('Provide --body or --body-file with the Markdown content.');
 
-  const draftRel = defaultDraftPath(domain, kind, slug);
-  if (fs.existsSync(draftRel) && !a.force) {
+  const draftRel = a.output || defaultDraftPath(domain, kind, slug);
+  const inPlace = a.rest[0] && fs.existsSync(draftRel) && fs.realpathSync(draftRel) === fs.realpathSync(a.rest[0]);
+  if (fs.existsSync(draftRel) && !a.force && !inPlace) {
     throw new KbError(`Draft already exists at ${draftRel}; pass --force to overwrite.`);
   }
 
-  const content = renderEntryMarkdown({
+  let content = renderEntryMarkdown({
     title: a.title,
     summary: a.summary,
     triggers,
@@ -1407,24 +620,29 @@ function cmdPropose(a) {
     body,
     expires: a.expires || null,
   });
+  if(verifiedAt) content=content.replace('---\n','---\nverified_at: '+verifiedAt+'\n');
   fs.mkdirSync(path.dirname(draftRel), { recursive: true });
   const tmp = `${draftRel}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, content, 'utf8');
-  fs.renameSync(tmp, draftRel);
-
-  const { index } = ensureIndex(kbRoot);
-  const { errors, warnings } = validateEntryFile(draftRel, {
-    expectedId: entryId,
-    index,
-    todayStr: parseIsoDateStr(a.now),
-  });
-  if (errors.length) {
-    try { fs.unlinkSync(draftRel); } catch {}
-    throw new KbError(`Draft validation failed:\n- ${errors.join('\n- ')}`);
+  let warnings;
+  try {
+    fs.writeFileSync(tmp, content, 'utf8');
+    const { index } = ensureIndex(kbRoot);
+    const result = validateEntryFile(tmp, {
+      expectedId: entryId,
+      index,
+      todayStr: parseIsoDateStr(a.now),
+    });
+    if (result.errors.length) throw new KbError(`Draft validation failed:\n- ${result.errors.join('\n- ')}`);
+    warnings = result.warnings;
+    // Do not replace an existing user draft until the new bytes have passed validation.
+    fs.renameSync(tmp, draftRel);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
   }
 
   const payload = {
     status: 'drafted',
+    fingerprint_changes: changes,
     id: entryId,
     draft: draftRel,
     warnings,
@@ -1434,6 +652,7 @@ function cmdPropose(a) {
     console.log(JSON.stringify(payload, null, 2));
     return;
   }
+  for(const change of changes) console.log('Fingerprint: '+change.old+' -> '+change.new);
   console.log(`Drafted valid KB proposal: ${draftRel}`);
   for (const w of warnings) console.log(`WARNING: ${w}`);
   if (draftRel.startsWith('.loop/outbox/kb/')) {
@@ -1444,7 +663,7 @@ function cmdPropose(a) {
 }
 
 function cmdDispute(a) {
-  const kbRoot = resolveKbRoot(a.kbRoot);
+  const { root: kbRoot, source: kbSource } = resolveKbRoot(a.kbRoot);
   if (!a.id || !a.reason) throw new KbError('dispute requires --id and --reason.');
   const [domain, kind, slug, entryId] = normalizeEntryId(a.id);
   const srcAbs = path.join(kbRoot, 'kb', domain, kind, `${slug}.md`);
@@ -1478,7 +697,7 @@ function cmdDispute(a) {
 }
 
 function cmdValidate(a) {
-  const kbRoot = resolveKbRoot(a.kbRoot);
+  const { root: kbRoot, source: kbSource } = resolveKbRoot(a.kbRoot);
   const todayStr = parseIsoDateStr(a.now);
   const { index } = ensureIndex(kbRoot);
   const targets = [];
@@ -1528,7 +747,7 @@ function cmdValidate(a) {
 }
 
 function cmdDrift(a) {
-  const kbRoot = resolveKbRoot(a.kbRoot);
+  const { root: kbRoot, source: kbSource } = resolveKbRoot(a.kbRoot);
   const todayStr = parseIsoDateStr(a.now);
   const files = iterKbFiles(kbRoot);
   const issues = [];
@@ -1555,6 +774,8 @@ function cmdDrift(a) {
       const [st, det] = findAnchorTarget(a.workspaceRoot, src);
       if (st === 'file_missing') {
         issues.push({ kind: 'ANCHOR_FILE_MISSING', id: entryId, source: src, detail: det });
+      } else if (st === 'content_changed') {
+        issues.push({ kind: 'CONTENT_CHANGED', id: entryId, source: src, detail: det });
       } else if (st === 'symbol_missing') {
         issues.push({ kind: 'ANCHOR_SYMBOL_MISSING', id: entryId, source: src, detail: det });
       }
@@ -1605,12 +826,12 @@ function cmdDrift(a) {
   }
 
   if (a.exitCode) {
-    process.exit(issues.length ? 0 : 1);
+    process.exit(issues.some(x => ['ANCHOR_FILE_MISSING','ANCHOR_SYMBOL_MISSING'].includes(x.kind)) ? 0 : 1);
   }
 }
 
 function cmdStats(a) {
-  const kbRoot = resolveKbRoot(a.kbRoot);
+  const { root: kbRoot, source: kbSource } = resolveKbRoot(a.kbRoot);
   const cacheDir = cacheDirFor(kbRoot);
   const syncState = a.sync ? maybeSyncGit(kbRoot, cacheDir, true) : 'not-requested';
   const { index, indexPath, rebuilt } = ensureIndex(kbRoot);
@@ -1670,6 +891,7 @@ function parseCliArgs(argv) {
   };
 
   const VALUE_FLAGS = {
+    '--output': 'output',
     '--now': 'now',
     '--kb-root': 'kbRoot',
     '--query': 'query',
@@ -1696,6 +918,7 @@ function parseCliArgs(argv) {
     '--no-sync': 'noSync',
     '--auto': 'auto',
     '--force': 'force',
+    '--reverify': 'reverify',
     '--all': 'all',
     '--exit-code': 'exitCode',
     '--help': 'help',
@@ -1703,7 +926,7 @@ function parseCliArgs(argv) {
   };
 
   const COMMANDS = new Set([
-    'search', 'get', 'redlines', 'propose', 'dispute', 'validate', 'drift', 'stats',
+    'map', 'search', 'get', 'redlines', 'propose', 'dispute', 'validate', 'drift', 'stats',
   ]);
 
   for (let i = 0; i < argv.length; i++) {
@@ -1753,6 +976,7 @@ function printHelp() {
       'Usage: node kb.js <command> [options]',
       '',
       'Commands:',
+      '  map [--domain <d>] [--repo <r> | --auto]            Cross-repository map',
       '  redlines [--auto | --repo <svc> | --domain <dom>]   List active one-line guardrails',
       '  search [--sync | --no-sync] <query>                 Hybrid BM25 + Porter + code/CJK search',
       '  get <domain>/<kind>/<slug>                          Read full entry & verify live anchors',
@@ -1772,6 +996,7 @@ function main(argv = process.argv.slice(2)) {
     return a.help ? 0 : 2;
   }
   const dispatch = {
+    map: cmdMap,
     search: cmdSearch,
     get: cmdGet,
     redlines: cmdRedlines,
@@ -1781,7 +1006,15 @@ function main(argv = process.argv.slice(2)) {
     drift: cmdDrift,
     stats: cmdStats,
   };
-  dispatch[a.cmd](a);
+  const resolved = resolveKbRoot(a.kbRoot);
+  const log = console.log;
+  console.log = (...args) => {
+    if (a.json) {
+      const obj = JSON.parse(args.join(' '));
+      log(JSON.stringify({...obj, kb_source: resolved.source}, null, 2));
+    } else {const lines=args.join(' ').split('\n');lines[0]+=' [kb_source='+resolved.source+']'+(isPublicEngineRoot(resolved.root)?' [DEMO_FALLBACK: using built-in public seed KB]':'');log(lines.join('\n'));}
+  };
+  try { dispatch[a.cmd](a); } finally { console.log = log; }
   return 0;
 }
 
@@ -1789,7 +1022,7 @@ if (require.main === module) {
   try {
     process.exit(main());
   } catch (err) {
-    if (err instanceof KbError) {
+    if (err instanceof Error) {
       console.error(`team-kb: ${err.message}`);
       process.exit(2);
     }
@@ -1798,6 +1031,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  SECRET_CHECKS,
+  anchorInfo,
   KINDS,
   KbError,
   resolveKbRoot,

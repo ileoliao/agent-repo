@@ -1089,7 +1089,33 @@ function looksLikeMateWorkspace(dirPath) {
   );
 }
 
+function cmdInitDataRepo(a) {
+  if(!a.target) throw new PlugError('init-data-repo requires a directory');
+  const dest=path.resolve(expandHome(a.target));
+  const exists=fs.existsSync(dest);
+  if(a.upgradeScripts&&(!exists||!isDir(path.join(dest,'kb'))||!isDir(path.join(dest,'standards'))))throw new PlugError('Upgrade requires an existing data repository');
+  if(exists && !a.upgradeScripts && fs.readdirSync(dest).length) throw new PlugError('Target is not empty; use --upgrade-scripts');
+  for(const rel of ['CODEOWNERS','.github/workflows/kb-guard.yml','scripts/validate-data.js']) {
+    if(a.upgradeScripts && rel==='CODEOWNERS')continue;
+    const file=path.join(dest,rel);fs.mkdirSync(path.dirname(file),{recursive:true});fs.copyFileSync(path.join(KB_REPO_ROOT,'templates','data-repo',rel),file);
+  }
+  if(!a.upgradeScripts){
+    fs.mkdirSync(path.join(dest,'kb'),{recursive:true});
+    fs.writeFileSync(path.join(dest,'kb','.gitkeep'),'');
+    fs.mkdirSync(path.join(dest,'standards'),{recursive:true});
+    fs.copyFileSync(path.join(KB_REPO_ROOT,'standards','user-story.md'),path.join(dest,'standards','user-story.md'));
+    const init=spawnSync('git',['init',dest],{encoding:'utf8',timeout:8000,env:{...process.env,GIT_TERMINAL_PROMPT:'0'}});
+    if(init.status!==0)throw new PlugError('Failed to initialize Git data repository');
+  }
+  console.log('Private data repository prepared: '+dest);
+}
+
 function cmdInstall(a) {
+  if(a.dataRepo){
+    if(!isDir(path.resolve(expandHome(a.dataRepo))))throw new PlugError('Data repository directory not found');
+    a.dataRepo=fs.realpathSync(path.resolve(expandHome(a.dataRepo)));
+    if(a.dataRepo===fs.realpathSync(KB_REPO_ROOT)||!isDir(path.join(a.dataRepo,'kb')))throw new PlugError('Bind a separate data repository with kb/');
+  }
   let mode = a.mode;
   if (mode === 'auto') {
     mode = process.platform === 'win32' ? 'copy' : 'symlink';
@@ -1133,7 +1159,7 @@ function cmdInstall(a) {
   // Pre-flight collision checks BEFORE mutating any file on disk
   if (ws) {
     const skillsBase = path.join(ws, '.github', 'skills');
-    for (const sk of ['team-kb', 'team-kb-publish']) {
+    for (const sk of ['team-kb', 'team-kb-publish', 'story-guard']) {
       const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(skillsBase, sk);
       const st = inspectSkillTarget(src, dst, wsManifest.skills[sk]);
@@ -1167,7 +1193,7 @@ function cmdInstall(a) {
 
   if (useCopilot) {
     const copilotSkills = path.join(os.homedir(), '.copilot', 'skills');
-    for (const sk of ['team-kb', 'team-kb-publish']) {
+    for (const sk of ['team-kb', 'team-kb-publish', 'story-guard']) {
       const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(copilotSkills, sk);
       const st = inspectSkillTarget(src, dst, copManifest.skills[sk]);
@@ -1182,7 +1208,7 @@ function cmdInstall(a) {
   if (ws) {
     const createdDirsSet = new Set(Array.isArray(wsManifest.createdDirs) ? wsManifest.createdDirs : []);
     const skillsBase = path.join(ws, '.github', 'skills');
-    for (const sk of ['team-kb', 'team-kb-publish']) {
+    for (const sk of ['team-kb', 'team-kb-publish', 'story-guard']) {
       const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(skillsBase, sk);
       wsManifest.skills[sk] = installSkillDir(src, dst, mode, ws, createdDirsSet);
@@ -1191,9 +1217,9 @@ function cmdInstall(a) {
 
     const ptrRel = '.loop/outbox/kb/.kb_root';
     const ptrFile = path.join(ws, ptrRel);
-    if (mode === 'copy') {
+    if (mode === 'copy' || a.dataRepo) {
       ensureDirTracked(path.dirname(ptrFile), ws, createdDirsSet);
-      const content = `${KB_REPO_ROOT}\n`;
+      const content = `${a.dataRepo || KB_REPO_ROOT}\n`;
       fs.writeFileSync(ptrFile, content, 'utf8');
       wsManifest.files[ptrRel] = {
         owned: true,
@@ -1209,7 +1235,9 @@ function cmdInstall(a) {
     const selectedAgents = selectAgentFiles(agentsDir, agentsSpec);
     for (const af of selectedAgents) {
       const raw = fs.readFileSync(af, 'utf8');
-      const [updated, changed] = addSkillToAgentText(raw, 'team-kb');
+      let [updated, changed] = addSkillToAgentText(raw, 'team-kb');
+      const [withStory, storyChanged] = addSkillToAgentText(updated,'story-guard');
+      if(storyChanged){wsManifest.wiredStoryAgents=[...new Set([...(wsManifest.wiredStoryAgents||[]),path.relative(ws,af)])];updated=withStory;changed=true;}
       if (changed) {
         fs.writeFileSync(af, updated, 'utf8');
         actions.push(`wired team-kb into ${path.basename(af)}`);
@@ -1263,7 +1291,7 @@ function cmdInstall(a) {
 
   if (useCopilot) {
     const copilotSkills = path.join(os.homedir(), '.copilot', 'skills');
-    for (const sk of ['team-kb', 'team-kb-publish']) {
+    for (const sk of ['team-kb', 'team-kb-publish', 'story-guard']) {
       const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(copilotSkills, sk);
       copManifest.skills[sk] = installSkillDir(src, dst, mode);
@@ -1276,8 +1304,11 @@ function cmdInstall(a) {
     saveManifest(copManifestFile, copManifest);
   }
 
+  if(a.dataRepo){
+    const ptr=path.join(os.homedir(),'.harbor','kb_data_root');fs.mkdirSync(path.dirname(ptr),{recursive:true});fs.writeFileSync(ptr,a.dataRepo+'\n');
+  }
   const kbJs = path.join(KB_REPO_ROOT, 'skills', 'team-kb', 'scripts', 'kb.js');
-  const warmRes = spawnSync(process.execPath, [kbJs, '--kb-root', KB_REPO_ROOT, 'stats'], {
+  const warmRes = spawnSync(process.execPath, [kbJs, '--kb-root', a.dataRepo || KB_REPO_ROOT, 'stats'], {
     encoding: 'utf8',
     timeout: 15000,
   });
@@ -1315,7 +1346,7 @@ function cmdUninstall(a) {
     const wsManifest = loadManifest(wsManifestFile);
     let keptOwnedEntries = false;
 
-    for (const sk of ['team-kb', 'team-kb-publish']) {
+    for (const sk of ['team-kb', 'team-kb-publish', 'story-guard']) {
       const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(ws, '.github', 'skills', sk);
       if (!lstatExists(dst)) {
@@ -1383,7 +1414,8 @@ function cmdUninstall(a) {
         const af = path.join(agentsDir, fn);
         agentFiles.push(af);
         const raw = fs.readFileSync(af, 'utf8');
-        const [cleaned, changed] = removeSkillFromAgentText(raw, 'team-kb');
+        let [cleaned, changed] = removeSkillFromAgentText(raw, 'team-kb');
+        if((wsManifest?.wiredStoryAgents||[]).includes(path.relative(ws,af))){const [next,removed]=removeSkillFromAgentText(cleaned,'story-guard');cleaned=next;changed=changed||removed;}
         if (changed) {
           fs.writeFileSync(af, cleaned, 'utf8');
           actions.push(`unwired team-kb from ${fn}`);
@@ -1436,7 +1468,7 @@ function cmdUninstall(a) {
     let keptCopilotEntries = false;
     const copilotSkills = path.join(os.homedir(), '.copilot', 'skills');
 
-    for (const sk of ['team-kb', 'team-kb-publish']) {
+    for (const sk of ['team-kb', 'team-kb-publish', 'story-guard']) {
       const src = path.join(KB_REPO_ROOT, 'skills', sk);
       const dst = path.join(copilotSkills, sk);
       if (!lstatExists(dst)) {
@@ -1504,6 +1536,7 @@ function cmdStatus(a) {
       team_kb_installed: copilotInstalled,
       team_kb_mode: copilotMode,
       publish_installed: isDir(copilotPub) && isFile(path.join(copilotPub, 'SKILL.md')),
+      story_guard_installed: isFile(path.join(os.homedir(),'.copilot','skills','story-guard','SKILL.md')),
     },
   };
   const kbJsDefault = path.join(KB_REPO_ROOT, 'skills', 'team-kb', 'scripts', 'kb.js');
@@ -1535,6 +1568,7 @@ function cmdStatus(a) {
       team_kb_installed: isDir(skDir) && isFile(path.join(skDir, 'SKILL.md')),
       team_kb_mode: isSymlink(skDir) ? 'symlink' : isDir(skDir) ? 'copy' : 'absent',
       publish_installed: isDir(pubDir) && isFile(path.join(pubDir, 'SKILL.md')),
+      story_guard_installed: isFile(path.join(ws,'.github','skills','story-guard','SKILL.md')),
       wired_agents: wiredAgents,
       gardener_installed: isFile(path.join(ws, '.github', 'agents', 'kb-gardener.agent.md')),
       hook_installed: isFile(path.join(ws, '.github', 'hooks', 'harbor-kb.json')),
@@ -1555,7 +1589,7 @@ function cmdStatus(a) {
   } else {
     const runRes = spawnSync(
       process.execPath,
-      [kbJsDefault, '--kb-root', KB_REPO_ROOT, '--json', 'stats'],
+      [kbJsDefault, '--json', 'stats'],
       { encoding: 'utf8', timeout: 15000 }
     );
     if (runRes.status === 0) {
@@ -1563,6 +1597,7 @@ function cmdStatus(a) {
     }
   }
 
+  checks.kb_root=((wsChecks && wsChecks.stats)||checks.stats||{}).kb_root||KB_REPO_ROOT;
   checks.workspace_status = wsChecks;
   const ok =
     wsChecks === null
@@ -1576,7 +1611,7 @@ function cmdStatus(a) {
     const totalEntries =
       ((wsChecks && wsChecks.stats) || checks.stats || {}).total_entries ?? '?';
     console.log(`Runtime:        Node.js v${checks.node_version} (${checks.engine})`);
-    console.log(`KB root:        ${KB_REPO_ROOT} (${totalEntries} entries)`);
+    console.log(`KB root:        ${((wsChecks && wsChecks.stats) || checks.stats || {}).kb_root || KB_REPO_ROOT} (${totalEntries} entries)`);
     console.log(`Copilot skills: ${copilotMode} (publish=${checks.copilot_status.publish_installed})`);
     if (wsChecks) {
       console.log(`Workspace:      ${wsChecks.workspace}`);
@@ -1609,6 +1644,7 @@ function parseCliArgs(argv) {
     '--mode': 'mode',
     '--agents': 'agents',
     '--default-profile': 'defaultProfile',
+    '--data-repo': 'dataRepo',
   };
   const BOOL_FLAGS = {
     '--with-gardener': 'withGardener',
@@ -1616,12 +1652,13 @@ function parseCliArgs(argv) {
     '--with-hooks': 'withHooks',
     '--copilot': 'copilot',
     '--force': 'force',
+    '--upgrade-scripts': 'upgradeScripts',
     '-f': 'force',
     '--json': 'json',
     '--help': 'help',
     '-h': 'help',
   };
-  const COMMANDS = new Set(['install', 'uninstall', 'status']);
+  const COMMANDS = new Set(['install', 'uninstall', 'status', 'init-data-repo']);
 
   for (let i = 0; i < argv.length; i++) {
     const raw = argv[i];
@@ -1643,7 +1680,7 @@ function parseCliArgs(argv) {
     if (!opts.cmd && COMMANDS.has(raw)) {
       opts.cmd = raw;
     } else {
-      throw new PlugError(`Unexpected argument: ${raw}`);
+      if(opts.cmd==='init-data-repo'&&!opts.target)opts.target=raw;else throw new PlugError(`Unexpected argument: ${raw}`);
     }
   }
   if (!['auto', 'symlink', 'copy'].includes(opts.mode)) {
@@ -1660,9 +1697,11 @@ function parseCliArgs(argv) {
 function printHelp() {
   console.log(
     [
-      'Usage: node plug.js <install|uninstall|status> [options]',
+      'Usage: node plug.js <install|uninstall|status|init-data-repo> [options]',
       '',
       'Commands:',
+      '  init-data-repo <dir> [--upgrade-scripts]',
+      '  install --data-repo <private-data-dir>',
       '  install [-w <workspace>] [--copilot] [--agents all|none|a,b] [--default-profile strict|standard|trusted] [--no-gardener] [--with-hooks] [--mode auto|symlink|copy] [--force]',
       '  uninstall [-w <workspace>] [--copilot] [--force]',
       '  status [-w <workspace>]',
@@ -1677,6 +1716,7 @@ function main(argv = process.argv.slice(2)) {
     return a.help ? 0 : 2;
   }
   const dispatch = {
+    'init-data-repo': cmdInitDataRepo,
     install: cmdInstall,
     uninstall: cmdUninstall,
     status: cmdStatus,

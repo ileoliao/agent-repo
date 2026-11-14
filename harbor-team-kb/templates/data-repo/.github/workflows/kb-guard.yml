@@ -1,0 +1,19 @@
+name: KB Guard
+on:
+  pull_request:
+  schedule:
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/validate-data.js --strict-owners
+      - if: github.event_name == 'schedule'
+        run: node scripts/validate-data.js --stale

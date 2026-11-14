@@ -1,0 +1,62 @@
+Use case: infographic-diagram
+Create ONE polished, highly legible Simplified Chinese product-concept infographic for Harbor, suitable to share with an engineering team. This is a conceptual explanation, not a UI screenshot or technical architecture. Landscape canvas approximately 2400×1700 (roughly 7:5); high resolution, sharp typography. White/very light warm background, deep navy text, teal for navigation and evidence, amber for uncertainty and experience. Restrained editorial design, beautiful spacing, crisp vector-like line icons, subtle coastline/navigation motif only, no cartoon scenes, no stock photos, no 3D. Strong clear visual hierarchy. All Chinese text below must render accurately and be easily readable; avoid tiny text. Use only the exact text supplied, do not add jargon, made-up capabilities, performance percentages, large databases, vector stores, chatbot bubbles, or giant brains.
+
+Composition:
+1. Top header, about 16% height.
+Large title verbatim: “Harbor · 团队工程导航”
+Prominent subtitle: “连接业务、代码与团队经验”
+One explanatory sentence beneath: “把老同事知道的入口、判断依据与求助路径，交给下一位同事和 AI。”
+
+2. Main visual, about 46% height, a clear left-to-right story in THREE columns with labeled connecting arrows.
+LEFT narrow column heading “从真实任务出发”. Three tidy cards with simple icons, labels:
+“接手陌生业务”
+“跨仓查找与修改”
+“排查异常与历史问题”
+Under the cards a small label: “使用者：团队成员与 AI”
+A clear arrow to the center labeled “理解任务”.
+
+CENTER, visually dominant, a large soft-teal bordered panel titled “Harbor 保留什么”. Inside a well-spaced 2×2 grid of four cards. Each card has a short bold title and two short lines:
+Card 1 heading “业务地图”
+lines “业务是什么、为什么存在”
+“概念、职责与关键关系”
+Card 2 heading “调查路径”
+lines “从哪个仓、入口、测试开始”
+“为什么接着看下一处”
+Card 3 heading “关键经验”
+lines “设计理由、隐含约定、踩坑”
+“附依据、例外与适用条件”
+Card 4 heading “知识边界”
+lines “哪些已确认，哪些仍未知”
+“缺证据时找谁核实”
+Below this grid within the same panel, a restrained annotation:
+“知识库是底座 · 经验是内容 · 地图是组织方式”
+A clear arrow from center to right labeled “按需查证”.
+
+RIGHT column heading “详情保留在一手来源”.
+Five small neatly aligned icon+text items:
+“源码与接口契约”
+“测试与确认样例”
+“正式需求与制度”
+“运行配置与观测”
+“知情同事与责任人”
+Beneath in amber a short warning:
+“文件没变 ≠ 业务判断正确”
+Use arrows to show access to sources; do not imply copying their full content into Harbor.
+
+3. Below the main visual, a full-width workflow strip titled “像熟悉系统的人一样推进任务”.
+SIX equally clear connected steps left-to-right, with simple matching icons and short labels:
+“明确任务” → “对齐业务” → “定位入口” → “查证关系” → “补齐未知” → “实施验证”
+Use a thin visual link from this strip to the main diagram to connect the explanation, not overlapping text.
+
+4. Below the workflow, a slim feedback loop, three short modules:
+“本次调查：证据、假设、待办”
+→ “核实与团队审阅”
+→ “只沉淀值得复用的路径和判断”
+A curved arrow from the last module returns to the central Harbor panel; route it cleanly in the outside gutter, avoiding any text or other arrows. Label near start “临时工作记录”; label near return “团队长期记忆”. Make clear not every task note enters shared memory.
+
+5. Footer final takeaway, ample whitespace:
+Large bold sentence: “减少每次接手陌生任务时，从零找线索、重建理解的成本。”
+Smaller parallel outcomes: “理解业务更快  ·  跨仓定位更准  ·  少重复调查与误判”
+Treat these as intended product value, no fabricated measured statistics.
+
+Overall: clean and calm, mature engineering-product infographic, not a cluttered mind map. Prioritize the distinction between compact shared navigation/experience, on-demand original evidence, temporary task work, and selective reviewed learning. Avoid long paragraphs. Keep all elements aligned, all arrows unambiguous, no cropped labels.
